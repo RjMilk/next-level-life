@@ -106,7 +106,8 @@ class BlockerService : AccessibilityService() {
 
     private fun block(pkg: String) {
         stopSpending()
-        performGlobalAction(GLOBAL_ACTION_HOME)
+        // Экран блокировки открывается прямо поверх приложения. Нажимать «Домой» нельзя:
+        // рабочий стол появляется после него и перекрывает экран блокировки.
         startActivity(
             Intent(this, BlockActivity::class.java)
                 .putExtra(BlockActivity.EXTRA_PACKAGE, pkg)
