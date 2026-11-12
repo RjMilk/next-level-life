@@ -60,6 +60,19 @@ object Settings {
         Store.notifyChanged()
     }
 
+    /**
+     * Когда последний раз создавалась резервная копия (мс эпохи); null — ещё ни разу.
+     * Ключ не входит в саму копию (Store.exportPrefs), поэтому восстановление его не меняет.
+     */
+    val lastBackupMs: Long?
+        get() = Store.prefs().getLong(KEY_LAST_BACKUP, -1L).takeIf { it > 0L }
+
+    fun setLastBackupMs(timeMs: Long) {
+        require(timeMs > 0L) { "Время копии должно быть положительным: $timeMs" }
+        Store.prefs().edit().putLong(KEY_LAST_BACKUP, timeMs).apply()
+        Store.notifyChanged()
+    }
+
     /** Снимок для [BlockRules]. */
     fun blockSettings(): BlockSettings = BlockSettings(
         dailyLimitMin = dailyLimitMin,
@@ -73,4 +86,5 @@ object Settings {
     internal const val KEY_NIGHT_START = "settings_night_start_min"
     internal const val KEY_NIGHT_END = "settings_night_end_min"
     internal const val KEY_STEPS_REWARD = "settings_steps_reward_enabled"
+    internal const val KEY_LAST_BACKUP = "settings_last_backup_ms"
 }

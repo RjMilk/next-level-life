@@ -18,7 +18,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.nextlevellife.app.data.ExerciseRecord
@@ -35,7 +34,7 @@ internal fun RecordsCard(
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("Рекорды", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("Рекорды", style = MaterialTheme.typography.titleMedium)
 
             SectionLabel("Минотавр — лучшее время")
             minotaurBest.forEach { (weight, ms) ->
@@ -66,8 +65,8 @@ private fun RecordRow(label: String, value: String) {
             .heightIn(min = 36.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, modifier = Modifier.weight(1f))
-        Text(value, style = MaterialTheme.typography.bodyLarge.merge(Tabular), fontWeight = FontWeight.Bold)
+        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+        Text(value, style = MaterialTheme.typography.titleSmall.merge(Tabular))
     }
 }
 
@@ -94,7 +93,7 @@ private fun ExerciseRecordRow(r: ExerciseRecord, isOpen: Boolean, onClick: () ->
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(r.exerciseName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text(r.exerciseName, style = MaterialTheme.typography.titleSmall)
             Text(
                 bestText,
                 style = MaterialTheme.typography.bodySmall.merge(Tabular),
@@ -102,7 +101,7 @@ private fun ExerciseRecordRow(r: ExerciseRecord, isOpen: Boolean, onClick: () ->
             )
         }
         Column(horizontalAlignment = Alignment.End) {
-            Text("${r.totalReps}", style = MaterialTheme.typography.titleMedium.merge(Tabular), fontWeight = FontWeight.Bold)
+            Text("${r.totalReps}", style = MaterialTheme.typography.titleMedium.merge(Tabular))
             Text(
                 "$totalWord всего",
                 style = MaterialTheme.typography.bodySmall,
@@ -118,20 +117,25 @@ private fun ExerciseRecordRow(r: ExerciseRecord, isOpen: Boolean, onClick: () ->
     }
 }
 
-/** История упражнения за последние 30 тренировочных дней: «12 ноя — 2 подхода, 35 повт.». */
+/** История упражнения за последние 30 тренировочных дней: «12 ноя · 24 кг» слева, «2 подхода · 35 повт.» справа. */
 @Composable
 private fun ExerciseHistory(history: List<Pair<Long, ExerciseTotal>>?) {
-    Column(Modifier.padding(start = 8.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Column(
+        Modifier.padding(start = 8.dp, end = 28.dp, bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
         when {
-            history == null -> Text("…", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            history.isEmpty() -> Text("Записей нет", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            else -> history.forEach { (day, t) ->
-                val weight = t.weightKg?.let { " · $it кг" } ?: ""
-                Text(
-                    "${ProgressMath.shortDate(day)}$weight — ${t.sets} ${ProgressMath.setsWord(t.sets)}, ${t.reps} повт.",
-                    style = MaterialTheme.typography.bodyMedium.merge(Tabular),
-                )
-            }
+            history == null -> Text(
+                "…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            history.isEmpty() -> Text(
+                "Записей нет",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            else -> history.forEach { (day, t) -> StatRow(ProgressMath.historyCells(day, t)) }
         }
     }
 }

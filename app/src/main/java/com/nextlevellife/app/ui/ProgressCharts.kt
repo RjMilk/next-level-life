@@ -29,10 +29,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-
-/** Тёмный текст на акцентной заливке (как onPrimary в теме). */
-private val OnAccent = Color(0xFF1A1200)
 
 /** Столбики прошлых дней: нейтральные, чтобы сегодняшний выделялся. */
 private val BarColor = Color(0xFF4B5263)
@@ -57,7 +53,6 @@ internal fun CalendarCard(
                     modifier = Modifier.weight(1f),
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
                 )
                 ArrowButton("›", "Следующий месяц", enabled = ProgressMath.canGoNext(month, today)) {
                     onMonth(ProgressMath.nextMonth(month, today))
@@ -165,7 +160,7 @@ private fun ArrowButton(symbol: String, description: String, enabled: Boolean, o
     ) {
         Text(
             symbol,
-            fontSize = 28.sp,
+            style = MaterialTheme.typography.headlineMedium,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.25f),
         )
     }
@@ -186,10 +181,10 @@ internal fun ChartCard(
     val fractions = ProgressMath.barFractions(reps)
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Последние ${days.size} дней", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("Последние ${days.size} дней", style = MaterialTheme.typography.titleMedium)
             Text(
                 "За ${days.size} дней: $total ${ProgressMath.repsWord(total)}, +${ProgressMath.formatEarned(earnedMs)}",
-                style = MaterialTheme.typography.bodyMedium.merge(Tabular),
+                style = MaterialTheme.typography.bodySmall.merge(Tabular),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Row(

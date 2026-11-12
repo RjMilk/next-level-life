@@ -89,6 +89,13 @@ internal object ProgressMath {
         return "${d.dayOfMonth} ${monthsGenitive[d.monthValue - 1]}$year, ${weekdays[d.dayOfWeek.value - 1]}"
     }
 
+    /** «12 ноября»; год добавляется, только если он не текущий: «12 ноября 2025». */
+    fun dateLabel(day: Long, today: Long): String {
+        val d = LocalDate.ofEpochDay(day)
+        val year = if (d.year != LocalDate.ofEpochDay(today).year) " ${d.year}" else ""
+        return "${d.dayOfMonth} ${monthsGenitive[d.monthValue - 1]}$year"
+    }
+
     /** «12 ноя». */
     fun shortDate(day: Long): String {
         val d = LocalDate.ofEpochDay(day)
@@ -161,6 +168,82 @@ internal object ProgressMath {
 
     /** «12 кругов + 7 повт.». */
     fun cindyResult(rounds: Int, extra: Int): String = "$rounds ${roundsWord(rounds)} + $extra повт."
+
+    // ---------- Строки «название слева, показатели справа» ----------
+
+    /** Строка таблицы: [label] слева, [value] справа табличными цифрами. */
+    data class Cells(val label: String, val value: String)
+
+    /** «Отжимания» | «2 подхода · 35 повт.». */
+    fun totalCells(t: ExerciseTotal): Cells =
+        Cells(exerciseLabel(t.exerciseName, t.weightKg), "${t.sets} ${setsWord(t.sets)} · ${t.reps} повт.")
+
+    /** «21:00  Отжимания» | «15 повт. · +7,5 мин». */
+    fun setCells(s: SetEntry, zone: ZoneId = ZoneId.systemDefault()): Cells =
+        Cells(
+            "${clock(s.timeMs, zone)}  ${exerciseLabel(s.exerciseName, s.weightKg)}",
+            "${s.reps} повт. · +${formatEarned(s.earnedMs)}",
+        )
+
+    /** «Минотавр 16 кг» | «24:35»; незавершённый — «… · не завершён» в названии. */
+    fun complexCells(r: ComplexRun): Cells {
+        val (label, value) = when (r.complexId) {
+            Minotaur.ID -> exerciseLabel("Минотавр", r.weightKg) to formatDuration(r.durationMs)
+            Cindy.ID -> {
+                val rounds = r.rounds
+                "Синди" to (if (rounds != null) cindyResult(rounds, r.extraReps ?: 0) else "${r.totalReps} повт.")
+            }
+            else -> exerciseLabel("Комплекс", r.weightKg) to "${r.totalReps} повт."
+        }
+        return Cells(if (r.completed) label else "$label · не завершён", value)
+    }
+
+    /** История упражнения: «12 ноя · 24 кг» | «2 подхода · 35 повт.». */
+    fun historyCells(day: Long, t: ExerciseTotal): Cells =
+        Cells(
+            shortDate(day) + (t.weightKg?.let { " · $it кг" } ?: ""),
+            "${t.sets} ${setsWord(t.sets)} · ${t.reps} повт.",
+        )
+
+    // ---------- Карточка «Сегодня» на главной ----------
+
+    /** Сколько строк активности показывать на карточке «Сегодня». */
+    const val TODAY_MAX_LINES = 2
+
+    /**
+     * Активности дня одной строкой каждая: сначала комплексы («Минотавр 16 кг — 24:35»),
+     * затем отдельные подходы, свёрнутые по упражнению («Отжимания — 35 повт.»).
+     * Упражнения из комплексов отдельно не перечисляются — их покрывает строка комплекса.
+     */
+    fun todayActivities(digest: DayDigest): List<String> =
+        digest.runs.map { complexLine(it) } + DiaryMath.totals(digest.looseSets).map { totalRepsLine(it) }
+
+    /** Первые [max] строк и сколько осталось за ними. */
+    fun truncate(lines: List<String>, max: Int = TODAY_MAX_LINES): Pair<List<String>, Int> {
+        val shown = lines.take(max.coerceAtLeast(0))
+        return shown to (lines.size - shown.size)
+    }
+
+    /** «и ещё 3»; ничего не осталось — null. */
+    fun moreLine(rest: Int): String? = if (rest > 0) "и ещё $rest" else null
+
+    // ---------- Баланс на главной ----------
+
+    /**
+     * Баланс по частям для табло: цифры и единица отдельно.
+     * Как [com.nextlevellife.app.block.BlockerService.formatMinutes]: «2 ч 15 мин», «15 мин», «40 сек».
+     */
+    fun balanceParts(ms: Long): List<Pair<String, String>> {
+        val totalSec = ms.coerceAtLeast(0L) / 1000
+        val h = totalSec / 3600
+        val m = (totalSec % 3600) / 60
+        val s = totalSec % 60
+        return when {
+            h > 0 -> listOf("$h" to "ч", "$m" to "мин")
+            m > 0 -> listOf("$m" to "мин")
+            else -> listOf("$s" to "сек")
+        }
+    }
 
     // ---------- Итог дня ----------
 

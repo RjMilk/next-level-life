@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
@@ -28,7 +30,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import com.nextlevellife.app.block.AppEntry
@@ -48,12 +49,21 @@ fun AppsScreen(onBack: () -> Unit) {
         value = withContext(Dispatchers.Default) { InstalledApps.launchable(context) }
     }
 
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    val widthClass = currentWidthClass()
+    // Список не растягивается на весь развёрнутый Fold: колонка до 600 dp по центру.
+    Column(
+        Modifier
+            .fillMaxSize()
+            .wrapContentWidth(Alignment.CenterHorizontally)
+            .widthIn(max = ContentMaxWidth)
+            .fillMaxWidth()
+            .padding(widthClass.outerPadding),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "Блокируемые приложения",
                 style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f),
             )
             TextButton(onClick = onBack) { Text("Готово") }
@@ -100,7 +110,7 @@ private fun AppRow(app: AppEntry, blocked: Boolean, onToggle: (Boolean) -> Unit)
     ) {
         Image(icon, contentDescription = null, modifier = Modifier.size(40.dp))
         Column(Modifier.weight(1f)) {
-            Text(app.label)
+            Text(app.label, style = MaterialTheme.typography.bodyLarge)
             Text(
                 if (blocked) "Заблокировано" else "Доступно всегда",
                 style = MaterialTheme.typography.bodySmall,

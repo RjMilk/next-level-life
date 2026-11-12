@@ -4,10 +4,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -28,10 +30,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.nextlevellife.app.data.ComplexRun
 import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.ExerciseRecord
@@ -44,9 +44,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
-
-/** Табличные цифры: числа в столбик не прыгают по ширине. */
-internal val Tabular = TextStyle(fontFeatureSettings = "tnum")
 
 /** Сколько дней показывает диаграмма. */
 private const val CHART_DAYS = 14
@@ -123,61 +120,107 @@ fun ProgressScreen(modifier: Modifier = Modifier) {
         savedMonth = ProgressMath.monthIndexOfDay(day)
     }
 
-    Column(
-        modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Column(
-            Modifier
-                .widthIn(max = 600.dp)
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text("Прогресс", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+    val widthClass = currentWidthClass()
+    val pad = widthClass.outerPadding
+    // Прокрутки живут снаружи веток раскладки: при раскрытии Fold они не сбрасываются.
+    // mainScroll — колонка с карточкой дня: к ней прокручивает нажатие на столбик диаграммы.
+    val mainScroll = rememberScrollState()
+    val sideScroll = rememberScrollState()
 
-            val xp = overview?.xp ?: Store.xp()
-            LevelCard(xp, overview?.streak ?: Store.streak())
-
-            CalendarCard(
-                month = month,
-                today = today,
-                selected = selected,
-                trained = trained,
-                onMonth = { savedMonth = it },
-                onSelect = selectDay,
-            )
-
-            val o = overview
-            when {
-                o == null -> Unit // грузится: обычно доли секунды
-                !o.hasEntries -> EmptyDiaryCard()
-                else -> {
-                    DayCard(selected, today, dayData, Modifier.bringIntoViewRequester(dayRequester))
-                    ChartCard(
-                        days = o.chartDays,
-                        reps = o.chartReps,
-                        earnedMs = o.chartEarnedMs,
-                        today = today,
-                        selected = selected,
-                        onSelect = { day ->
-                            selectDay(day)
-                            scope.launch { dayRequester.bringIntoView() }
-                        },
-                    )
-                    RecordsCard(
-                        minotaurBest = o.minotaurBest,
-                        cindyBest = o.cindyBest,
-                        records = o.records,
-                        expanded = expanded,
-                        history = history?.takeIf { it.first == expanded }?.second,
-                        onToggle = { id -> expanded = if (expanded == id) null else id },
-                    )
-                }
+    val header: @Composable () -> Unit = {
+        Text("Прогресс", style = MaterialTheme.typography.headlineMedium)
+    }
+    val levelAndCalendar: @Composable () -> Unit = {
+        val xp = overview?.xp ?: Store.xp()
+        LevelCard(xp, overview?.streak ?: Store.streak())
+        CalendarCard(
+            month = month,
+            today = today,
+            selected = selected,
+            trained = trained,
+            onMonth = { savedMonth = it },
+            onSelect = selectDay,
+        )
+    }
+    val details: @Composable () -> Unit = {
+        val o = overview
+        when {
+            o == null -> Unit // грузится: обычно доли секунды
+            !o.hasEntries -> EmptyDiaryCard()
+            else -> {
+                DayCard(selected, today, dayData, Modifier.bringIntoViewRequester(dayRequester))
+                ChartCard(
+                    days = o.chartDays,
+                    reps = o.chartReps,
+                    earnedMs = o.chartEarnedMs,
+                    today = today,
+                    selected = selected,
+                    onSelect = { day ->
+                        selectDay(day)
+                        scope.launch { dayRequester.bringIntoView() }
+                    },
+                )
+                RecordsCard(
+                    minotaurBest = o.minotaurBest,
+                    cindyBest = o.cindyBest,
+                    records = o.records,
+                    expanded = expanded,
+                    history = history?.takeIf { it.first == expanded }?.second,
+                    onToggle = { id -> expanded = if (expanded == id) null else id },
+                )
             }
-            Spacer(Modifier.height(8.dp))
+        }
+    }
+
+    if (widthClass == WidthClass.EXPANDED) {
+        // Слева 320 dp — уровень и календарь, справа — день, диаграмма и рекорды; колонки прокручиваются независимо.
+        Row(
+            modifier
+                .fillMaxSize()
+                .padding(horizontal = pad),
+            horizontalArrangement = Arrangement.spacedBy(widthClass.gutter),
+        ) {
+            Column(
+                Modifier
+                    .width(ProgressSideWidth)
+                    .fillMaxHeight()
+                    .verticalScroll(sideScroll)
+                    .padding(vertical = pad),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                header()
+                levelAndCalendar()
+            }
+            Column(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .verticalScroll(mainScroll)
+                    .padding(vertical = pad),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                details()
+            }
+        }
+    } else {
+        Column(
+            modifier
+                .fillMaxSize()
+                .verticalScroll(mainScroll),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Column(
+                Modifier
+                    .widthIn(max = ContentMaxWidth)
+                    .fillMaxWidth()
+                    .padding(pad),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                header()
+                levelAndCalendar()
+                details()
+                Spacer(Modifier.height(8.dp))
+            }
         }
     }
 }
@@ -213,12 +256,20 @@ private fun LevelCard(xp: Long, streak: Int) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Уровень $level", fontSize = 28.sp, fontWeight = FontWeight.Black, color = Accent)
-                    Text(Store.titleFor(level), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Уровень $level", style = MaterialTheme.typography.headlineMedium, color = Accent)
+                    Text(
+                        Store.titleFor(level),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                Text(ProgressMath.streakLabel(streak), style = MaterialTheme.typography.titleMedium)
+                Text(ProgressMath.streakLabel(streak), style = MaterialTheme.typography.titleSmall.merge(Tabular))
             }
-            LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth(),
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+            )
             Text(
                 "До следующего уровня $left опыта",
                 style = MaterialTheme.typography.bodySmall.merge(Tabular),
@@ -243,44 +294,32 @@ private fun EmptyDiaryCard() {
 private fun DayCard(selected: Long, today: Long, data: DayData?, modifier: Modifier = Modifier) {
     Card(modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                ProgressMath.dayTitle(selected, today),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-            )
+            Text(ProgressMath.dayTitle(selected, today), style = MaterialTheme.typography.titleMedium)
             val digest = data?.takeIf { it.day == selected }?.digest ?: return@Column
             if (digest.isEmpty) {
-                Text("В этот день тренировок не было", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "В этот день тренировок не было",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 return@Column
             }
             Text(
                 ProgressMath.summaryLine(digest.sets, digest.reps, digest.earnedMs),
                 style = MaterialTheme.typography.titleSmall.merge(Tabular),
-                fontWeight = FontWeight.Bold,
                 color = Accent,
             )
             if (digest.runs.isNotEmpty()) {
                 SectionLabel("Комплексы")
-                digest.runs.forEach { r ->
-                    Text(
-                        ProgressMath.complexLine(r),
-                        style = MaterialTheme.typography.bodyMedium.merge(Tabular),
-                        color = if (r.completed) MaterialTheme.colorScheme.onSurface
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                digest.runs.forEach { r -> StatRow(ProgressMath.complexCells(r), dim = !r.completed) }
             }
             if (digest.totals.isNotEmpty()) {
                 SectionLabel("По упражнениям")
-                digest.totals.forEach { t ->
-                    Text(ProgressMath.totalLine(t), style = MaterialTheme.typography.bodyMedium.merge(Tabular))
-                }
+                digest.totals.forEach { t -> StatRow(ProgressMath.totalCells(t)) }
             }
             if (digest.looseSets.isNotEmpty()) {
                 SectionLabel("Подходы")
-                digest.looseSets.forEach { s ->
-                    Text(ProgressMath.setLine(s), style = MaterialTheme.typography.bodyMedium.merge(Tabular))
-                }
+                digest.looseSets.forEach { s -> StatRow(ProgressMath.setCells(s)) }
             }
         }
     }
@@ -294,4 +333,31 @@ internal fun SectionLabel(text: String) {
         style = MaterialTheme.typography.labelLarge,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+}
+
+/**
+ * Строка таблицы: название слева (переносится, если длинное), показатели справа табличными
+ * цифрами — столбец чисел не прыгает. [dim] — приглушить (незавершённый комплекс).
+ */
+@Composable
+internal fun StatRow(cells: ProgressMath.Cells, dim: Boolean = false) {
+    val color = if (dim) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            cells.label,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium.merge(Tabular),
+            color = color,
+        )
+        Text(
+            cells.value,
+            style = MaterialTheme.typography.bodyMedium.merge(Tabular),
+            color = color,
+            textAlign = TextAlign.End,
+            maxLines = 1,
+        )
+    }
 }
