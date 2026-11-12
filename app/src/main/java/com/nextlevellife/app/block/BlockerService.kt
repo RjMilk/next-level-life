@@ -8,18 +8,26 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
-import android.provider.Settings
+import android.provider.Settings as SystemSettings
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
+import com.nextlevellife.app.data.Ledger
+import com.nextlevellife.app.data.LedgerMath
+import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.ui.BlockActivity
+import java.time.LocalTime
+import java.util.UUID
 
 /**
  * Следит за тем, какое приложение на переднем плане.
- * Заблокированное приложение открывается, только пока есть баланс; время списывается
- * по монотонным часам (SystemClock), поэтому перевод системных часов ничего не даёт.
- * Пока экран выключен, время не списывается.
+ * Заблокированное приложение открывается, только пока это разрешают правила ([BlockRules]):
+ * не ночь, дневной лимит не исчерпан и есть баланс. Правила проверяются при открытии и на каждом тике,
+ * поэтому ночь наступает и лимит кончается и внутри уже открытого приложения.
+ * Время списывается по монотонным часам (SystemClock), поэтому перевод системных часов ничего не даёт;
+ * пока экран выключен, время не списывается. Каждый тик пишется в журнал ([Ledger.spend]).
  */
 class BlockerService : AccessibilityService() {
 
@@ -27,17 +35,18 @@ class BlockerService : AccessibilityService() {
     private var currentPkg: String? = null
     private var spending = false
     private var lastTickAt = 0L
+    /** Сессия списания: одна на непрерывный просмотр одного заблокированного приложения. */
+    private var sessionId: String? = null
+    private var sessionPkg: String? = null
     private val ignored = mutableSetOf<String>()
 
     private val tick = object : Runnable {
         override fun run() {
             settle()
             val pkg = currentPkg
-            if (spending && pkg != null && Store.balanceMs() <= 0L) {
-                block(pkg)
-            } else if (spending) {
-                handler.postDelayed(this, TICK_MS)
-            }
+            if (!spending || pkg == null) return
+            val decision = decide()
+            if (decision.reason != null) block(pkg, decision.reason) else handler.postDelayed(this, TICK_MS)
         }
     }
 
@@ -71,46 +80,72 @@ class BlockerService : AccessibilityService() {
             stopSpending()
             return
         }
-        val balance = Store.balanceMs()
-        if (balance <= 0L) {
-            block(pkg)
+        val decision = decide()
+        if (decision.reason != null) {
+            block(pkg, decision.reason)
             return
         }
         if (!wasBlocked) {
-            Toast.makeText(this, "Осталось ${formatMinutes(balance)}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Осталось ${formatMinutes(decision.availableMs)}", Toast.LENGTH_SHORT).show()
         }
-        startSpending()
+        startSpending(pkg)
     }
 
-    private fun startSpending() {
-        if (spending) return
+    /** Правила на текущий момент: локальное время, баланс, расход за локальные сутки, настройки. */
+    private fun decide(): BlockDecision {
+        val spentToday = try {
+            Ledger.spentMs(LedgerMath.accountingDay(System.currentTimeMillis()))
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось прочитать расход за сегодня", e)
+            0L
+        }
+        return BlockRules.evaluate(LocalTime.now(), Store.balanceMs(), spentToday, Settings.blockSettings())
+    }
+
+    private fun startSpending(pkg: String) {
+        // Переход из одного заблокированного приложения в другое — новая сессия: строки расхода не смешиваются.
+        if (spending && sessionPkg == pkg) return
+        handler.removeCallbacks(tick)
         spending = true
+        sessionId = UUID.randomUUID().toString()
+        sessionPkg = pkg
         lastTickAt = SystemClock.elapsedRealtime()
         handler.postDelayed(tick, TICK_MS)
     }
 
     private fun stopSpending() {
         spending = false
+        sessionId = null
+        sessionPkg = null
         handler.removeCallbacks(tick)
     }
 
-    /** Списывает время, прошедшее с прошлой проверки. */
+    /** Списывает время, прошедшее с прошлой проверки, но не больше, чем сейчас разрешают правила. */
     private fun settle() {
         if (!spending) return
         val now = SystemClock.elapsedRealtime()
         val elapsed = now - lastTickAt
         lastTickAt = now
         val screenOn = getSystemService(PowerManager::class.java)?.isInteractive != false
-        if (screenOn && elapsed > 0) Store.spend(elapsed)
+        if (!screenOn || elapsed <= 0) return
+        val sid = sessionId ?: return
+        val pkg = sessionPkg ?: return
+        try {
+            val charge = minOf(elapsed, decide().availableMs)
+            if (charge > 0) Ledger.spend(sid, pkg, charge)
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось списать время", e)
+        }
     }
 
-    private fun block(pkg: String) {
+    private fun block(pkg: String, reason: BlockReason) {
         stopSpending()
         // Экран блокировки открывается прямо поверх приложения. Нажимать «Домой» нельзя:
         // рабочий стол появляется после него и перекрывает экран блокировки.
         startActivity(
             Intent(this, BlockActivity::class.java)
                 .putExtra(BlockActivity.EXTRA_PACKAGE, pkg)
+                .putExtra(BlockActivity.EXTRA_REASON, reason.name)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         )
     }
@@ -118,18 +153,20 @@ class BlockerService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
+        settle()
         stopSpending()
         super.onDestroy()
     }
 
     companion object {
+        private const val TAG = "BlockerService"
         private const val TICK_MS = 2_000L
 
         fun isEnabled(context: Context): Boolean {
             val expected = ComponentName(context, BlockerService::class.java).flattenToString()
-            val enabled = Settings.Secure.getString(
+            val enabled = SystemSettings.Secure.getString(
                 context.contentResolver,
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+                SystemSettings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
             ) ?: return false
             return enabled.split(':').any { it.equals(expected, ignoreCase = true) }
         }

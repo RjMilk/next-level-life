@@ -17,6 +17,8 @@ android {
         // Оба телефона (S25, Z Fold 8) — arm64; остальные архитектуры только раздувают APK на ~75 МБ.
         ndk {
             abiFilters += "arm64-v8a"
+            // Сборка для эмулятора на ПК: gradle -Pemu … добавляет x86_64. В обычную сборку не попадает.
+            if (project.hasProperty("emu")) abiFilters += "x86_64"
         }
     }
 

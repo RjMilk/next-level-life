@@ -45,19 +45,78 @@ data class NewSet(
 )
 
 /**
- * Дневник тренировок в SQLite (diary.db). Хранится бессрочно.
- * Писать сюда стоит только через [Workouts], чтобы дневник и баланс не расходились.
+ * Дневник тренировок и журнал баланса в SQLite (diary.db). Хранится бессрочно.
+ * Писать сюда стоит только через [Workouts] и [Ledger], чтобы дневник и баланс не расходились.
+ *
+ * Все обращения к базе идут под одной блокировкой — монитором этого объекта ([Ledger] берёт её же).
  */
 object Diary {
     private var helper: Helper? = null
+    private var appContext: Context? = null
 
     @Synchronized
     fun init(context: Context) {
+        if (appContext == null) appContext = context.applicationContext
         if (helper == null) helper = Helper(context.applicationContext)
     }
 
-    private fun db(): SQLiteDatabase =
+    @Synchronized
+    internal fun db(): SQLiteDatabase =
         (helper ?: throw IllegalStateException("Diary.init не вызван")).writableDatabase
+
+    /**
+     * Транзакция записи. Вложенные вызовы становятся вложенными транзакциями SQLite:
+     * если упадёт любая из них, откатится всё. Исключения внутри [block] глотать нельзя —
+     * иначе внешняя транзакция молча откатится, а вызывающий решит, что всё записано.
+     * После конца внешней транзакции (успешной или нет) кеш баланса перечитывается из базы.
+     */
+    @Synchronized
+    internal fun <T> write(block: (SQLiteDatabase) -> T): T {
+        val db = db()
+        db.beginTransaction()
+        try {
+            val result = block(db)
+            db.setTransactionSuccessful()
+            return result
+        } finally {
+            db.endTransaction()
+            if (!db.inTransaction()) Ledger.reloadCacheQuietly()
+        }
+    }
+
+    // ---------- Служебные значения (meta) ----------
+
+    @Synchronized
+    internal fun metaGet(key: String): String? =
+        query("SELECT value FROM meta WHERE key = ?", key) { it.getString(0) }.firstOrNull()
+
+    @Synchronized
+    internal fun metaPut(key: String, value: String) {
+        val values = ContentValues().apply {
+            put("key", key)
+            put("value", value)
+        }
+        db().insertWithOnConflict("meta", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    // ---------- Файл базы (для резервной копии) ----------
+
+    internal fun dbFile(context: Context): java.io.File = context.applicationContext.getDatabasePath(NAME)
+
+    /** Закрывает базу; следующий доступ — только после [reopen]. Вызывать под блокировкой Diary. */
+    @Synchronized
+    internal fun close() {
+        helper?.close()
+        helper = null
+    }
+
+    /** Открывает базу заново (после подмены файла) и сразу применяет миграции. */
+    @Synchronized
+    internal fun reopen() {
+        val ctx = appContext ?: throw IllegalStateException("Diary.init не вызван")
+        if (helper == null) helper = Helper(ctx)
+        db()
+    }
 
     // ---------- Чтение ----------
 
@@ -178,16 +237,24 @@ object Diary {
         timeMs: Long, complexId: String, weightKg: Int?, durationMs: Long,
         rounds: Int?, extraReps: Int?, totalReps: Int, earnedMs: Long, xp: Long,
         completed: Boolean, sets: List<NewSet>,
-    ): Long {
-        val db = db()
-        db.beginTransaction()
-        try {
-            val id = insertRun(db, timeMs, complexId, weightKg, durationMs, rounds, extraReps, totalReps, earnedMs, xp, completed, sets)
-            db.setTransactionSuccessful()
-            return id
-        } finally {
-            db.endTransaction()
-        }
+    ): Long = write { db ->
+        insertRun(db, timeMs, complexId, weightKg, durationMs, rounds, extraReps, totalReps, earnedMs, xp, completed, sets)
+    }
+
+    /**
+     * Переносит записи старой JSON-истории Store, которых в дневнике ещё нет (новее отметки
+     * [KEY_LEGACY_UNTIL] в meta). Импорт и новая отметка пишутся одной транзакцией.
+     * [prefsUntil] — отметка из SharedPreferences, где она жила до 0.3; используется, если в meta её ещё нет.
+     * Возвращает число перенесённых записей.
+     */
+    @Synchronized
+    internal fun syncLegacy(entries: List<Store.HistoryEntry>, prefsUntil: Long?): Int = write {
+        val until = metaGet(KEY_LEGACY_UNTIL)?.toLongOrNull() ?: prefsUntil ?: Long.MIN_VALUE
+        val fresh = entries.filter { it.timeMs > until }
+        val count = importLegacy(fresh)
+        val newUntil = maxOf(until, fresh.maxOfOrNull { it.timeMs } ?: Long.MIN_VALUE)
+        if (metaGet(KEY_LEGACY_UNTIL) != newUntil.toString()) metaPut(KEY_LEGACY_UNTIL, newUntil.toString())
+        count
     }
 
     /**
@@ -195,35 +262,28 @@ object Diary {
      * упражнение по ним не восстановить. Возвращает число перенесённых записей.
      */
     @Synchronized
-    internal fun importLegacy(entries: List<Store.HistoryEntry>): Int {
-        val db = db()
+    private fun importLegacy(entries: List<Store.HistoryEntry>): Int = write { db ->
         var count = 0
-        db.beginTransaction()
-        try {
-            for (e in entries.sortedBy { it.timeMs }) {
-                when (val item = DiaryMath.parseLegacy(e.title)) {
-                    is DiaryMath.LegacySet -> {
-                        val set = NewSet(
-                            item.exercise.id, item.exercise.name, item.weightKg,
-                            item.reps, 0L, e.earnedMs, e.xp,
-                        )
-                        insertSet(db, e.timeMs, DiaryMath.dayOf(e.timeMs), set, runId = null)
-                    }
-                    is DiaryMath.LegacyMinotaur -> insertRun(
-                        db, e.timeMs, Minotaur.ID, item.weightKg, item.durationMs,
-                        rounds = null, extraReps = null, totalReps = Minotaur.totalReps,
-                        earnedMs = e.earnedMs, xp = e.xp, completed = true,
-                        sets = WorkoutMath.minotaurSets(item.weightKg, e.earnedMs, e.xp),
+        for (e in entries.sortedBy { it.timeMs }) {
+            when (val item = DiaryMath.parseLegacy(e.title)) {
+                is DiaryMath.LegacySet -> {
+                    val set = NewSet(
+                        item.exercise.id, item.exercise.name, item.weightKg,
+                        item.reps, 0L, e.earnedMs, e.xp,
                     )
-                    null -> continue
+                    insertSet(db, e.timeMs, DiaryMath.dayOf(e.timeMs), set, runId = null)
                 }
-                count++
+                is DiaryMath.LegacyMinotaur -> insertRun(
+                    db, e.timeMs, Minotaur.ID, item.weightKg, item.durationMs,
+                    rounds = null, extraReps = null, totalReps = Minotaur.totalReps,
+                    earnedMs = e.earnedMs, xp = e.xp, completed = true,
+                    sets = WorkoutMath.minotaurSets(item.weightKg, e.earnedMs, e.xp),
+                )
+                null -> continue
             }
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
+            count++
         }
-        return count
+        count
     }
 
     private fun insertRun(
@@ -266,7 +326,7 @@ object Diary {
         return db.insertOrThrow("sets", null, values)
     }
 
-    private inline fun <T> query(sql: String, vararg args: String, read: (Cursor) -> T): List<T> =
+    internal inline fun <T> query(sql: String, vararg args: String, read: (Cursor) -> T): List<T> =
         db().rawQuery(sql, args).use { c ->
             val out = ArrayList<T>(c.count)
             while (c.moveToNext()) out.add(read(c))
@@ -310,7 +370,13 @@ object Diary {
         }
     }
 
-    private const val NAME = "diary.db"
+    internal const val NAME = "diary.db"
+
+    /** Отметка переноса старой JSON-истории (время последней перенесённой записи). */
+    internal const val KEY_LEGACY_UNTIL = "diary_legacy_until"
+
+    /** Текущая версия схемы. */
+    internal val SCHEMA_VERSION: Int get() = MIGRATIONS.size
 
     /**
      * Шаги схемы: MIGRATIONS[i] переводит базу с версии i на i + 1.
@@ -351,6 +417,37 @@ object Diary {
             "CREATE INDEX idx_sets_day ON sets(day)",
             "CREATE INDEX idx_sets_exercise ON sets(exercise_id, day)",
             "CREATE INDEX idx_sets_run ON sets(run_id)",
+        ),
+        // 1 → 2: журнал операций баланса, итог счёта и служебные значения (версия 0.3).
+        listOf(
+            """CREATE TABLE balance_ops (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT NOT NULL UNIQUE,
+                device_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL,
+                delta_ms INTEGER NOT NULL,
+                delta_xp INTEGER NOT NULL DEFAULT 0,
+                occurred_at_ms INTEGER NOT NULL,
+                recorded_at_ms INTEGER NOT NULL,
+                accounting_day INTEGER NOT NULL,
+                zone_id TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                rule_version INTEGER NOT NULL,
+                reverses_id TEXT,
+                metadata_json TEXT NOT NULL
+            )""",
+            "CREATE INDEX idx_ops_day_kind ON balance_ops(accounting_day, kind)",
+            "CREATE INDEX idx_ops_kind_day ON balance_ops(kind, accounting_day)",
+            """CREATE TABLE account (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                balance_ms INTEGER NOT NULL,
+                xp INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            )""",
+            "INSERT INTO account (id, balance_ms, xp, updated_at_ms) VALUES (1, 0, 0, 0)",
+            "CREATE TABLE meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)",
         ),
     )
 }

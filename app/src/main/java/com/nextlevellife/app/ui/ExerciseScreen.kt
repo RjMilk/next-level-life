@@ -47,6 +47,7 @@ import com.nextlevellife.app.data.Weights
 import com.nextlevellife.app.data.Workouts
 import com.nextlevellife.app.pose.rememberRepSound
 import kotlinx.coroutines.delay
+import java.util.UUID
 
 private val Tnum = TextStyle(fontFeatureSettings = "tnum")
 
@@ -69,6 +70,9 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
     var recordedElapsedMs by rememberSaveable { mutableLongStateOf(0L) }
     var recordedEarnedMs by rememberSaveable { mutableLongStateOf(0L) }
     var recordedXp by rememberSaveable { mutableLongStateOf(0L) }
+    var recordedSaved by rememberSaveable { mutableStateOf(true) }
+    // Один подход — один идентификатор: повторный вызов записи с ним ничего не начислит второй раз.
+    val sessionId = rememberSaveable { UUID.randomUUID().toString() }
 
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     LaunchedEffect(Unit) {
@@ -82,12 +86,13 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
     fun finish() {
         if (recorded || count <= 0) return
         val duration = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
-        val result = Workouts.recordSet(ex, weight, count, duration)
+        val result = Workouts.recordSet(ex, weight, count, duration, sessionId)
         recorded = true
         recordedCount = count
         recordedElapsedMs = duration
         recordedEarnedMs = result.earnedMs
         recordedXp = result.xp
+        recordedSaved = result.saved
         showExit = false
         haptics.strong()
         sound.done()
@@ -193,10 +198,11 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
         AlertDialog(
             onDismissRequest = onDone,
             confirmButton = { TextButton(onClick = onDone) { Text("Отлично") } },
-            title = { Text("Тренировка записана") },
+            title = { Text(if (recordedSaved) "Тренировка записана" else "Не удалось записать") },
             text = {
                 Text(
-                    "${repsText(recordedCount)}: +${formatShort(recordedEarnedMs)}, +$recordedXp опыта",
+                    if (recordedSaved) "${repsText(recordedCount)}: +${formatShort(recordedEarnedMs)}, +$recordedXp опыта"
+                    else "Подход не сохранился, время не начислено.",
                     style = MaterialTheme.typography.bodyLarge.merge(Tnum),
                 )
             },

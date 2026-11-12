@@ -22,13 +22,16 @@ import com.nextlevellife.app.data.Cindy
 import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.data.Minotaur
+import com.nextlevellife.app.data.SetInput
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.Weights
+import com.nextlevellife.app.data.WorkoutResult
 import com.nextlevellife.app.data.Workouts
 import com.nextlevellife.app.pose.rememberRepSound
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 private const val TAG = "ComplexScreen"
 
@@ -133,6 +136,8 @@ internal class ComplexRunState(val kind: ComplexKind) {
 fun ComplexScreen(complexId: String, onDone: () -> Unit) {
     val kind = if (complexId == Cindy.ID) ComplexKind.CINDY else ComplexKind.MINOTAUR
     val s = rememberSaveable(kind, saver = ComplexRunState.saver(kind)) { ComplexRunState(kind) }
+    // Одно прохождение — один идентификатор записи: повторный вызов ничего не начислит второй раз.
+    val sessionId = rememberSaveable(kind) { UUID.randomUUID().toString() }
     val haptics = rememberHaptics()
     val sound = rememberRepSound()
     val scope = rememberCoroutineScope()
@@ -166,28 +171,21 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
         announce(title, ANNOUNCE_DELAY_MS, interrupt = false)
     }
 
-    /** Незавершённый комплекс: каждое упражнение пишется обычным подходом по обычной цене. */
+    /** Незавершённый комплекс: все упражнения — обычными подходами по обычной цене, одной записью. */
     fun finishIncomplete(note: String? = null) {
         val weight = if (kind == ComplexKind.MINOTAUR) s.weight else Weights.DEFAULT
-        var earned = 0L
-        var xp = 0L
-        var total = 0
-        var failed = 0
-        kind.exercises.forEachIndexed { i, ex ->
-            val n = s.repsByEx[i]
-            if (n > 0) {
-                // Сбой одного подхода не должен отменять запись остальных.
-                try {
-                    val r = Workouts.recordSet(ex, weight, n, 0L)
-                    earned += r.earnedMs
-                    xp += r.xp
-                    total += n
-                } catch (e: Exception) {
-                    Log.e(TAG, "Не удалось записать подход ${ex.id}", e)
-                    failed += n
-                }
-            }
+        val inputs = kind.exercises.mapIndexed { i, ex -> SetInput(ex, weight, s.repsByEx[i]) }
+        val counted = inputs.sumOf { it.reps.coerceAtLeast(0) }
+        val r = try {
+            Workouts.recordSets(inputs, sessionId)
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось записать подходы комплекса", e)
+            WorkoutResult(0L, 0L, saved = false)
         }
+        val earned = r.earnedMs
+        val xp = r.xp
+        val total = if (r.saved) counted else 0
+        val failed = if (r.saved) 0 else counted
         if (total == 0 && failed == 0) {
             done()
             return
@@ -218,7 +216,11 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
             finishIncomplete()
             return
         }
-        val r = Workouts.recordMinotaur(s.weight, elapsed)
+        val r = Workouts.recordMinotaur(s.weight, elapsed, sessionId)
+        if (!r.saved) {
+            showResult("Не удалось записать", "Комплекс не сохранился, время не начислено.")
+            return
+        }
         if (r.earnedMs == 0L) {
             finishIncomplete("Быстрее ${formatDuration(Minotaur.MIN_DURATION_MS)} комплекс целиком не засчитывается.")
             return
@@ -241,9 +243,13 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
         // чтобы rounds * repsPerRound + extra совпадало с оплаченными повторениями.
         val rounds = s.fullRounds
         val extra = (s.totalCounted - rounds * Cindy.repsPerRound).coerceAtLeast(0)
-        val r = Workouts.recordCindy(reps, rounds, extra, Cindy.DURATION_MS)
+        val r = Workouts.recordCindy(reps, rounds, extra, Cindy.DURATION_MS, sessionId)
         if (r.earnedMs == 0L && s.totalCounted == 0) {
             done()
+            return
+        }
+        if (!r.saved) {
+            showResult("Не удалось записать", "Синди не сохранилась, время не начислено.")
             return
         }
         val title = if (r.isRecord) "Новый рекорд!" else "Синди завершена"

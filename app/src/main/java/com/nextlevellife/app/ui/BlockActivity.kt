@@ -25,11 +25,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nextlevellife.app.block.BlockReason
+import com.nextlevellife.app.block.BlockRules
 import com.nextlevellife.app.data.Exercises
+import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.Weights
 
-/** Показывается поверх заблокированного приложения, когда баланс на нуле. */
+/** Показывается поверх заблокированного приложения: баланс на нуле, дневной лимит исчерпан или ночной режим. */
 class BlockActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -46,6 +49,20 @@ class BlockActivity : ComponentActivity() {
         val label = runCatching {
             packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
         }.getOrDefault("Это приложение")
+        val reason = intent.getStringExtra(EXTRA_REASON)
+            ?.let { runCatching { BlockReason.valueOf(it) }.getOrNull() }
+            ?: BlockReason.BALANCE
+        val message = when (reason) {
+            BlockReason.NIGHT ->
+                "Ночной режим до ${BlockRules.formatClock(Settings.nightEndMin)}. " +
+                    "Заблокированные приложения откроются утром."
+            BlockReason.LIMIT ->
+                "Дневной лимит ${Settings.dailyLimitMin} минут исчерпан. " +
+                    "Баланс ${formatShort(Store.balanceMs())} сохранён и будет доступен завтра."
+            BlockReason.BALANCE ->
+                "Экранное время закончилось. Сделай упражнения, чтобы заработать минуты: " +
+                    "10 отжиманий = ${formatShort(Exercises.rewardMs(Exercises.pushups, 10, Weights.DEFAULT))}."
+        }
 
         setContent {
             NextLevelTheme {
@@ -67,8 +84,7 @@ class BlockActivity : ComponentActivity() {
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "Экранное время закончилось. Сделай упражнения, чтобы заработать минуты: " +
-                                "10 отжиманий = ${formatShort(Exercises.rewardMs(Exercises.pushups, 10, Weights.DEFAULT))}.",
+                            message,
                             textAlign = TextAlign.Center,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -106,5 +122,7 @@ class BlockActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_PACKAGE = "pkg"
+        /** Имя [BlockReason]; нет или не распознано — считается BALANCE. */
+        const val EXTRA_REASON = "reason"
     }
 }
