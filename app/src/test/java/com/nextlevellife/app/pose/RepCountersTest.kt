@@ -337,4 +337,32 @@ class RepCountersTest {
         val states = counter(spec.id).feed(tl.frames)
         assertTrue(states.drop(5).all { it.hint.isEmpty() })
     }
+
+    @Test
+    fun deepRepsGiveNoFinishHint() {
+        // Глубокое повторение: порог пройден задолго до нижней точки (локоть ~50°, как на записи с телефона).
+        // Продолжение вниз после порога — не «недожал», подсказки быть не должно.
+        val top = Key(75f, 255f, 255f, 180f, 180f)
+        val deep = Key(85f, 265f, 265f, 280f, 150f)
+        val tl = Timeline().hold(top, 1000)
+        repeat(5) { tl.move(top, deep, 900).move(deep, top, 900) }
+        tl.hold(top, 1000)
+        val states = counter("pushups").feed(tl.frames)
+        assertEquals(5, states.last().count)
+        assertTrue("ложная подсказка: ${states.map { it.hint }.toSet()}", states.none { it.hint == "До конца" })
+    }
+
+    @Test
+    fun risingHalfwayThenGoingBackDownGivesFinishHint() {
+        // Поднялся наполовину и снова пошёл вниз, не выпрямив руки, — подсказка «До конца» нужна.
+        val top = Key(75f, 255f, 255f, 180f, 180f)
+        val deep = Key(85f, 265f, 265f, 280f, 150f)
+        val half = top.lerp(deep, 0.45f)
+        val tl = Timeline().hold(top, 1000)
+            .move(top, deep, 900).move(deep, half, 700).move(half, deep, 700).move(deep, top, 900)
+            .hold(top, 1000)
+        val states = counter("pushups").feed(tl.frames)
+        assertEquals(1, states.last().count)
+        assertTrue("нет подсказки: ${states.map { it.hint }.toSet()}", states.any { it.hint == "До конца" })
+    }
 }

@@ -169,6 +169,8 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
     private var depthAt = 0L
     private var peakDepth = 0f
     private var troughDepth = 1f
+    /** Самая глубокая точка текущего повторения после прохождения порога. */
+    private var returnPeak = 0f
     private var moveHint = ""
 
     private fun initialPhase() = if (cfg.rest != null) Phase.NEED_START else Phase.WAIT_FAR
@@ -241,6 +243,7 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
                     cycleStartMs = moveStartMs ?: phaseSince
                     enterPhase(Phase.WAIT_RETURN, t)
                     troughDepth = depth
+                    returnPeak = depth
                 } else {
                     peakDepth = max(peakDepth, depth)
                     if (peakDepth >= EngineTuning.HINT_MIN_PEAK &&
@@ -253,13 +256,19 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
             }
 
             Phase.WAIT_RETURN -> {
-                troughDepth = min(troughDepth, depth)
+                if (depth > returnPeak) {
+                    // Человек всё ещё опускается: порог пройден раньше нижней точки, это не возврат.
+                    returnPeak = depth
+                    troughDepth = depth
+                } else {
+                    troughDepth = min(troughDepth, depth)
+                }
                 if (finishLatch.all(t, phaseSince)) {
                     // Слишком короткий цикл — шум: не засчитываем и ждём новое повторение.
                     if (t - cycleStartMs >= cfg.minRepMs) count++
                     enterPhase(Phase.WAIT_FAR, t)
                     lastRestMs = t
-                } else if (troughDepth <= 1f - EngineTuning.HINT_TURN_BACK &&
+                } else if (troughDepth <= returnPeak - EngineTuning.HINT_TURN_BACK &&
                     depth >= troughDepth + EngineTuning.HINT_TURN_BACK
                 ) {
                     moveHint = cfg.finishHint
@@ -359,6 +368,7 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         moveStartMs = null
         peakDepth = 0f
         troughDepth = 1f
+        returnPeak = 0f
         moveHint = ""
         depthEma = Float.NaN
     }

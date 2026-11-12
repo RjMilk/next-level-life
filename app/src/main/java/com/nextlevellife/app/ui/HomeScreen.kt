@@ -26,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import com.nextlevellife.app.block.BlockerService
 import com.nextlevellife.app.block.InstalledApps
 import com.nextlevellife.app.data.Cindy
+import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.Minotaur
@@ -44,9 +46,10 @@ import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.Weights
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.time.LocalDate
+
+/** Итог дня с прошлого показа: при возврате на главную карточка «Сегодня» не мигает. */
+private var cachedToday: Pair<Long, ProgressMath.DayDigest>? = null
 
 @SuppressLint("BatteryLife")
 @Composable
@@ -55,6 +58,7 @@ fun HomeScreen(
     onExercise: (String) -> Unit,
     onComplex: (String) -> Unit,
     onApps: () -> Unit,
+    onProgress: () -> Unit,
 ) {
     val context = LocalContext.current
     val version by Store.version.collectAsState()
@@ -78,7 +82,13 @@ fun HomeScreen(
     val xp = remember(version) { Store.xp() }
     val streak = remember(version) { Store.streak() }
     val blockedCount = remember(version) { Store.blockedPackages().size }
-    val history = remember(version) { Store.history().take(5) }
+    // Итог дня из дневника: читается в фоне, обновляется после каждого записанного подхода.
+    val today = LocalDate.now().toEpochDay()
+    val todayDigest by produceState(cachedToday?.takeIf { it.first == today }?.second, version, today) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { ProgressMath.digestDay(Diary.setsForDay(today), Diary.runsForDay(today)) }.getOrNull()
+        }?.also { cachedToday = today to it }
+    }
 
     Column(
         Modifier
@@ -128,6 +138,8 @@ fun HomeScreen(
                 )
             }
         }
+
+        TodayCard(todayDigest, onProgress)
 
         // Уровень и серия
         val level = Store.levelFor(xp)
@@ -230,21 +242,37 @@ fun HomeScreen(
             }
         }
 
-        if (history.isNotEmpty()) {
-            Text("Последние тренировки", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            val fmt = remember { SimpleDateFormat("d MMM, HH:mm", Locale.forLanguageTag("ru")) }
-            history.forEach { h ->
-                Row(Modifier.fillMaxWidth()) {
-                    Text(h.title, modifier = Modifier.weight(1f))
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+/** «Сегодня»: итог дня и строки по упражнениям; нажатие открывает вкладку «Прогресс». */
+@Composable
+private fun TodayCard(digest: ProgressMath.DayDigest?, onProgress: () -> Unit) {
+    Card(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClickLabel = "Открыть прогресс", onClick = onProgress),
+    ) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Сегодня", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (digest == null || digest.isEmpty) {
+                    Text("Сегодня тренировок ещё не было", style = MaterialTheme.typography.bodyLarge)
+                } else {
                     Text(
-                        "+${BlockerService.formatMinutes(h.earnedMs)} · ${fmt.format(Date(h.timeMs))}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
+                        ProgressMath.summaryLine(digest.sets, digest.reps, digest.earnedMs),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Accent,
                     )
+                    digest.totals.forEach { t ->
+                        Text(ProgressMath.totalRepsLine(t), style = MaterialTheme.typography.bodyMedium)
+                    }
                 }
             }
+            Text("›", fontSize = 28.sp)
         }
-        Spacer(Modifier.height(24.dp))
     }
 }
 

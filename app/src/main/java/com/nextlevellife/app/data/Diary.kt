@@ -28,6 +28,16 @@ data class DaySummary(val day: Long, val sets: Int, val reps: Int, val earnedMs:
 /** Сколько сделано по одному упражнению (и весу) за день. */
 data class ExerciseTotal(val exerciseId: String, val exerciseName: String, val weightKg: Int?, val sets: Int, val reps: Int)
 
+/**
+ * Рекорды упражнения за всё время. [bestReps] и [bestWeightKg] — лучший отдельный подход
+ * (null — упражнение делалось только в комплексах), [totalReps] и [sets] — всё вместе с комплексами.
+ */
+data class ExerciseRecord(
+    val exerciseId: String, val exerciseName: String,
+    val bestReps: Int?, val bestWeightKg: Int?,
+    val totalReps: Long, val sets: Int, val lastDay: Long,
+)
+
 /** Подход, который ещё не записан: время, день и прохождение проставляет [Diary]. */
 data class NewSet(
     val exerciseId: String, val exerciseName: String, val weightKg: Int?,
@@ -125,6 +135,35 @@ object Diary {
             "SELECT $RUN_COLS FROM complex_runs WHERE complex_id = ? ORDER BY time_ms DESC, id DESC LIMIT $limit",
             complexId,
         ) { it.toRun() }
+    }
+
+    /** Есть ли в дневнике хоть одна запись. */
+    @Synchronized
+    fun hasEntries(): Boolean = query(
+        "SELECT EXISTS(SELECT 1 FROM sets) OR EXISTS(SELECT 1 FROM complex_runs)",
+    ) { it.getInt(0) != 0 }.firstOrNull() ?: false
+
+    /**
+     * Рекорды по всем упражнениям, которые встречались в дневнике, одним запросом.
+     * Лучший подход ищется только среди отдельных подходов: подходы комплексов — это сумма
+     * за весь комплекс, а не один подход. Всего повторений — с комплексами.
+     */
+    @Synchronized
+    fun exerciseRecords(): List<ExerciseRecord> = query(
+        "SELECT s.exercise_id, " +
+            "(SELECT n.exercise_name FROM sets n WHERE n.exercise_id = s.exercise_id " +
+            "ORDER BY n.time_ms DESC, n.id DESC LIMIT 1), " +
+            "MAX(CASE WHEN s.run_id IS NULL THEN s.reps END), " +
+            "(SELECT b.weight_kg FROM sets b WHERE b.exercise_id = s.exercise_id AND b.run_id IS NULL " +
+            "ORDER BY b.reps DESC, COALESCE(b.weight_kg, 0) DESC, b.time_ms, b.id LIMIT 1), " +
+            "SUM(s.reps), COUNT(*), MAX(s.day) " +
+            "FROM sets s GROUP BY s.exercise_id",
+    ) {
+        ExerciseRecord(
+            exerciseId = it.getString(0), exerciseName = it.getString(1),
+            bestReps = it.intOrNull(2), bestWeightKg = it.intOrNull(3),
+            totalReps = it.getLong(4), sets = it.getInt(5), lastDay = it.getLong(6),
+        )
     }
 
     // ---------- Запись (только для Workouts и переноса старой истории) ----------

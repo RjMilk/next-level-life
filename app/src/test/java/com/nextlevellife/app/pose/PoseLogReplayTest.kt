@@ -285,6 +285,12 @@ internal object PoseLogReplay {
         line("подсказки на телефоне (кадров):")
         val hints = rec.groupingBy { it.hint.ifEmpty { "(пусто)" } }.eachCount().entries.sortedByDescending { it.value }
         for ((h, n) in hints) line("  ${n.toString().padStart(6)}  $h")
+        if (sim != null) {
+            // Подсказки счётчика на текущем коде: видно, что изменила правка порогов или логики.
+            line("подсказки счётчика при проигрывании (кадров):")
+            val replayHints = states.groupingBy { it.hint.ifEmpty { "(пусто)" } }.eachCount().entries.sortedByDescending { it.value }
+            for ((h, n) in replayHints) line("  ${n.toString().padStart(6)}  $h")
+        }
         line()
 
         return Result(data, states, phases, sim?.announced, phoneCount, phoneRepTimes, out.toString())
