@@ -8,6 +8,11 @@
         tools:ignore="QueryAllPackagesPermission" />
     <!-- Просьба исключить из оптимизации батареи (Samsung усыпляет фоновые службы). -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Подсчёт повторений камерой. Видео обрабатывается на устройстве и никуда не отправляется. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="false" />
 
     <application
         android:allowBackup="false"

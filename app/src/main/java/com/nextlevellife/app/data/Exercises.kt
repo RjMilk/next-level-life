@@ -34,6 +34,7 @@ object Exercises {
     val pushups = Exercise("pushups", "Отжимания", 30, 0.8)
     val squats = Exercise("squats", "Приседания", 40, 0.8)
     val abs = Exercise("abs", "Пресс", 35, 0.7)
+    val pullups = Exercise("pullups", "Подтягивания", 60, 1.2)
 
     val thruster = Exercise("thruster", "Трастер", 45, 1.5, kettlebell = true)
     val swing = Exercise("swings", "Мах гирей", 30, 0.8, kettlebell = true)
@@ -41,7 +42,7 @@ object Exercises {
     val row = Exercise("row", "Тяга к поясу в наклоне", 25, 1.0, kettlebell = true)
     val deadlift = Exercise("deadlift", "Становая тяга", 25, 1.0, kettlebell = true)
 
-    val bodyweight = listOf(pushups, squats, abs)
+    val bodyweight = listOf(pushups, squats, abs, pullups)
     val kettlebell = listOf(thruster, swing, sumoPull, row, deadlift)
     val all = bodyweight + kettlebell
 
@@ -57,8 +58,32 @@ object Exercises {
     fun xp(rewardMs: Long): Long = rewardMs / 10_000
 }
 
+/**
+ * Комплекс «Синди»: 20 минут, как можно больше кругов из
+ * 5 подтягиваний, 10 отжиманий и 15 приседаний. Результат — круги + повторения сверх.
+ * Награда — по обычным ценам повторений, поэтому один полный круг = 20 минут.
+ */
+object Cindy {
+    const val ID = "cindy"
+    const val DURATION_MS = 20 * 60 * 1000L
+
+    data class Part(val exercise: Exercise, val reps: Int)
+
+    val round = listOf(
+        Part(Exercises.pullups, 5),
+        Part(Exercises.pushups, 10),
+        Part(Exercises.squats, 15),
+    )
+    val repsPerRound = round.sumOf { it.reps }
+
+    /** [repsByExercise] — сколько всего повторений каждого упражнения засчитано за 20 минут. */
+    fun rewardMs(repsByExercise: Map<Exercise, Int>): Long =
+        repsByExercise.entries.sumOf { (ex, reps) -> Exercises.rewardMs(ex, reps, Weights.DEFAULT) }
+}
+
 /** Комплекс «Минотавр»: лесенка 10 → 1 по пяти упражнениям с гирей, 275 повторений. */
 object Minotaur {
+    const val ID = "minotaur"
     val exercises = listOf(
         Exercises.thruster,
         Exercises.swing,

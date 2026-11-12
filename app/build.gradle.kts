@@ -11,8 +11,13 @@ android {
         applicationId = "com.nextlevellife.app"
         minSdk = 29
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
+
+        // Оба телефона (S25, Z Fold 8) — arm64; остальные архитектуры только раздувают APK на ~75 МБ.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildTypes {
@@ -40,4 +45,14 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
     implementation("androidx.core:core-ktx:1.19.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // Камера и распознавание позы: всё работает на устройстве, без интернета.
+    val camerax = "1.6.2"
+    implementation("androidx.camera:camera-core:$camerax")
+    implementation("androidx.camera:camera-camera2:$camerax")
+    implementation("androidx.camera:camera-lifecycle:$camerax")
+    implementation("androidx.camera:camera-view:$camerax")
+    implementation("com.google.mlkit:pose-detection-accurate:18.0.0-beta5")
+
+    testImplementation("junit:junit:4.13.2")
 }

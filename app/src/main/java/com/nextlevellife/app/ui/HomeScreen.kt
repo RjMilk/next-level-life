@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nextlevellife.app.block.BlockerService
 import com.nextlevellife.app.block.InstalledApps
+import com.nextlevellife.app.data.Cindy
 import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.Minotaur
@@ -52,7 +53,7 @@ import java.util.Locale
 fun HomeScreen(
     resumeCount: Int,
     onExercise: (String) -> Unit,
-    onMinotaur: () -> Unit,
+    onComplex: (String) -> Unit,
     onApps: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -161,7 +162,7 @@ fun HomeScreen(
         Card(
             Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onMinotaur),
+                .clickable { onComplex(Minotaur.ID) },
             colors = CardDefaults.cardColors(containerColor = Color(0xFF2A1F0A)),
         ) {
             Column(Modifier.padding(16.dp)) {
@@ -173,6 +174,33 @@ fun HomeScreen(
                     Text(
                         "$w кг: +${formatShort(Minotaur.rewardMs(w))}" +
                             (best?.let { " · рекорд ${formatDuration(it)}" } ?: ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        // Синди
+        val cindyBest = remember(version) { cindyBestRounds() }
+        Card(
+            Modifier
+                .fillMaxWidth()
+                .clickable { onComplex(Cindy.ID) },
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF2A1F0A)),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Синди", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black, color = Accent)
+                Text("20 минут: 5 подтягиваний, 10 отжиманий, 15 приседаний")
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Круг = 20 минут экранного времени",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                cindyBest?.let { (r, e) ->
+                    Text(
+                        "Рекорд: $r ${complexRoundsWord(r)} + $e",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

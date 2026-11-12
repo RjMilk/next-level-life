@@ -11,3 +11,5 @@ captures/
 *.jks
 *.keystore
 keystore.properties
+# Записи движений с телефона: личные данные, в репозиторий не кладём
+/poselogs/

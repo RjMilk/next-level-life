@@ -25,7 +25,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.Store
+import com.nextlevellife.app.data.Weights
 
 /** Показывается поверх заблокированного приложения, когда баланс на нуле. */
 class BlockActivity : ComponentActivity() {
@@ -65,7 +67,8 @@ class BlockActivity : ComponentActivity() {
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "Экранное время закончилось. Сделай упражнения, чтобы заработать минуты: 10 отжиманий = 10 минут.",
+                            "Экранное время закончилось. Сделай упражнения, чтобы заработать минуты: " +
+                                "10 отжиманий = ${formatShort(Exercises.rewardMs(Exercises.pushups, 10, Weights.DEFAULT))}.",
                             textAlign = TextAlign.Center,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

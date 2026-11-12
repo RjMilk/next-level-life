@@ -40,11 +40,14 @@ class MainActivity : ComponentActivity() {
                             screen == HOME -> HomeScreen(
                                 resumeCount = resumeCount,
                                 onExercise = { screen = "$EXERCISE$it" },
-                                onMinotaur = { screen = MINOTAUR },
+                                onComplex = { screen = "$COMPLEX$it" },
                                 onApps = { screen = APPS },
                             )
                             screen == APPS -> AppsScreen(onBack = goHome)
-                            screen == MINOTAUR -> MinotaurScreen(onDone = goHome)
+                            screen.startsWith(COMPLEX) -> ComplexScreen(
+                                complexId = screen.removePrefix(COMPLEX),
+                                onDone = goHome,
+                            )
                             screen.startsWith(EXERCISE) -> ExerciseScreen(
                                 exerciseId = screen.removePrefix(EXERCISE),
                                 onDone = goHome,
@@ -64,7 +67,7 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val HOME = "home"
         const val APPS = "apps"
-        const val MINOTAUR = "minotaur"
+        const val COMPLEX = "complex:"
         const val EXERCISE = "exercise:"
     }
 }
