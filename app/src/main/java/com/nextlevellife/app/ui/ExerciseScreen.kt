@@ -33,9 +33,10 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.nextlevellife.app.block.BlockerService
+import androidx.compose.material3.FilterChip
 import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.Store
+import com.nextlevellife.app.data.Weights
 import kotlinx.coroutines.delay
 import kotlin.math.floor
 
@@ -48,6 +49,7 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
     val ex = remember(exerciseId) { Exercises.byId(exerciseId) }
     KeepScreenOn()
 
+    var weight by remember { mutableIntStateOf(Weights.DEFAULT) }
     var count by remember { mutableIntStateOf(0) }
     var startedAt by remember { mutableLongStateOf(0L) }
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
@@ -77,8 +79,22 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
             Text(ex.name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
             Text(formatDuration(elapsedMs), style = MaterialTheme.typography.titleLarge)
         }
+        if (ex.kettlebell) {
+            // Вес выбирается до первого повторения, потом фиксируется.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Weights.all.forEach { w ->
+                    FilterChip(
+                        selected = weight == w,
+                        onClick = { weight = w },
+                        enabled = count == 0,
+                        label = { Text("$w кг") },
+                    )
+                }
+            }
+        }
         Text(
-            "Будет начислено: ${BlockerService.formatMinutes(count.toLong() * ex.rewardSecondsPerRep * 1000)}",
+            "1 повт = ${formatShort(Exercises.rewardMs(ex, 1, weight))} · " +
+                "будет начислено: ${formatShort(Exercises.rewardMs(ex, count, weight))}",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
@@ -109,11 +125,12 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
                 onClick = {
                     val possible = floor(elapsedMs / 1000.0 / ex.minSecondsPerRep).toInt() + 1
                     val credited = minOf(count, possible)
-                    val earnedMs = credited.toLong() * ex.rewardSecondsPerRep * 1000
-                    Store.recordWorkout("${ex.name} ×$credited", credited.toLong() * ex.xpPerRep, earnedMs)
+                    val earnedMs = Exercises.rewardMs(ex, credited, weight)
+                    val xp = Exercises.xp(earnedMs)
+                    val title = if (ex.kettlebell) "${ex.name} $weight кг ×$credited" else "${ex.name} ×$credited"
+                    Store.recordWorkout(title, xp, earnedMs)
                     result = buildString {
-                        append("Засчитано $credited повт.: +${BlockerService.formatMinutes(earnedMs)}, ")
-                        append("+${credited * ex.xpPerRep} опыта.")
+                        append("Засчитано $credited повт.: +${formatShort(earnedMs)}, +$xp опыта.")
                         if (credited < count) {
                             append("\n\n$count повторений за ${formatDuration(elapsedMs)} сделать нельзя, засчитано столько, сколько реально успеть.")
                         }

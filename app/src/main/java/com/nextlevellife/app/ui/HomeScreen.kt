@@ -36,9 +36,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nextlevellife.app.block.BlockerService
 import com.nextlevellife.app.block.InstalledApps
+import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.Minotaur
 import com.nextlevellife.app.data.Store
+import com.nextlevellife.app.data.Weights
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -166,10 +168,10 @@ fun HomeScreen(
                 Text("Минотавр", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black, color = Accent)
                 Text("Лесенка 10 → 1, пять упражнений с гирей, ${Minotaur.totalReps} повторений")
                 Spacer(Modifier.height(6.dp))
-                Minotaur.weights.forEach { w ->
+                Weights.all.forEach { w ->
                     val best = Store.minotaurBestMs(w)
                     Text(
-                        "$w кг: +${Minotaur.rewardMinutes(w)} мин" +
+                        "$w кг: +${formatShort(Minotaur.rewardMs(w))}" +
                             (best?.let { " · рекорд ${formatDuration(it)}" } ?: ""),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -178,21 +180,10 @@ fun HomeScreen(
             }
         }
 
-        Exercises.all.forEach { ex ->
-            Card(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable { onExercise(ex.id) },
-            ) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(ex.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                    Text(
-                        "1 повт = ${rewardText(ex.rewardSecondsPerRep)}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
+        Text("Без веса", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Exercises.bodyweight.forEach { ex -> ExerciseCard(ex, onExercise) }
+        Text("С гирей (цена за 16 кг; 24 кг ×1,2, 32 кг ×1,6)", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Exercises.kettlebell.forEach { ex -> ExerciseCard(ex, onExercise) }
 
         Card(
             Modifier
@@ -246,8 +237,35 @@ private fun WarningCard(title: String, text: String, button: String, onClick: ()
     }
 }
 
-private fun rewardText(seconds: Int): String =
-    if (seconds % 60 == 0) "${seconds / 60} мин" else "$seconds сек"
+@Composable
+private fun ExerciseCard(ex: Exercise, onExercise: (String) -> Unit) {
+    Card(
+        Modifier
+            .fillMaxWidth()
+            .clickable { onExercise(ex.id) },
+    ) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(ex.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Text(
+                "1 повт = ${formatShort(Exercises.rewardMs(ex, 1, Weights.DEFAULT))}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** «2 ч 22 мин», «1 мин 30 сек», «45 сек». */
+fun formatShort(ms: Long): String {
+    val total = ms / 1000
+    val h = total / 3600
+    val m = (total % 3600) / 60
+    val s = total % 60
+    return when {
+        h > 0 -> if (m > 0) "$h ч $m мин" else "$h ч"
+        m > 0 -> if (s > 0) "$m мин $s сек" else "$m мин"
+        else -> "$s сек"
+    }
+}
 
 private fun daysWord(n: Int): String {
     val mod100 = n % 100

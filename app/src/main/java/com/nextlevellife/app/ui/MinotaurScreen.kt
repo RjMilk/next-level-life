@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nextlevellife.app.data.Minotaur
 import com.nextlevellife.app.data.Store
+import com.nextlevellife.app.data.Weights
 import kotlinx.coroutines.delay
 
 @Composable
@@ -68,16 +69,22 @@ fun MinotaurScreen(onDone: () -> Unit) {
 
         if (!running) {
             Text("Лесенка 10 → 1: на каждой ступени по одному подходу пяти упражнений. Всего ${Minotaur.totalReps} повторений.")
-            Minotaur.exercises.forEachIndexed { i, name -> Text("${i + 1}. $name") }
+            Minotaur.exercises.forEachIndexed { i, ex -> Text("${i + 1}. ${ex.name}") }
 
             Spacer(Modifier.height(8.dp))
             Text("Вес гири", style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Minotaur.weights.forEach { w ->
+                Weights.all.forEach { w ->
                     FilterChip(selected = weight == w, onClick = { weight = w }, label = { Text("$w кг") })
                 }
             }
-            Text("Награда: +${Minotaur.rewardMinutes(weight)} мин, +${Minotaur.xp(weight)} опыта")
+            Text("Награда: +${formatShort(Minotaur.rewardMs(weight))}, +${Minotaur.xp(weight)} опыта")
+            Text(
+                "Те же ${Minotaur.totalReps} повторений по отдельности дали бы " +
+                    "${formatShort(Minotaur.separateRewardMs(weight))}: разница — бонус за комплекс целиком.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Store.minotaurBestMs(weight)?.let { Text("Твой рекорд с $weight кг: ${formatDuration(it)}", color = Good) }
 
             Spacer(Modifier.weight(1f))
@@ -119,10 +126,10 @@ fun MinotaurScreen(onDone: () -> Unit) {
                 verticalArrangement = Arrangement.Center,
             ) {
                 Text("${step.reps}", fontSize = 120.sp, fontWeight = FontWeight.Black, color = Accent)
-                Text(step.exercise, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
+                Text(step.exercise.name, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
                 next?.let {
                     Spacer(Modifier.height(16.dp))
-                    Text("Дальше: ${it.exercise} ×${it.reps}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Дальше: ${it.exercise.name} ×${it.reps}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
@@ -170,10 +177,10 @@ private fun finishMinotaur(weight: Int, totalMs: Long): Pair<String, String> {
         return "Слишком быстро" to
             "${formatDuration(totalMs)} за ${Minotaur.totalReps} повторений нереально. Награда не начислена."
     }
-    val minutes = Minotaur.rewardMinutes(weight)
+    val rewardMs = Minotaur.rewardMs(weight)
     val xp = Minotaur.xp(weight)
     val record = Store.submitMinotaurTime(weight, totalMs)
-    Store.recordWorkout("Минотавр $weight кг · ${formatDuration(totalMs)}", xp, minutes * 60_000L)
+    Store.recordWorkout("Минотавр $weight кг · ${formatDuration(totalMs)}", xp, rewardMs)
     val title = if (record) "Новый рекорд!" else "Минотавр повержен"
-    return title to "Время ${formatDuration(totalMs)}. +$minutes мин экранного времени, +$xp опыта."
+    return title to "Время ${formatDuration(totalMs)}. +${formatShort(rewardMs)} экранного времени, +$xp опыта."
 }
