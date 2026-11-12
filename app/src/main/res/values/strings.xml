@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Next Level Life</string>
+    <string name="accessibility_label">Next Level Life: блокировка</string>
+    <string name="accessibility_description">Следит, какое приложение открыто, и закрывает заблокированные, пока не заработаны минуты упражнениями. Содержимое экрана не читается.</string>
+</resources>
