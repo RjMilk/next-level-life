@@ -152,17 +152,21 @@ object SaitamaRepository {
 
     /**
      * Отметить вехи [milestones] дня [day] показанными (досмотрены или пропущены). Пишется в своей области корутин,
-     * а не в области экрана: уход с экрана сразу после «нарезки» отметку не отменит.
+     * а не в области экрана: уход с экрана сразу после «нарезки» отметку не отменит. Поколение базы запоминается
+     * сейчас: если до записи базу подменило восстановление копии, вехи прежней базы в новую не пишутся.
      */
     fun markShownAsync(day: Long, milestones: Collection<SaitamaMilestone>) {
         if (milestones.isEmpty()) return
-        scope.launch { markShown(day, milestones) }
+        val gen = Diary.generation
+        scope.launch { markShown(day, milestones, gen) }
     }
 
     @Synchronized
-    private fun markShown(day: Long, milestones: Collection<SaitamaMilestone>) {
+    private fun markShown(day: Long, milestones: Collection<SaitamaMilestone>, gen: Long) {
         try {
             Diary.write {
+                // Поколение меняется только под блокировкой Diary: проверка и запись — атомарно.
+                if (Diary.generation != gen) return@write
                 val key = Saitama.shownKey(day)
                 val shown = SaitamaMath.decodeShown(Diary.metaGet(key))
                 Diary.metaPut(key, SaitamaMath.encodeShown(shown + milestones))
