@@ -3,6 +3,7 @@ package com.nextlevellife.app.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -350,50 +351,41 @@ private fun ConnectHealthCard(onConnect: () -> Unit) {
 }
 
 /**
- * «Характеристики»: общий уровень (сумма очков трёх характеристик) с полосой и званием, серия, затем
- * Сила, Выносливость и Дисциплина — уровень, очки за всё время и полоса до следующего уровня.
- * Внизу мелко — опыт до обновления 0.6 (за минуты), если он был.
- * Нажатие на уровень или характеристику открывает «Как получить» ([onStatInfo]).
+ * «Характеристики» — раскрывающаяся карточка (ключ `progress_character`, по умолчанию свёрнута).
+ * Свёрнутая: общий уровень (сумма очков трёх характеристик) со званием, серия, полоса и «До следующего
+ * уровня». Развёрнутая — ещё Сила, Выносливость и Дисциплина (уровень, очки за всё время, полоса),
+ * «Что входит в уровень» и мелкие примечания, в том числе опыт до обновления 0.6 (за минуты), если он был.
+ * Нажатие на заголовок только раскрывает карточку; на характеристику — открывает «Как получить» ([onStatInfo]).
  */
 @Composable
 private fun CharacterCard(stats: StatsSummary?, streak: Int, legacyXp: Long, onStatInfo: (String) -> Unit) {
     val overall = StatsMath.progress(stats?.overall ?: 0L)
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val state = rememberExpandedState("progress_character")
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                "Характеристики",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(horizontal = 16.dp),
-            )
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable(onClickLabel = "Что входит в уровень") { onStatInfo(STAT_INFO_LEVEL) }
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "Уровень ${overall.level}",
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = Accent,
-                            maxLines = 1,
-                            softWrap = false,
-                        )
-                        Text("${Store.titleFor(overall.level)}  ›", style = MaterialTheme.typography.bodyMedium, color = muted)
-                    }
-                    Text(ProgressMath.streakLabel(streak), style = MaterialTheme.typography.titleSmall.merge(Tabular))
+        ExpandableHeader(state, spacing = 8.dp) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Уровень ${overall.level}",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = Accent,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                    Text(Store.titleFor(overall.level), style = MaterialTheme.typography.bodyMedium, color = muted)
                 }
-                LinearProgressIndicator(
-                    progress = { overall.fraction },
-                    modifier = Modifier.fillMaxWidth(),
-                    color = Accent,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
-                )
-                Text(StatsText.toNextLevel(overall.left), style = MaterialTheme.typography.bodySmall.merge(Tabular), color = muted)
+                Text(ProgressMath.streakLabel(streak), style = MaterialTheme.typography.titleSmall.merge(Tabular))
             }
+            LinearProgressIndicator(
+                progress = { overall.fraction },
+                modifier = Modifier.fillMaxWidth(),
+                color = Accent,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+            )
+            Text(StatsText.toNextLevel(overall.left), style = MaterialTheme.typography.bodySmall.merge(Tabular), color = muted)
+        }
+        ExpandableBody(state, contentPadding = PaddingValues(bottom = 12.dp), spacing = 4.dp) {
             Stat.entries.forEach { stat ->
                 val total = stats?.total(stat) ?: 0L
                 val p = StatsMath.progress(total)
@@ -430,6 +422,7 @@ private fun CharacterCard(stats: StatsSummary?, streak: Int, legacyXp: Long, onS
                     )
                 }
             }
+            LinkRow("Что входит в уровень") { onStatInfo(STAT_INFO_LEVEL) }
             Text(
                 "Очки привычек: до ${StatsMath.DAY_CAP} в день на каждую. Нажми, чтобы узнать, как их получить",
                 modifier = Modifier.padding(horizontal = 16.dp).padding(top = 4.dp),

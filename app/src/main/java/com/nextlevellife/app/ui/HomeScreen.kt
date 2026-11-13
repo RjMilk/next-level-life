@@ -10,12 +10,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -396,24 +398,23 @@ private fun TodayCard(
 }
 
 /**
- * Уровень и характеристики: «Уровень 3 · Новичок» и серия, под ними три строки
- * «Сила 2 · 7/10 сегодня» с тонкой полосой до следующего уровня характеристики.
- * Нажатие на уровень открывает «Как получить» для уровня, на характеристику — для неё.
- * [stats] = null — ещё не посчитано: нули.
+ * Уровень и характеристики — раскрывающаяся карточка (ключ `home_stats`, по умолчанию свёрнута).
+ * Свёрнутая: «Уровень 3 · Новичок» и серия, сводка «Сила 2 · Выносливость 1 · Дисциплина 3» и полоса
+ * до следующего уровня; предупреждения о штрафе за простой видны всегда. Развёрнутая — ещё три строки
+ * «Сила 2 · 7/10 сегодня» с полосами и «Что входит в уровень». Нажатие на заголовок только раскрывает
+ * карточку; на характеристику — открывает «Как получить» для неё. [stats] = null — ещё не посчитано: нули.
  */
 @Composable
 private fun StatsCard(stats: StatsSummary?, streak: Int, onStatInfo: (String) -> Unit) {
-    val level = StatsMath.levelFor(stats?.overall ?: 0L)
+    val overall = StatsMath.progress(stats?.overall ?: 0L)
+    val level = overall.level
     val today = stats?.todayPoints
+    val state = rememberExpandedState("home_stats")
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val risks = Stat.entries.mapNotNull { StatsText.riskLine(it, stats?.riskOf(it) ?: 0) }
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(vertical = 8.dp)) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable(onClickLabel = "Что входит в уровень") { onStatInfo(STAT_INFO_LEVEL) }
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+        ExpandableHeader(state, spacing = 4.dp) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "Уровень $level · ${Store.titleFor(level)}",
                     style = MaterialTheme.typography.titleMedium,
@@ -426,22 +427,61 @@ private fun StatsCard(stats: StatsSummary?, streak: Int, onStatInfo: (String) ->
                     style = MaterialTheme.typography.titleSmall.merge(Tabular),
                     maxLines = 1,
                 )
-                Text("  ›", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            Text(
+                ExpandableText.statsSummary { stats?.total(it) ?: 0L },
+                style = MaterialTheme.typography.bodySmall.merge(Tabular),
+                color = muted,
+            )
+            LinearProgressIndicator(
+                progress = { overall.fraction },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+                    .height(4.dp),
+                color = Accent,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+            )
+        }
+        // Риск штрафа — важное предупреждение: виден и в свёрнутой карточке.
+        if (risks.isNotEmpty()) {
+            Column(
+                Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                risks.forEach { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            }
+        }
+        ExpandableBody(state, contentPadding = PaddingValues(bottom = 4.dp), spacing = 0.dp) {
             Stat.entries.forEachIndexed { i, stat ->
                 StatLine(
                     stat = stat,
                     total = stats?.total(stat) ?: 0L,
                     today = today?.of(stat) ?: 0,
                     todayWord = i == 0,
-                    risk = StatsText.riskLine(stat, stats?.riskOf(stat) ?: 0),
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable(onClickLabel = "Как получить: ${stat.title}") { onStatInfo(stat.name) }
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
                 )
             }
+            LinkRow("Что входит в уровень") { onStatInfo(STAT_INFO_LEVEL) }
         }
+    }
+}
+
+/** Строка-ссылка «Что входит в уровень ›» в теле карточки: акцентным цветом, не ниже 48 dp. */
+@Composable
+internal fun LinkRow(text: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clickable(onClickLabel = text, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("$text ›", style = MaterialTheme.typography.labelLarge, color = Accent)
     }
 }
 
@@ -452,7 +492,6 @@ private fun StatLine(
     total: Long,
     today: Int,
     todayWord: Boolean,
-    risk: String?,
     modifier: Modifier = Modifier,
 ) {
     val progress = StatsMath.progress(total)
@@ -482,9 +521,6 @@ private fun StatLine(
             color = Accent,
             trackColor = MaterialTheme.colorScheme.surfaceVariant,
         )
-        if (risk != null) {
-            Text(risk, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-        }
     }
 }
 
@@ -492,26 +528,53 @@ private fun StatLine(
 
 private val ComplexCardColor = Color(0xFF2A1F0A)
 
+/** Отступы тела группы на главной: вложенные карточки не прилипают к краю внешней. */
+private val GroupBodyPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 12.dp)
+
+/**
+ * «Заработать минуты»: три раскрывающиеся группы, по умолчанию свёрнуты — «Комплексы»
+ * (ключ `home_complexes`), «Без веса» (`home_bodyweight`) и «С гирей» (`home_kettlebell`).
+ * [extraComplexes] — карточки других комплексов, они идут после Синди; [complexesSummary] — сводка группы.
+ */
 @Composable
-private fun EarnSection(version: Int, columns: Int, onExercise: (String) -> Unit, onComplex: (String) -> Unit) {
+private fun EarnSection(
+    version: Int,
+    columns: Int,
+    onExercise: (String) -> Unit,
+    onComplex: (String) -> Unit,
+    complexesSummary: String = "Минотавр, Синди",
+    extraComplexes: @Composable () -> Unit = {},
+) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Заработать минуты", style = MaterialTheme.typography.titleMedium)
-        MinotaurCard(version) { onComplex(Minotaur.ID) }
-        CindyCard(version) { onComplex(Cindy.ID) }
-
-        GroupLabel("Без веса")
-        CardGrid(Exercises.bodyweight, columns) { ex, m -> ExerciseCard(ex, m, onExercise) }
-        GroupLabel("С гирей", "Цена за 16 кг; 24 кг ×1,2, 32 кг ×1,6")
-        CardGrid(Exercises.kettlebell, columns) { ex, m -> ExerciseCard(ex, m, onExercise) }
-    }
-}
-
-@Composable
-private fun GroupLabel(title: String, note: String? = null) {
-    Column(Modifier.padding(top = 4.dp)) {
-        Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (note != null) {
-            Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ExpandableCard(
+            key = "home_complexes",
+            title = "Комплексы",
+            summary = complexesSummary,
+            contentPadding = GroupBodyPadding,
+            contentSpacing = 12.dp,
+        ) {
+            MinotaurCard(version) { onComplex(Minotaur.ID) }
+            CindyCard(version) { onComplex(Cindy.ID) }
+            extraComplexes()
+        }
+        ExpandableCard(
+            key = "home_bodyweight",
+            title = "Без веса",
+            summary = ExpandableText.exerciseNames(Exercises.bodyweight),
+            contentPadding = GroupBodyPadding,
+            contentSpacing = 12.dp,
+        ) {
+            CardGrid(Exercises.bodyweight, columns) { ex, m -> ExerciseCard(ex, m, onExercise) }
+        }
+        ExpandableCard(
+            key = "home_kettlebell",
+            title = "С гирей",
+            summary = ExpandableText.kettlebellSummary(Exercises.kettlebell.size),
+            contentPadding = GroupBodyPadding,
+            contentSpacing = 12.dp,
+        ) {
+            CardGrid(Exercises.kettlebell, columns) { ex, m -> ExerciseCard(ex, m, onExercise) }
         }
     }
 }
@@ -601,10 +664,16 @@ private fun WarningCard(title: String, text: String, button: String, onClick: ()
     }
 }
 
-/** Карточка упражнения: название, под ним цена — длинное название не зажимается. */
+/**
+ * Карточка упражнения: название, под ним цена — длинное название не зажимается. Лежит внутри
+ * группы, поэтому фон на тон светлее внешней карточки.
+ */
 @Composable
 private fun ExerciseCard(ex: Exercise, modifier: Modifier, onExercise: (String) -> Unit) {
-    Card(modifier.clickable { onExercise(ex.id) }) {
+    Card(
+        modifier.clickable { onExercise(ex.id) },
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(ex.name, style = MaterialTheme.typography.titleSmall)

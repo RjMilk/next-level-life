@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -25,6 +24,10 @@ import com.nextlevellife.app.data.ExerciseRecord
 import com.nextlevellife.app.data.ExerciseTotal
 import com.nextlevellife.app.health.ActivityMath
 
+/**
+ * «Рекорды» — раскрывающаяся карточка (ключ `progress_records`, по умолчанию свёрнута): шаги и бег,
+ * Минотавр, Синди и упражнения; у упражнения по нажатию раскрывается история.
+ */
 @Composable
 internal fun RecordsCard(
     minotaurBest: List<Pair<Int, Long?>>,
@@ -37,42 +40,44 @@ internal fun RecordsCard(
     longestRun: ActivityRun? = null,
     today: Long = 0L,
 ) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("Рекорды", style = MaterialTheme.typography.titleMedium)
-
-            if (bestStepsDay != null || longestRun != null) {
-                SectionLabel("Шаги и бег")
-                bestStepsDay?.let { (day, steps) ->
-                    RecordRow(
-                        "Больше всего шагов · ${ProgressMath.dateLabel(day, today)}",
-                        ActivityMath.formatThousands(steps),
-                    )
-                }
-                longestRun?.let { r ->
-                    RecordRow(
-                        "Самая длинная пробежка · ${ProgressMath.dateLabel(r.day, today)}",
-                        ActivityMath.formatKm(r.distanceM),
-                    )
-                }
+    val hasActivity = bestStepsDay != null || longestRun != null
+    ExpandableCard(
+        key = "progress_records",
+        title = "Рекорды",
+        summary = ExpandableText.recordsSummary(hasActivity, records.isNotEmpty()),
+        contentSpacing = 2.dp,
+    ) {
+        if (hasActivity) {
+            SectionLabel("Шаги и бег")
+            bestStepsDay?.let { (day, steps) ->
+                RecordRow(
+                    "Больше всего шагов · ${ProgressMath.dateLabel(day, today)}",
+                    ActivityMath.formatThousands(steps),
+                )
             }
-
-            SectionLabel("Минотавр — лучшее время")
-            minotaurBest.forEach { (weight, ms) ->
-                RecordRow("$weight кг", ms?.let { formatDuration(it) } ?: "—")
+            longestRun?.let { r ->
+                RecordRow(
+                    "Самая длинная пробежка · ${ProgressMath.dateLabel(r.day, today)}",
+                    ActivityMath.formatKm(r.distanceM),
+                )
             }
+        }
 
-            SectionLabel("Синди — больше всего кругов")
-            RecordRow("Лучший результат", cindyBest?.let { (r, e) -> ProgressMath.cindyResult(r, e) } ?: "—")
+        SectionLabel("Минотавр — лучшее время")
+        minotaurBest.forEach { (weight, ms) ->
+            RecordRow("$weight кг", ms?.let { formatDuration(it) } ?: "—")
+        }
 
-            if (records.isNotEmpty()) {
-                SectionLabel("Упражнения")
-                records.forEachIndexed { i, r ->
-                    if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-                    val isOpen = expanded == r.exerciseId
-                    ExerciseRecordRow(r, isOpen) { onToggle(r.exerciseId) }
-                    if (isOpen) ExerciseHistory(history)
-                }
+        SectionLabel("Синди — больше всего кругов")
+        RecordRow("Лучший результат", cindyBest?.let { (r, e) -> ProgressMath.cindyResult(r, e) } ?: "—")
+
+        if (records.isNotEmpty()) {
+            SectionLabel("Упражнения")
+            records.forEachIndexed { i, r ->
+                if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                val isOpen = expanded == r.exerciseId
+                ExerciseRecordRow(r, isOpen) { onToggle(r.exerciseId) }
+                if (isOpen) ExerciseHistory(history)
             }
         }
     }

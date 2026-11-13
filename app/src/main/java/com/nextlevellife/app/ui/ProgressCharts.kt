@@ -199,6 +199,8 @@ private fun ArrowButton(symbol: String, description: String, enabled: Boolean, o
  * Диаграмма за последние дни: один показатель за раз — повторы, шаги, километры бега или ночной перерыв.
  * [metrics] — какие показатели есть что показывать (повторы — всегда); переключатель виден, если их больше
  * одного. У ночного перерыва дни без данных — разрыв (столбика нет), а не ноль. Нажатие на столбик выбирает день.
+ * Раскрывающаяся карточка «Динамика за 14 дней» (ключ `progress_chart`, по умолчанию свёрнута): итог
+ * выбранного показателя виден и в свёрнутой — как сводка под заголовком.
  */
 @Composable
 internal fun ChartCard(
@@ -219,80 +221,76 @@ internal fun ChartCard(
     val shown = if (metric in metrics) metric else ProgressMath.ChartMetric.REPS
     val values = ProgressMath.chartValues(shown, reps, steps, runMeters, breakMs)
     val fractions = ProgressMath.barFractionsNullable(values)
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Последние ${days.size} дней", style = MaterialTheme.typography.titleMedium)
-            if (metrics.size > 1) MetricPicker(metrics, shown, onMetric)
-            Text(
-                ProgressMath.chartSummary(shown, days.size, values, earnedMs, breakProvisional),
-                style = MaterialTheme.typography.bodySmall.merge(Tabular),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(150.dp),
-            ) {
-                days.forEachIndexed { i, day ->
-                    val isToday = day == today
-                    val isSelected = day == selected
-                    val value = values.getOrNull(i)
-                    Column(
+    ExpandableCard(
+        key = "progress_chart",
+        title = "Динамика за ${days.size} ${ProgressMath.daysWord(days.size)}",
+        summary = ProgressMath.chartSummary(shown, days.size, values, earnedMs, breakProvisional),
+    ) {
+        if (metrics.size > 1) MetricPicker(metrics, shown, onMetric)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(150.dp),
+        ) {
+            days.forEachIndexed { i, day ->
+                val isToday = day == today
+                val isSelected = day == selected
+                val value = values.getOrNull(i)
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (isSelected) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent)
+                        .clickable(role = Role.Button) { onSelect(day) }
+                        .semantics {
+                            contentDescription = ProgressMath.barDescription(shown, day, value)
+                            this.selected = isSelected
+                        }
+                        .padding(horizontal = 2.dp, vertical = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Box(
                         Modifier
                             .weight(1f)
-                            .fillMaxHeight()
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (isSelected) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent)
-                            .clickable(role = Role.Button) { onSelect(day) }
-                            .semantics {
-                                contentDescription = ProgressMath.barDescription(shown, day, value)
-                                this.selected = isSelected
-                            }
-                            .padding(horizontal = 2.dp, vertical = 4.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                            .fillMaxWidth(),
+                        contentAlignment = Alignment.BottomCenter,
                     ) {
-                        Box(
-                            Modifier
-                                .weight(1f)
-                                .fillMaxWidth(),
-                            contentAlignment = Alignment.BottomCenter,
-                        ) {
-                            val f = fractions.getOrNull(i)
-                            if (f == null) {
-                                // Нет данных — разрыв: ни столбика, ни нулевой черты.
-                            } else if (f > 0f) {
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth(0.75f)
-                                        .fillMaxHeight(f)
-                                        .clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp))
-                                        .background(
-                                            when {
-                                                isToday -> Accent
-                                                isSelected -> MaterialTheme.colorScheme.onSurfaceVariant
-                                                else -> BarColor
-                                            }
-                                        ),
-                                )
-                            } else {
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth(0.75f)
-                                        .height(2.dp)
-                                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f)),
-                                )
-                            }
+                        val f = fractions.getOrNull(i)
+                        if (f == null) {
+                            // Нет данных — разрыв: ни столбика, ни нулевой черты.
+                        } else if (f > 0f) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth(0.75f)
+                                    .fillMaxHeight(f)
+                                    .clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp))
+                                    .background(
+                                        when {
+                                            isToday -> Accent
+                                            isSelected -> MaterialTheme.colorScheme.onSurfaceVariant
+                                            else -> BarColor
+                                        }
+                                    ),
+                            )
+                        } else {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth(0.75f)
+                                    .height(2.dp)
+                                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f)),
+                            )
                         }
-                        Text(
-                            ProgressMath.dayOfMonth(day).toString(),
-                            modifier = Modifier.padding(top = 4.dp),
-                            style = MaterialTheme.typography.labelSmall.merge(Tabular),
-                            maxLines = 1,
-                            softWrap = false,
-                            fontWeight = if (isToday || isSelected) FontWeight.Bold else FontWeight.Normal,
-                            color = if (isToday) Accent else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
+                    Text(
+                        ProgressMath.dayOfMonth(day).toString(),
+                        modifier = Modifier.padding(top = 4.dp),
+                        style = MaterialTheme.typography.labelSmall.merge(Tabular),
+                        maxLines = 1,
+                        softWrap = false,
+                        fontWeight = if (isToday || isSelected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isToday) Accent else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
