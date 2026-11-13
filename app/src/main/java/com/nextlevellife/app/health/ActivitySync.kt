@@ -157,7 +157,8 @@ object ActivitySync {
                         kind = OpKind.STEPS_REWARD,
                         idempotencyKey = ActivityMath.rewardKey(t.day, due.totalMs),
                         deltaMs = delta,
-                        deltaXp = ActivityMath.xpDelta(due.totalMs, rewarded),
+                        // С 0.6 опыт за минуты не начисляется: шаги и бег идут в «Выносливость» (stats/).
+                        deltaXp = 0L,
                         sourceType = "activity_day",
                         sourceId = t.day.toString(),
                         occurredAtMs = ActivityMath.occurredAtMs(t.day, now, zone),

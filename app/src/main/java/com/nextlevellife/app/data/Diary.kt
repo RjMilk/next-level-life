@@ -379,6 +379,38 @@ object Diary {
     fun runsForDay(day: Long): List<ComplexRun> =
         query("SELECT $RUN_COLS FROM complex_runs WHERE day = ? ORDER BY time_ms, id", day.toString()) { it.toRun() }
 
+    /** Подходы дней [fromDay]..[toDay] по времени (для характеристик). */
+    @Synchronized
+    fun setsInRange(fromDay: Long, toDay: Long): List<SetEntry> = query(
+        "SELECT $SET_COLS FROM sets WHERE day BETWEEN ? AND ? ORDER BY time_ms, id",
+        fromDay.toString(), toDay.toString(),
+    ) { it.toSetEntry() }
+
+    /** Прохождения комплексов дней [fromDay]..[toDay] по времени (для характеристик). */
+    @Synchronized
+    fun runsInRange(fromDay: Long, toDay: Long): List<ComplexRun> = query(
+        "SELECT $RUN_COLS FROM complex_runs WHERE day BETWEEN ? AND ? ORDER BY time_ms, id",
+        fromDay.toString(), toDay.toString(),
+    ) { it.toRun() }
+
+    /**
+     * Самый ранний день с данными для характеристик: подход, комплекс, день активности или ночь
+     * (по дню пробуждения). null — данных нет.
+     */
+    @Synchronized
+    fun firstDataDay(): Long? = query(
+        "SELECT MIN(d) FROM (" +
+            "SELECT MIN(day) AS d FROM sets UNION ALL SELECT MIN(day) FROM complex_runs " +
+            "UNION ALL SELECT MIN(day) FROM activity_days UNION ALL SELECT MIN(wake_day) FROM sleep_nights)",
+    ) { if (it.isNull(0)) null else it.getLong(0) }.firstOrNull()
+
+    /** Служебные значения meta, ключ которых начинается с [prefix] (ключ → значение). */
+    @Synchronized
+    internal fun metaWithPrefix(prefix: String): Map<String, String> = query(
+        "SELECT key, value FROM meta WHERE substr(key, 1, ${prefix.length}) = ?",
+        prefix,
+    ) { it.getString(0) to it.getString(1) }.toMap()
+
     @Synchronized
     fun exerciseTotalsForDay(day: Long): List<ExerciseTotal> = DiaryMath.totals(setsForDay(day))
 

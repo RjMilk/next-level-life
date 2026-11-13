@@ -3,14 +3,14 @@ package com.nextlevellife.app.data
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import com.nextlevellife.app.stats.StatsMath
+import com.nextlevellife.app.stats.StatsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
-import kotlin.math.floor
-import kotlin.math.sqrt
 
 /**
  * Быстрое состояние приложения. Служба блокировки и интерфейс работают в одном процессе и пользуются одним экземпляром.
@@ -82,9 +82,17 @@ object Store {
 
     // ---------- Прогресс ----------
 
+    /**
+     * Опыт до версии 0.6 (за заработанные минуты) — исторический: новые начисления пишут delta_xp = 0.
+     * Показывается мелко («Опыт до обновления: 120»); уровень от него больше не зависит.
+     */
     fun xp(): Long = Ledger.xp()
 
-    fun level(): Int = levelFor(xp())
+    /**
+     * Общий уровень по характеристикам (сумма очков Силы, Выносливости и Дисциплины) из последнего
+     * расчёта [StatsRepository] — без пересчёта; пока не считали — 1. Свежий — [StatsRepository.load] в фоне.
+     */
+    fun level(): Int = StatsRepository.cached()?.overallLevel ?: 1
 
     fun streak(): Int {
         val last = sp.getLong(KEY_LAST_DAY, Long.MIN_VALUE)
@@ -232,10 +240,11 @@ object Store {
         return editor.commit()
     }
 
-    // Уровень n начинается с 50·(n−1)² опыта: 0, 50, 200, 450, 800…
-    fun levelFor(xp: Long): Int = floor(sqrt(xp / 50.0)).toInt() + 1
-    fun xpForLevel(level: Int): Long = 50L * (level - 1) * (level - 1)
+    // Уровень n начинается с 50·(n−1)² очков: 0, 50, 200, 450, 800… С 0.6 — очки характеристик, не опыт.
+    fun levelFor(points: Long): Int = StatsMath.levelFor(points)
+    fun xpForLevel(level: Int): Long = StatsMath.pointsForLevel(level)
 
+    /** Звание по общему уровню характеристик. */
     fun titleFor(level: Int): String = when {
         level >= 20 -> "Легенда"
         level >= 12 -> "Титан"

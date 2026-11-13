@@ -36,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -57,6 +58,11 @@ import com.nextlevellife.app.health.ActivitySync
 import com.nextlevellife.app.health.HealthAvailability
 import com.nextlevellife.app.sleep.SleepNight
 import com.nextlevellife.app.sleep.SleepRepository
+import com.nextlevellife.app.stats.Stat
+import com.nextlevellife.app.stats.StatsMath
+import com.nextlevellife.app.stats.StatsRepository
+import com.nextlevellife.app.stats.StatsSummary
+import com.nextlevellife.app.stats.StatsText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
@@ -105,7 +111,6 @@ fun HomeScreen(
 
     // version участвует в чтении, чтобы экран обновлялся при изменении данных.
     val balance = remember(version) { Store.balanceMs() }
-    val xp = remember(version) { Store.xp() }
     val streak = remember(version) { Store.streak() }
     val limitMin = remember(version) { Settings.dailyLimitMin }
     val nightOn = remember(version) { Settings.nightEnabled }
@@ -134,6 +139,10 @@ fun HomeScreen(
     val spentToday by produceState(cachedSpent?.takeIf { it.first == spendDay }?.second, version, spendDay, resumeCount) {
         value = withContext(Dispatchers.IO) { runCatching { Ledger.spentMs(spendDay) }.getOrNull() }
             ?.also { cachedSpent = spendDay to it }
+    }
+    // Характеристики за всю историю — в фоне; пока считаются, виден прошлый итог.
+    val stats by produceState(StatsRepository.cached(), version, resumeCount) {
+        value = withContext(Dispatchers.IO) { StatsRepository.load() }
     }
 
     val mainScroll = rememberScrollState()
@@ -176,7 +185,7 @@ fun HomeScreen(
             large = widthClass == WidthClass.EXPANDED,
         )
         TodayCard(todayDigest, night, health.availability, onProgress, onSettings)
-        LevelCard(xp, streak)
+        StatsCard(stats, streak, onProgress)
     }
     val earn: @Composable () -> Unit = {
         EarnSection(version, widthClass.gridColumns, onExercise, onComplex)
@@ -384,35 +393,73 @@ private fun TodayCard(
     }
 }
 
+/**
+ * Уровень и характеристики: «Уровень 3 · Новичок» и серия, под ними три строки
+ * «Сила 2 · 7/10 сегодня» с тонкой полосой до следующего уровня характеристики.
+ * Нажатие открывает «Прогресс». [stats] = null — ещё не посчитано: нули.
+ */
 @Composable
-private fun LevelCard(xp: Long, streak: Int) {
-    val level = Store.levelFor(xp)
-    val from = Store.xpForLevel(level)
-    val to = Store.xpForLevel(level + 1)
-    Card(Modifier.fillMaxWidth()) {
+private fun StatsCard(stats: StatsSummary?, streak: Int, onProgress: () -> Unit) {
+    val level = StatsMath.levelFor(stats?.overall ?: 0L)
+    val today = stats?.todayPoints
+    Card(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClickLabel = "Открыть прогресс", onClick = onProgress),
+    ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "Уровень $level · ${Store.titleFor(level)}",
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     "🔥 $streak ${ProgressMath.daysWord(streak)}",
                     style = MaterialTheme.typography.titleSmall.merge(Tabular),
+                    maxLines = 1,
                 )
             }
-            LinearProgressIndicator(
-                progress = { ((xp - from).toFloat() / (to - from)).coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth(),
-                trackColor = MaterialTheme.colorScheme.surfaceVariant,
-            )
-            Text(
-                "$xp / $to опыта",
-                style = MaterialTheme.typography.bodySmall.merge(Tabular),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Stat.entries.forEachIndexed { i, stat ->
+                StatLine(
+                    stat = stat,
+                    total = stats?.total(stat) ?: 0L,
+                    today = today?.of(stat) ?: 0,
+                    todayWord = i == 0,
+                )
+            }
         }
+    }
+}
+
+/** «Сила 2 · 7/10 сегодня» (очки дня приглушены) и тонкая полоса до следующего уровня характеристики. */
+@Composable
+private fun StatLine(stat: Stat, total: Long, today: Int, todayWord: Boolean) {
+    val progress = StatsMath.progress(total)
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            buildAnnotatedString {
+                append(StatsText.statLevel(stat, total))
+                withStyle(SpanStyle(color = muted)) {
+                    append(" · ${StatsText.ofCap(today)}")
+                    if (todayWord) append(" сегодня")
+                }
+            },
+            style = MaterialTheme.typography.bodyMedium.merge(Tabular),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        LinearProgressIndicator(
+            progress = { progress.fraction },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(4.dp),
+            color = Accent,
+            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+        )
     }
 }
 

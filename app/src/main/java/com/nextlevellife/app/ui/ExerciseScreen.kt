@@ -45,6 +45,7 @@ import com.nextlevellife.app.data.Workouts
 import com.nextlevellife.app.pose.CountKind
 import com.nextlevellife.app.pose.RepCounters
 import com.nextlevellife.app.pose.rememberRepSound
+import com.nextlevellife.app.stats.StatsText
 import kotlinx.coroutines.delay
 import java.util.UUID
 
@@ -72,7 +73,8 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
     var recordedCount by rememberSaveable { mutableIntStateOf(0) }
     var recordedElapsedMs by rememberSaveable { mutableLongStateOf(0L) }
     var recordedEarnedMs by rememberSaveable { mutableLongStateOf(0L) }
-    var recordedXp by rememberSaveable { mutableLongStateOf(0L) }
+    // Прирост силы за сегодня после записи (предварительно); null — не известно.
+    var recordedStrength by rememberSaveable { mutableStateOf<String?>(null) }
     // Запись не удалась: подход не потерян, его можно записать ещё раз (тем же sessionId — без дубля).
     var saveFailed by rememberSaveable { mutableStateOf(false) }
     // Один подход — один идентификатор: повторный вызов записи с ним ничего не начислит второй раз.
@@ -105,7 +107,7 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
         recorded = true
         recordedCount = count
         recordedEarnedMs = result.earnedMs
-        recordedXp = result.xp
+        recordedStrength = StatsText.strengthResult(result.strengthGain, result.strengthToday)
         haptics.strong()
         sound.done()
     }
@@ -246,7 +248,7 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
             title = { Text("Тренировка записана") },
             text = {
                 Text(
-                    "${repsText(recordedCount)}: +${formatShort(recordedEarnedMs)}, +$recordedXp опыта",
+                    listOfNotNull("${repsText(recordedCount)}: +${formatShort(recordedEarnedMs)}", recordedStrength).joinToString(", "),
                     style = MaterialTheme.typography.bodyLarge.merge(Tabular),
                 )
             },
@@ -275,7 +277,8 @@ private fun HoldExerciseScreen(ex: Exercise, onDone: () -> Unit) {
     var recordedHeldMs by rememberSaveable { mutableLongStateOf(0L) }
     var recordedElapsedMs by rememberSaveable { mutableLongStateOf(0L) }
     var recordedEarnedMs by rememberSaveable { mutableLongStateOf(0L) }
-    var recordedXp by rememberSaveable { mutableLongStateOf(0L) }
+    // Прирост силы за сегодня после записи (предварительно); null — не известно.
+    var recordedStrength by rememberSaveable { mutableStateOf<String?>(null) }
     var saveFailed by rememberSaveable { mutableStateOf(false) }
     val sessionId = rememberSaveable { UUID.randomUUID().toString() }
     var frontCamera by rememberSaveable { mutableStateOf(true) }
@@ -315,7 +318,7 @@ private fun HoldExerciseScreen(ex: Exercise, onDone: () -> Unit) {
         saveFailed = false
         recorded = true
         recordedEarnedMs = result.earnedMs
-        recordedXp = result.xp
+        recordedStrength = StatsText.strengthResult(result.strengthGain, result.strengthToday)
         haptics.strong()
         sound.done()
     }
@@ -483,11 +486,13 @@ private fun HoldExerciseScreen(ex: Exercise, onDone: () -> Unit) {
                         HoldMath.resultLine(recordedHeldMs, recordedEarnedMs),
                         style = MaterialTheme.typography.bodyLarge.merge(Tabular),
                     )
-                    Text(
-                        "+$recordedXp опыта",
-                        style = MaterialTheme.typography.bodyMedium.merge(Tabular),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    recordedStrength?.let { line ->
+                        Text(
+                            line.replaceFirstChar { it.uppercase() },
+                            style = MaterialTheme.typography.bodyMedium.merge(Tabular),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             },
         )

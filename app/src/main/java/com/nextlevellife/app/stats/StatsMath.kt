@@ -1,0 +1,340 @@
+package com.nextlevellife.app.stats
+
+import com.nextlevellife.app.data.ActivityDay
+import com.nextlevellife.app.data.BlockEvent
+import com.nextlevellife.app.data.ComplexRun
+import com.nextlevellife.app.data.Measurement
+import com.nextlevellife.app.data.SetEntry
+import com.nextlevellife.app.sleep.NightMode
+import com.nextlevellife.app.sleep.ObservationGap
+import com.nextlevellife.app.sleep.SleepMath
+import com.nextlevellife.app.sleep.SleepNight
+import java.time.ZoneId
+import kotlin.math.floor
+import kotlin.math.sqrt
+
+/**
+ * Характеристики персонажа — очки ПРИВЫЧЕК, а не оценка физических способностей.
+ * Сила — повторения и планка, Выносливость — ходьба, бег и время комплексов,
+ * Дисциплина — ночь без телефона, расход в пределах лимита и ночь без попыток открыть заблокированное.
+ */
+enum class Stat(val title: String) {
+    STRENGTH("Сила"),
+    ENDURANCE("Выносливость"),
+    DISCIPLINE("Дисциплина"),
+}
+
+/**
+ * Откуда очки. [PointSource.amount] в своих единицах: REPS — повторения, PLANK — секунды,
+ * COMPLEX_DONE — число завершённых комплексов, WALK — шаги ходьбы (без шагов бега), RUN — метры,
+ * COMPLEX_TIME — мс завершённых комплексов, PHONE_FREE_NIGHT — 1, LIMIT_KEPT — процент лимита,
+ * NIGHT_NO_BLOCKS — 0 (блокировок не было).
+ */
+enum class SourceKind(val stat: Stat) {
+    REPS(Stat.STRENGTH),
+    PLANK(Stat.STRENGTH),
+    COMPLEX_DONE(Stat.STRENGTH),
+    WALK(Stat.ENDURANCE),
+    RUN(Stat.ENDURANCE),
+    COMPLEX_TIME(Stat.ENDURANCE),
+    PHONE_FREE_NIGHT(Stat.DISCIPLINE),
+    LIMIT_KEPT(Stat.DISCIPLINE),
+    NIGHT_NO_BLOCKS(Stat.DISCIPLINE),
+}
+
+/** Один источник очков дня: [raw] — сколько дал бы без потолков, [points] — сколько засчитано. */
+data class PointSource(val kind: SourceKind, val amount: Long, val points: Int, val raw: Int = points) {
+    /** Срезан потолком. */
+    val capped: Boolean get() = points < raw
+}
+
+/** Очки одной характеристики за день и их источники (в порядке правил). */
+data class StatDay(val points: Int, val sources: List<PointSource>)
+
+/**
+ * Очки дня по характеристикам. [provisional] — день ещё идёт (сегодня): очки могут измениться,
+ * дисциплина за сутки ещё не начислена.
+ */
+data class DayPoints(
+    val day: Long,
+    val strength: Int,
+    val endurance: Int,
+    val discipline: Int,
+    val sources: List<PointSource>,
+    val provisional: Boolean = false,
+) {
+    fun of(stat: Stat): Int = when (stat) {
+        Stat.STRENGTH -> strength
+        Stat.ENDURANCE -> endurance
+        Stat.DISCIPLINE -> discipline
+    }
+
+    val total: Int get() = strength + endurance + discipline
+
+    fun sourcesOf(stat: Stat): List<PointSource> = sources.filter { it.kind.stat == stat }
+
+    companion object {
+        fun empty(day: Long, provisional: Boolean = false) = DayPoints(day, 0, 0, 0, emptyList(), provisional)
+    }
+}
+
+/** Сила за день: [reps] — все повторения подходов-повторений (комплексы — по их подходам), [heldMs] — засчитанная планка. */
+data class StrengthInput(val reps: Int, val heldMs: Long, val completedComplexes: Int)
+
+/**
+ * Выносливость за день: [steps] — все шаги (null — данных нет, это не ноль), [runSteps] — шаги пробежек,
+ * [runMeters] — метры пробежек, [complexMs] — длительность завершённых комплексов.
+ */
+data class EnduranceInput(val steps: Long?, val runSteps: Long, val runMeters: Long, val complexMs: Long)
+
+/**
+ * Дисциплина за день.
+ * Ночь — с днём пробуждения = этот день: [nightKnown] — расчёт ночи есть, [phoneFree] — «Ночь без телефона»,
+ * [nightModeOn] — ночной режим действовал этой ночью, [nightEnded] — окно ночного режима уже прошло,
+ * [nightObserved] — служба наблюдала всё окно без пропусков, [nightBlocks] — блокировок с причиной NIGHT за окно.
+ * Сутки: [dayEnded] — сутки кончились, [limitMin] — дневной лимит (0 — выключен), [spentMs] — расход за сутки,
+ * [dayObserved] — служба наблюдала все сутки без пропусков.
+ */
+data class DisciplineInput(
+    val dayEnded: Boolean,
+    val nightKnown: Boolean = false,
+    val phoneFree: Boolean = false,
+    val nightModeOn: Boolean = false,
+    val nightEnded: Boolean = false,
+    val nightObserved: Boolean = false,
+    val nightBlocks: Int = 0,
+    val limitMin: Int = 0,
+    val spentMs: Long = 0L,
+    val dayObserved: Boolean = false,
+)
+
+/** Уровень и путь до следующего: [from] — очки начала уровня, [to] — следующего. */
+data class LevelProgress(val level: Int, val points: Long, val from: Long, val to: Long) {
+    val left: Long get() = (to - points).coerceAtLeast(0L)
+    val fraction: Float get() = ((points - from).toFloat() / (to - from).coerceAtLeast(1L)).coerceIn(0f, 1f)
+}
+
+/**
+ * Чистая логика характеристик, без Android: её проверяют юнит-тесты.
+ * Очки считаются по дням из данных-источников (дневник, шаги, ночи, расход, блокировки);
+ * отдельного журнала очков нет. Числа — стартовые, их можно настраивать (тогда поднять [RULE_VERSION]).
+ */
+object StatsMath {
+    /** Версия правил: при смене кеш итогов дней ([StatsRepository]) пересчитывается. */
+    const val RULE_VERSION = 1
+
+    /** Потолок очков одной характеристики за день. */
+    const val DAY_CAP = 10
+
+    // Сила
+    const val REPS_PER_POINT = 10
+    const val PLANK_SECONDS_PER_POINT = 30
+    const val STRENGTH_WORK_CAP = 8
+    const val COMPLEX_BONUS = 2
+
+    // Выносливость
+    const val WALK_STEPS_PER_POINT = 2000L
+    const val RUN_METERS_PER_POINT = 1000L
+    const val COMPLEX_MS_PER_POINT = 5 * 60_000L
+    const val COMPLEX_TIME_CAP = 4
+
+    // Дисциплина
+    const val PHONE_FREE_POINTS = 4
+    const val LIMIT_POINTS = 3
+    const val NIGHT_NO_BLOCKS_POINTS = 3
+
+    /** Расход не больше этой доли лимита (в процентах) — очки за лимит. */
+    const val LIMIT_SHARE_PERCENT = 80
+
+    /** Причина блокировки ночью (BlockReason.NIGHT). */
+    const val NIGHT_REASON = "NIGHT"
+
+    // ---------- Формулы ----------
+
+    /** Сила: min(8, ⌊R/10⌋ + ⌊H/30⌋) + 2 за завершённый комплекс; не больше 10. */
+    fun strength(input: StrengthInput): StatDay {
+        val sources = ArrayList<PointSource>()
+        var left = STRENGTH_WORK_CAP
+        if (input.reps > 0) {
+            val raw = input.reps / REPS_PER_POINT
+            val pts = minOf(raw, left)
+            left -= pts
+            sources += PointSource(SourceKind.REPS, input.reps.toLong(), pts, raw)
+        }
+        val heldSec = input.heldMs.coerceAtLeast(0L) / 1000
+        if (heldSec > 0) {
+            val raw = (heldSec / PLANK_SECONDS_PER_POINT).toInt()
+            val pts = minOf(raw, left)
+            left -= pts
+            sources += PointSource(SourceKind.PLANK, heldSec, pts, raw)
+        }
+        if (input.completedComplexes > 0) {
+            sources += PointSource(SourceKind.COMPLEX_DONE, input.completedComplexes.toLong(), COMPLEX_BONUS)
+        }
+        return StatDay(sources.sumOf { it.points }.coerceAtMost(DAY_CAP), sources)
+    }
+
+    /**
+     * Выносливость: min(10, ⌊W/2000⌋ + ⌊M/1000⌋ + min(4, ⌊C/5 мин⌋)), W = шаги − шаги бега.
+     * Шаги неизвестны — ходьбы нет (это не «подтверждённый ноль», но и очков за неё нет).
+     */
+    fun endurance(input: EnduranceInput): StatDay {
+        val sources = ArrayList<PointSource>()
+        var left = DAY_CAP
+        fun add(kind: SourceKind, amount: Long, raw: Int, ownCap: Int = Int.MAX_VALUE) {
+            val pts = minOf(raw, ownCap, left)
+            left -= pts
+            sources += PointSource(kind, amount, pts, raw)
+        }
+        val walk = walkSteps(input.steps, input.runSteps)
+        if (walk > 0) add(SourceKind.WALK, walk, (walk / WALK_STEPS_PER_POINT).toInt())
+        if (input.runMeters > 0) add(SourceKind.RUN, input.runMeters, (input.runMeters / RUN_METERS_PER_POINT).toInt())
+        if (input.complexMs > 0) {
+            add(SourceKind.COMPLEX_TIME, input.complexMs, (input.complexMs / COMPLEX_MS_PER_POINT).toInt(), COMPLEX_TIME_CAP)
+        }
+        return StatDay(sources.sumOf { it.points }, sources)
+    }
+
+    /** Шаги ходьбы: все шаги без шагов бега; неизвестно — 0. */
+    fun walkSteps(steps: Long?, runSteps: Long): Long = ((steps ?: 0L) - runSteps.coerceAtLeast(0L)).coerceAtLeast(0L)
+
+    /**
+     * Дисциплина: +4 «Ночь без телефона»; +3 ни одной ночной блокировки (ночной режим включён, окно прошло,
+     * наблюдение полное); +3 расход ≤ 80 % лимита (сутки кончились, лимит включён, наблюдение полное).
+     * Данных недостаточно — 0, не штраф.
+     */
+    fun discipline(input: DisciplineInput): StatDay {
+        val sources = ArrayList<PointSource>()
+        if (input.nightKnown && input.phoneFree) {
+            sources += PointSource(SourceKind.PHONE_FREE_NIGHT, 1, PHONE_FREE_POINTS)
+        }
+        if (input.nightKnown && input.nightModeOn && input.nightEnded && input.nightObserved && input.nightBlocks == 0) {
+            sources += PointSource(SourceKind.NIGHT_NO_BLOCKS, 0, NIGHT_NO_BLOCKS_POINTS)
+        }
+        if (input.dayEnded && input.limitMin > 0 && input.dayObserved && limitKept(input.spentMs, input.limitMin)) {
+            sources += PointSource(SourceKind.LIMIT_KEPT, limitPercent(input.spentMs, input.limitMin), LIMIT_POINTS)
+        }
+        return StatDay(sources.sumOf { it.points }.coerceAtMost(DAY_CAP), sources)
+    }
+
+    /** Расход не больше 80 % лимита (точно, без округления). */
+    fun limitKept(spentMs: Long, limitMin: Int): Boolean =
+        limitMin > 0 && spentMs.coerceAtLeast(0L) * 100 <= limitMin * 60_000L * LIMIT_SHARE_PERCENT
+
+    /** Расход в процентах лимита, с округлением. */
+    fun limitPercent(spentMs: Long, limitMin: Int): Long {
+        if (limitMin <= 0) return 0
+        val limitMs = limitMin * 60_000L
+        return (spentMs.coerceAtLeast(0L) * 100 + limitMs / 2) / limitMs
+    }
+
+    /** Очки дня целиком. */
+    fun day(day: Long, s: StrengthInput, e: EnduranceInput, d: DisciplineInput, provisional: Boolean = false): DayPoints {
+        val st = strength(s)
+        val en = endurance(e)
+        val di = discipline(d)
+        return DayPoints(day, st.points, en.points, di.points, st.sources + en.sources + di.sources, provisional)
+    }
+
+    // ---------- Уровни ----------
+
+    /** Уровень: 1 + ⌊√(очки / 50)⌋. Уровень n начинается с 50·(n−1)² очков: 0, 50, 200, 450, 800… */
+    fun levelFor(points: Long): Int = floor(sqrt(points.coerceAtLeast(0L) / 50.0)).toInt() + 1
+
+    fun pointsForLevel(level: Int): Long = 50L * (level - 1) * (level - 1)
+
+    fun progress(points: Long): LevelProgress {
+        val level = levelFor(points)
+        return LevelProgress(level, points, pointsForLevel(level), pointsForLevel(level + 1))
+    }
+
+    // ---------- Сбор входных данных дня ----------
+
+    /**
+     * Сила по записям дня: повторения — только подходы-повторения (подходы комплексов в том числе,
+     * каждая строка один раз; total_reps прохождений не добавляется), планка — сумма held_ms,
+     * комплексы — завершённые прохождения.
+     */
+    fun strengthInput(sets: List<SetEntry>, runs: List<ComplexRun>): StrengthInput = StrengthInput(
+        reps = sets.filter { it.measurement == Measurement.REPS }.sumOf { it.reps.coerceAtLeast(0) },
+        heldMs = sets.filter { it.measurement == Measurement.HOLD }.sumOf { it.heldMs.coerceAtLeast(0L) },
+        completedComplexes = runs.count { it.completed },
+    )
+
+    fun enduranceInput(activity: ActivityDay?, runs: List<ComplexRun>): EnduranceInput = EnduranceInput(
+        steps = activity?.steps,
+        runSteps = activity?.runSteps ?: 0L,
+        runMeters = activity?.runDistanceM ?: 0L,
+        complexMs = runs.filter { it.completed }.sumOf { it.durationMs.coerceAtLeast(0L) },
+    )
+
+    /**
+     * Наблюдение на [fromMs, toMs) было полным: события начались не позже [fromMs] ([observedSinceMs]),
+     * отрезок уже прошёл ([nowMs]) и ни один пропуск его не задевает.
+     */
+    fun observed(fromMs: Long, toMs: Long, observedSinceMs: Long?, gaps: List<ObservationGap>, nowMs: Long): Boolean =
+        observedSinceMs != null && observedSinceMs <= fromMs && toMs <= nowMs &&
+            gaps.none { it.startMs < toMs && it.endMs > fromMs }
+
+    /**
+     * Дисциплина по данным: ночь с днём пробуждения [day] ([night]; её окно ночного режима — по режиму и поясу,
+     * записанным в ночи), события блокировки (любых суток — фильтр по времени), пропуски наблюдения,
+     * начало наблюдения, лимит и расход. [dayStartMs]/[dayEndMs] — границы учётных суток.
+     */
+    fun disciplineInput(
+        day: Long,
+        nowMs: Long,
+        dayStartMs: Long,
+        dayEndMs: Long,
+        night: SleepNight?,
+        blockEvents: List<BlockEvent>,
+        gaps: List<ObservationGap>,
+        observedSinceMs: Long?,
+        limitMin: Int,
+        spentMs: Long,
+    ): DisciplineInput {
+        val modeStart = night?.nightStartMin
+        val modeEnd = night?.nightEndMin
+        val interval = if (night != null && modeStart != null && modeEnd != null && modeStart != modeEnd) {
+            val zone = runCatching { ZoneId.of(night.zoneId) }.getOrNull()
+            zone?.let { SleepMath.nightModeInterval(day, it, NightMode(modeStart, modeEnd)) }
+        } else {
+            null
+        }
+        return DisciplineInput(
+            dayEnded = nowMs >= dayEndMs,
+            nightKnown = night != null,
+            phoneFree = night?.phoneFree == true,
+            nightModeOn = interval != null,
+            nightEnded = interval != null && interval.second <= nowMs,
+            nightObserved = interval != null && observed(interval.first, interval.second, observedSinceMs, gaps, nowMs),
+            nightBlocks = if (interval == null) 0 else blockEvents.count {
+                it.reason == NIGHT_REASON && it.utcMs >= interval.first && it.utcMs < interval.second
+            },
+            limitMin = limitMin,
+            spentMs = spentMs,
+            dayObserved = observed(dayStartMs, dayEndMs, observedSinceMs, gaps, nowMs),
+        )
+    }
+
+    // ---------- Кеш итогов дня ----------
+
+    /**
+     * Строка кеша итогов дня: «версия|сила|выносливость|дисциплина|источники», источники —
+     * «ВИД:количество:очки:без потолка» через «;». Неверная строка или другая версия правил — null.
+     */
+    fun encode(p: DayPoints, ruleVersion: Int = RULE_VERSION): String =
+        "$ruleVersion|${p.strength}|${p.endurance}|${p.discipline}|" +
+            p.sources.joinToString(";") { "${it.kind.name}:${it.amount}:${it.points}:${it.raw}" }
+
+    fun decode(day: Long, s: String, ruleVersion: Int = RULE_VERSION): DayPoints? = runCatching {
+        val parts = s.split('|')
+        if (parts.size != 5 || parts[0].toInt() != ruleVersion) return null
+        val sources = if (parts[4].isEmpty()) emptyList() else parts[4].split(';').map { item ->
+            val f = item.split(':')
+            require(f.size == 4)
+            PointSource(SourceKind.valueOf(f[0]), f[1].toLong(), f[2].toInt(), f[3].toInt())
+        }
+        DayPoints(day, parts[1].toInt(), parts[2].toInt(), parts[3].toInt(), sources)
+    }.getOrNull()
+}

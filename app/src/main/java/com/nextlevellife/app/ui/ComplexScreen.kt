@@ -28,6 +28,7 @@ import com.nextlevellife.app.data.Weights
 import com.nextlevellife.app.data.WorkoutResult
 import com.nextlevellife.app.data.Workouts
 import com.nextlevellife.app.pose.rememberRepSound
+import com.nextlevellife.app.stats.StatsText
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -197,7 +198,6 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
             WorkoutResult(0L, 0L, saved = false)
         }
         val earned = r.earnedMs
-        val xp = r.xp
         val total = if (r.saved) counted else 0
         val failed = if (r.saved) 0 else counted
         if (total == 0 && failed == 0) {
@@ -207,7 +207,8 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
         val title = if (kind == ComplexKind.MINOTAUR) "Комплекс не завершён" else "Синди не завершена"
         val text = listOfNotNull(
             note,
-            "Засчитано $total ${complexRepsWord(total)}: +${formatShort(earned)} экранного времени, +$xp опыта.",
+            "Засчитано $total ${complexRepsWord(total)}: +${formatShort(earned)} экранного времени.",
+            strengthSentence(r),
             if (failed > 0) "Не удалось записать $failed ${complexRepsWord(failed)}." else null,
         ).joinToString(" ")
         if (r.saved) showResult(title, text) else showResult(title, text, RETRY_INCOMPLETE, note.orEmpty())
@@ -236,7 +237,8 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
             return
         }
         val title = if (r.isRecord) "Новый рекорд!" else "Минотавр повержен"
-        var text = "Время ${formatDuration(elapsed)}. +${formatShort(r.earnedMs)} экранного времени, +${r.xp} опыта."
+        var text = "Время ${formatDuration(elapsed)}. +${formatShort(r.earnedMs)} экранного времени." +
+            (strengthSentence(r)?.let { " $it" } ?: "")
         if (r.isRecord && r.previousBestMs != null) {
             text += " На ${formatDuration(r.previousBestMs - elapsed)} быстрее прежнего рекорда."
         }
@@ -270,7 +272,7 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
         }
         val title = if (r.isRecord) "Новый рекорд!" else "Синди завершена"
         var text = "$rounds ${complexRoundsWord(rounds)} + $extra ${complexRepsWord(extra)}. " +
-            "+${formatShort(r.earnedMs)} экранного времени, +${r.xp} опыта."
+            "+${formatShort(r.earnedMs)} экранного времени." + (strengthSentence(r)?.let { " $it" } ?: "")
         if (r.isRecord) {
             r.previousBestRounds?.let { (pr, pe) -> text += " Прежний рекорд: $pr + $pe." }
         }
@@ -467,6 +469,10 @@ internal fun minotaurBestMs(weight: Int): Long? {
 
 internal fun cindyBestRounds(): Pair<Int, Int>? =
     runCatching { Diary.bestComplexRounds(Cindy.ID) }.getOrNull()
+
+/** Прирост силы за сегодня отдельным предложением: «+3 силы (сегодня 7/10).»; не известно — null. */
+private fun strengthSentence(r: WorkoutResult): String? =
+    StatsText.strengthResult(r.strengthGain, r.strengthToday)?.let { it.replaceFirstChar { c -> c.uppercase() } + "." }
 
 /** Выбор формы по числу: «1 круг», «3 круга», «5 кругов». */
 internal fun pluralRu(n: Int, one: String, few: String, many: String): String {

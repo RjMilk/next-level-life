@@ -1,5 +1,6 @@
 package com.nextlevellife.app.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -32,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nextlevellife.app.data.ActivityRun
 import com.nextlevellife.app.data.ComplexRun
@@ -48,6 +50,12 @@ import com.nextlevellife.app.health.HealthAvailability
 import com.nextlevellife.app.sleep.NightStatus
 import com.nextlevellife.app.sleep.SleepNight
 import com.nextlevellife.app.sleep.SleepRepository
+import com.nextlevellife.app.stats.DayPoints
+import com.nextlevellife.app.stats.Stat
+import com.nextlevellife.app.stats.StatsMath
+import com.nextlevellife.app.stats.StatsRepository
+import com.nextlevellife.app.stats.StatsSummary
+import com.nextlevellife.app.stats.StatsText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -141,6 +149,10 @@ fun ProgressScreen(modifier: Modifier = Modifier) {
             DayData(selected, ProgressMath.digestDay(sets, runs, activity, activityRuns, night))
         }.also { ProgressCache.day = it }
     }
+    // Характеристики за всю историю и очки по дням; пока считаются, виден прошлый итог.
+    val stats by produceState(StatsRepository.cached(), version, today) {
+        value = withContext(Dispatchers.IO) { StatsRepository.load() }
+    }
     val history by produceState(ProgressCache.history, version, expanded) {
         val id = expanded
         value = if (id == null) null else withContext(Dispatchers.IO) {
@@ -166,8 +178,7 @@ fun ProgressScreen(modifier: Modifier = Modifier) {
         Text("Прогресс", style = MaterialTheme.typography.headlineMedium)
     }
     val levelAndCalendar: @Composable () -> Unit = {
-        val xp = overview?.xp ?: Store.xp()
-        LevelCard(xp, overview?.streak ?: Store.streak())
+        CharacterCard(stats, overview?.streak ?: Store.streak(), legacyXp = overview?.xp ?: Store.xp())
         CalendarCard(
             month = month,
             today = today,
@@ -188,7 +199,7 @@ fun ProgressScreen(modifier: Modifier = Modifier) {
             o == null -> Unit // грузится: обычно доли секунды
             !o.hasEntries -> EmptyDiaryCard()
             else -> {
-                DayCard(selected, today, dayData, Modifier.bringIntoViewRequester(dayRequester))
+                DayCard(selected, today, dayData, Modifier.bringIntoViewRequester(dayRequester), stats?.days?.get(selected))
                 ChartCard(
                     days = o.chartDays,
                     reps = o.chartReps,
@@ -334,33 +345,126 @@ private fun ConnectHealthCard(onConnect: () -> Unit) {
     }
 }
 
+/**
+ * «Характеристики»: общий уровень (сумма очков трёх характеристик) с полосой и званием, серия, затем
+ * Сила, Выносливость и Дисциплина — уровень, очки за всё время и полоса до следующего уровня.
+ * Внизу мелко — опыт до обновления 0.6 (за минуты), если он был.
+ */
 @Composable
-private fun LevelCard(xp: Long, streak: Int) {
-    val level = Store.levelFor(xp)
-    val (left, progress) = ProgressMath.levelProgress(xp, Store.xpForLevel(level), Store.xpForLevel(level + 1))
+private fun CharacterCard(stats: StatsSummary?, streak: Int, legacyXp: Long) {
+    val overall = StatsMath.progress(stats?.overall ?: 0L)
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Характеристики", style = MaterialTheme.typography.titleMedium)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Уровень $level", style = MaterialTheme.typography.headlineMedium, color = Accent)
-                    Text(
-                        Store.titleFor(level),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Text("Уровень ${overall.level}", style = MaterialTheme.typography.headlineMedium, color = Accent)
+                    Text(Store.titleFor(overall.level), style = MaterialTheme.typography.bodyMedium, color = muted)
                 }
                 Text(ProgressMath.streakLabel(streak), style = MaterialTheme.typography.titleSmall.merge(Tabular))
             }
             LinearProgressIndicator(
-                progress = { progress },
+                progress = { overall.fraction },
                 modifier = Modifier.fillMaxWidth(),
+                color = Accent,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant,
             )
+            Text(StatsText.toNextLevel(overall.left), style = MaterialTheme.typography.bodySmall.merge(Tabular), color = muted)
+            Stat.entries.forEach { stat ->
+                val total = stats?.total(stat) ?: 0L
+                val p = StatsMath.progress(total)
+                Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            StatsText.statLevel(stat, total),
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.titleSmall.merge(Tabular),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            StatsText.pointsLabel(total),
+                            style = MaterialTheme.typography.bodySmall.merge(Tabular),
+                            color = muted,
+                            maxLines = 1,
+                        )
+                    }
+                    LinearProgressIndicator(
+                        progress = { p.fraction },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp),
+                        color = Accent,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                    )
+                }
+            }
             Text(
-                "До следующего уровня $left опыта",
-                style = MaterialTheme.typography.bodySmall.merge(Tabular),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                "Очки привычек: до ${StatsMath.DAY_CAP} в день на каждую",
+                modifier = Modifier.padding(top = 4.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = muted,
             )
+            if (legacyXp > 0L) {
+                Text(StatsText.legacyXpLine(legacyXp), style = MaterialTheme.typography.bodySmall.merge(Tabular), color = muted)
+            }
+        }
+    }
+}
+
+/**
+ * Очки выбранного дня: «Сила +7 · Выносливость +3 · Дисциплина +4»; нажатие раскрывает источники
+ * («70 повторений → 7», «Ночь без телефона → 4»). Сегодня — «предварительно»: дисциплина за сутки
+ * начисляется после их окончания. Пустой прошлый день не показывается.
+ */
+@Composable
+private fun DayStatsSection(points: DayPoints) {
+    if (points.total == 0 && points.sources.isEmpty() && !points.provisional) return
+    var open by rememberSaveable(points.day) { mutableStateOf(false) }
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val canOpen = points.sources.isNotEmpty()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .then(
+                if (canOpen) {
+                    Modifier.clickable(onClickLabel = if (open) "Скрыть источники очков" else "Показать источники очков") { open = !open }
+                } else {
+                    Modifier
+                },
+            ),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(StatsText.dayLine(points), style = MaterialTheme.typography.titleSmall.merge(Tabular), color = Accent)
+        if (points.provisional) {
+            Text(
+                "предварительно · дисциплина за сутки — после их окончания",
+                style = MaterialTheme.typography.bodySmall,
+                color = muted,
+            )
+        }
+        if (canOpen) {
+            Text(
+                if (open) "Скрыть источники ▴" else "Откуда очки ▾",
+                style = MaterialTheme.typography.labelLarge,
+                color = muted,
+            )
+        }
+        if (open) {
+            Stat.entries.forEach { stat ->
+                val sources = points.sourcesOf(stat)
+                if (sources.isEmpty()) return@forEach
+                Text(
+                    stat.title,
+                    modifier = Modifier.padding(top = 4.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = muted,
+                )
+                sources.forEach { s ->
+                    Text(StatsText.sourceLine(s), style = MaterialTheme.typography.bodySmall.merge(Tabular))
+                }
+            }
         }
     }
 }
@@ -377,10 +481,12 @@ private fun EmptyDiaryCard() {
 }
 
 @Composable
-private fun DayCard(selected: Long, today: Long, data: DayData?, modifier: Modifier = Modifier) {
+private fun DayCard(selected: Long, today: Long, data: DayData?, modifier: Modifier = Modifier, points: DayPoints? = null) {
     Card(modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(ProgressMath.dayTitle(selected, today), style = MaterialTheme.typography.titleMedium)
+            // Очки характеристик за день — сразу под датой.
+            if (points != null && points.day == selected) DayStatsSection(points)
             val digest = data?.takeIf { it.day == selected }?.digest ?: return@Column
             // Ночной перерыв перед этим днём — первым: день начинается с пробуждения.
             val night = digest.night

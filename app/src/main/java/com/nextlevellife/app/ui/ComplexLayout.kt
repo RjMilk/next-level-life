@@ -138,7 +138,7 @@ private fun ColumnScope.MinotaurPrep(weight: Int, onWeight: (Int) -> Unit) {
             )
         }
     }
-    Text("Награда: +${formatShort(Minotaur.rewardMs(weight))}, +${Minotaur.xp(weight)} опыта")
+    Text("Награда: +${formatShort(Minotaur.rewardMs(weight))}")
     Text(
         "Те же ${Minotaur.totalReps} повторений по отдельности дали бы " +
             "${formatShort(Minotaur.separateRewardMs(weight))}: разница — бонус за комплекс целиком.",
