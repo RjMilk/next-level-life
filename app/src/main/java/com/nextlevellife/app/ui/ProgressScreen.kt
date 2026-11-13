@@ -105,7 +105,7 @@ private object ProgressCache {
 }
 
 @Composable
-fun ProgressScreen(modifier: Modifier = Modifier) {
+fun ProgressScreen(modifier: Modifier = Modifier, onStatInfo: (String) -> Unit = {}) {
     val version by Store.version.collectAsState()
     // Учётные сутки (доверенное время и учётный пояс) — как на главной и у ночей.
     val today = TrustedClock.today()
@@ -180,7 +180,7 @@ fun ProgressScreen(modifier: Modifier = Modifier) {
         Text("Прогресс", style = MaterialTheme.typography.headlineMedium)
     }
     val levelAndCalendar: @Composable () -> Unit = {
-        CharacterCard(stats, overview?.streak ?: Store.streak(), legacyXp = overview?.xp ?: Store.xp())
+        CharacterCard(stats, overview?.streak ?: Store.streak(), legacyXp = overview?.xp ?: Store.xp(), onStatInfo = onStatInfo)
         CalendarCard(
             month = month,
             today = today,
@@ -353,32 +353,57 @@ private fun ConnectHealthCard(onConnect: () -> Unit) {
  * «Характеристики»: общий уровень (сумма очков трёх характеристик) с полосой и званием, серия, затем
  * Сила, Выносливость и Дисциплина — уровень, очки за всё время и полоса до следующего уровня.
  * Внизу мелко — опыт до обновления 0.6 (за минуты), если он был.
+ * Нажатие на уровень или характеристику открывает «Как получить» ([onStatInfo]).
  */
 @Composable
-private fun CharacterCard(stats: StatsSummary?, streak: Int, legacyXp: Long) {
+private fun CharacterCard(stats: StatsSummary?, streak: Int, legacyXp: Long, onStatInfo: (String) -> Unit) {
     val overall = StatsMath.progress(stats?.overall ?: 0L)
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Характеристики", style = MaterialTheme.typography.titleMedium)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Уровень ${overall.level}", style = MaterialTheme.typography.headlineMedium, color = Accent)
-                    Text(Store.titleFor(overall.level), style = MaterialTheme.typography.bodyMedium, color = muted)
-                }
-                Text(ProgressMath.streakLabel(streak), style = MaterialTheme.typography.titleSmall.merge(Tabular))
-            }
-            LinearProgressIndicator(
-                progress = { overall.fraction },
-                modifier = Modifier.fillMaxWidth(),
-                color = Accent,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+        Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                "Характеристики",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 16.dp),
             )
-            Text(StatsText.toNextLevel(overall.left), style = MaterialTheme.typography.bodySmall.merge(Tabular), color = muted)
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(onClickLabel = "Что входит в уровень") { onStatInfo(STAT_INFO_LEVEL) }
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Уровень ${overall.level}",
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = Accent,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                        Text("${Store.titleFor(overall.level)}  ›", style = MaterialTheme.typography.bodyMedium, color = muted)
+                    }
+                    Text(ProgressMath.streakLabel(streak), style = MaterialTheme.typography.titleSmall.merge(Tabular))
+                }
+                LinearProgressIndicator(
+                    progress = { overall.fraction },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Accent,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                )
+                Text(StatsText.toNextLevel(overall.left), style = MaterialTheme.typography.bodySmall.merge(Tabular), color = muted)
+            }
             Stat.entries.forEach { stat ->
                 val total = stats?.total(stat) ?: 0L
                 val p = StatsMath.progress(total)
-                Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(onClickLabel = "Как получить: ${stat.title}") { onStatInfo(stat.name) }
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             StatsText.statLevel(stat, total),
@@ -393,6 +418,7 @@ private fun CharacterCard(stats: StatsSummary?, streak: Int, legacyXp: Long) {
                             color = muted,
                             maxLines = 1,
                         )
+                        Text("  ›", style = MaterialTheme.typography.titleMedium, color = muted)
                     }
                     LinearProgressIndicator(
                         progress = { p.fraction },
@@ -405,13 +431,18 @@ private fun CharacterCard(stats: StatsSummary?, streak: Int, legacyXp: Long) {
                 }
             }
             Text(
-                "Очки привычек: до ${StatsMath.DAY_CAP} в день на каждую",
-                modifier = Modifier.padding(top = 4.dp),
+                "Очки привычек: до ${StatsMath.DAY_CAP} в день на каждую. Нажми, чтобы узнать, как их получить",
+                modifier = Modifier.padding(horizontal = 16.dp).padding(top = 4.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = muted,
             )
             if (legacyXp > 0L) {
-                Text(StatsText.legacyXpLine(legacyXp), style = MaterialTheme.typography.bodySmall.merge(Tabular), color = muted)
+                Text(
+                    StatsText.legacyXpLine(legacyXp),
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    style = MaterialTheme.typography.bodySmall.merge(Tabular),
+                    color = muted,
+                )
             }
         }
     }

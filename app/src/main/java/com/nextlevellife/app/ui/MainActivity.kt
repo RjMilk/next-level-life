@@ -141,7 +141,9 @@ class MainActivity : ComponentActivity() {
                                 ) {
                                     when {
                                         screen == HOME && tab == TAB_PROGRESS ->
-                                            tabStates.SaveableStateProvider(TAB_PROGRESS) { ProgressScreen() }
+                                            tabStates.SaveableStateProvider(TAB_PROGRESS) {
+                                                ProgressScreen(onStatInfo = { screen = "$STAT_INFO$it" })
+                                            }
                                         screen == HOME && tab == TAB_SETTINGS ->
                                             tabStates.SaveableStateProvider(TAB_SETTINGS) {
                                                 SettingsScreen(onApps = { screen = APPS })
@@ -153,9 +155,15 @@ class MainActivity : ComponentActivity() {
                                                 onComplex = { screen = "$COMPLEX$it" },
                                                 onProgress = { tab = TAB_PROGRESS },
                                                 onSettings = { tab = TAB_SETTINGS },
+                                                onStatInfo = { screen = "$STAT_INFO$it" },
                                             )
                                         }
                                         screen == APPS -> AppsScreen(onBack = goHome)
+                                        screen.startsWith(STAT_INFO) -> StatInfoScreen(
+                                            topic = screen.removePrefix(STAT_INFO),
+                                            resumeCount = resumeCount,
+                                            onBack = goHome,
+                                        )
                                         screen.startsWith(COMPLEX) -> ComplexScreen(
                                             complexId = screen.removePrefix(COMPLEX),
                                             onDone = goHome,
@@ -203,6 +211,7 @@ class MainActivity : ComponentActivity() {
         const val APPS = "apps"
         const val COMPLEX = "complex:"
         const val EXERCISE = "exercise:"
+        const val STAT_INFO = "stat:"
 
         /** Health Connect (Android 13 и старше) просит показать, зачем приложению разрешения. */
         const val ACTION_SHOW_RATIONALE = "androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE"

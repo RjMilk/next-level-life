@@ -89,6 +89,8 @@ fun HomeScreen(
     onComplex: (String) -> Unit,
     onProgress: () -> Unit,
     onSettings: () -> Unit,
+    /** Открыть «Как получить»: [STAT_INFO_LEVEL] или имя характеристики. */
+    onStatInfo: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val version by Store.version.collectAsState()
@@ -185,7 +187,7 @@ fun HomeScreen(
             large = widthClass == WidthClass.EXPANDED,
         )
         TodayCard(todayDigest, night, health.availability, onProgress, onSettings)
-        StatsCard(stats, streak, onProgress)
+        StatsCard(stats, streak, onStatInfo)
     }
     val earn: @Composable () -> Unit = {
         EarnSection(version, widthClass.gridColumns, onExercise, onComplex)
@@ -396,19 +398,22 @@ private fun TodayCard(
 /**
  * Уровень и характеристики: «Уровень 3 · Новичок» и серия, под ними три строки
  * «Сила 2 · 7/10 сегодня» с тонкой полосой до следующего уровня характеристики.
- * Нажатие открывает «Прогресс». [stats] = null — ещё не посчитано: нули.
+ * Нажатие на уровень открывает «Как получить» для уровня, на характеристику — для неё.
+ * [stats] = null — ещё не посчитано: нули.
  */
 @Composable
-private fun StatsCard(stats: StatsSummary?, streak: Int, onProgress: () -> Unit) {
+private fun StatsCard(stats: StatsSummary?, streak: Int, onStatInfo: (String) -> Unit) {
     val level = StatsMath.levelFor(stats?.overall ?: 0L)
     val today = stats?.todayPoints
-    Card(
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClickLabel = "Открыть прогресс", onClick = onProgress),
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(vertical = 8.dp)) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(onClickLabel = "Что входит в уровень") { onStatInfo(STAT_INFO_LEVEL) }
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
                     "Уровень $level · ${Store.titleFor(level)}",
                     style = MaterialTheme.typography.titleMedium,
@@ -421,6 +426,7 @@ private fun StatsCard(stats: StatsSummary?, streak: Int, onProgress: () -> Unit)
                     style = MaterialTheme.typography.titleSmall.merge(Tabular),
                     maxLines = 1,
                 )
+                Text("  ›", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Stat.entries.forEachIndexed { i, stat ->
                 StatLine(
@@ -428,6 +434,11 @@ private fun StatsCard(stats: StatsSummary?, streak: Int, onProgress: () -> Unit)
                     total = stats?.total(stat) ?: 0L,
                     today = today?.of(stat) ?: 0,
                     todayWord = i == 0,
+                    risk = StatsText.riskLine(stat, stats?.riskOf(stat) ?: 0),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClickLabel = "Как получить: ${stat.title}") { onStatInfo(stat.name) }
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
                 )
             }
         }
@@ -436,22 +447,33 @@ private fun StatsCard(stats: StatsSummary?, streak: Int, onProgress: () -> Unit)
 
 /** «Сила 2 · 7/10 сегодня» (очки дня приглушены) и тонкая полоса до следующего уровня характеристики. */
 @Composable
-private fun StatLine(stat: Stat, total: Long, today: Int, todayWord: Boolean) {
+private fun StatLine(
+    stat: Stat,
+    total: Long,
+    today: Int,
+    todayWord: Boolean,
+    risk: String?,
+    modifier: Modifier = Modifier,
+) {
     val progress = StatsMath.progress(total)
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(
-            buildAnnotatedString {
-                append(StatsText.statLevel(stat, total))
-                withStyle(SpanStyle(color = muted)) {
-                    append(" · ${StatsText.ofCap(today)}")
-                    if (todayWord) append(" сегодня")
-                }
-            },
-            style = MaterialTheme.typography.bodyMedium.merge(Tabular),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                buildAnnotatedString {
+                    append(StatsText.statLevel(stat, total))
+                    withStyle(SpanStyle(color = muted)) {
+                        append(" · ${StatsText.ofCap(today)}")
+                        if (todayWord) append(" сегодня")
+                    }
+                },
+                style = MaterialTheme.typography.bodyMedium.merge(Tabular),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text("›", style = MaterialTheme.typography.titleMedium, color = muted)
+        }
         LinearProgressIndicator(
             progress = { progress.fraction },
             modifier = Modifier
@@ -460,6 +482,9 @@ private fun StatLine(stat: Stat, total: Long, today: Int, todayWord: Boolean) {
             color = Accent,
             trackColor = MaterialTheme.colorScheme.surfaceVariant,
         )
+        if (risk != null) {
+            Text(risk, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
     }
 }
 

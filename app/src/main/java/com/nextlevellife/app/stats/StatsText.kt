@@ -15,7 +15,23 @@ object StatsText {
 
     /** «Сила +7 · Выносливость +3 · Дисциплина +4»: внутри пункта переносов нет, только по « · ». */
     fun dayLine(p: DayPoints): String =
-        Stat.entries.joinToString(" · ") { "${it.title}$NBSP+${p.of(it)}" }
+        Stat.entries.joinToString(" · ") { "${it.title}$NBSP${signed(p.of(it))}" }
+
+    /** «+7», «−2», «+0». */
+    fun signed(n: Int): String = if (n < 0) "−${-n}" else "+$n"
+
+    /**
+     * Предупреждение о штрафе за сегодня: «Сегодня ещё без очков силы — завтра сила −1»; штрафа не будет — null.
+     */
+    fun riskLine(stat: Stat, risk: Int): String? {
+        if (risk >= 0) return null
+        val what = when (stat) {
+            Stat.STRENGTH -> "Сегодня ещё без очков силы"
+            Stat.DISCIPLINE -> "Сегодня без очков дисциплины"
+            Stat.ENDURANCE -> return null
+        }
+        return "$what — завтра ${stat.title.lowercase()} ${signed(risk)}"
+    }
 
     /** «87 очков», «1 очко», «1 234 очка». */
     fun pointsLabel(points: Long): String =
@@ -46,8 +62,20 @@ object StatsText {
             SourceKind.PHONE_FREE_NIGHT -> "Ночь без телефона"
             SourceKind.LIMIT_KEPT -> "расход ${s.amount}$NBSP% лимита"
             SourceKind.NIGHT_NO_BLOCKS -> "ночью без блокировок"
+            SourceKind.STRENGTH_IDLE -> "${s.amount}-й день без тренировки"
+            SourceKind.DISCIPLINE_IDLE -> "${s.amount}-й день без дисциплины"
         }
-        return "$what → ${s.points}" + if (s.capped) " (потолок)" else ""
+        val why = when {
+            s.capped -> " (потолок)"
+            s.points != 0 -> ""
+            s.kind == SourceKind.REPS && s.amount >= StatsMath.REPS_PER_POINT ->
+                " (нет подхода от ${StatsMath.FULL_SET_REPS})"
+            s.kind == SourceKind.PLANK && s.amount < StatsMath.PLANK_MIN_SECONDS -> " (меньше минуты)"
+            s.kind == SourceKind.WALK -> " (меньше ${ActivityMath.formatThousands(StatsMath.WALK_FIRST_POINT_STEPS)})"
+            else -> ""
+        }
+        val pts = if (s.points < 0) signed(s.points) else s.points.toString()
+        return "$what → $pts$why"
     }
 
     /**

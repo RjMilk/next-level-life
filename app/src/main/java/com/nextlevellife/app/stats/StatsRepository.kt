@@ -24,7 +24,11 @@ data class StatsSummary(
     val discipline: Long,
     val days: Map<Long, DayPoints>,
     val legacyXp: Long,
+    /** Штраф, который придёт, если сегодня закончится без очков характеристики ([StatsMath.withPenalties]). */
+    val risk: Map<Stat, Int> = emptyMap(),
 ) {
+    fun riskOf(stat: Stat): Int = risk[stat] ?: 0
+
     fun total(stat: Stat): Long = when (stat) {
         Stat.STRENGTH -> strength
         Stat.ENDURANCE -> endurance
@@ -70,6 +74,9 @@ object StatsRepository {
     private const val MAX_ATTEMPTS = 3
 
     internal const val CACHE_PREFIX = "stats_day:"
+
+    /** meta: учётный день, с которого действуют штрафы за простой. */
+    private const val PENALTY_SINCE_KEY = "stats_penalty_since"
 
     @Volatile private var last: StatsSummary? = null
 
@@ -136,6 +143,21 @@ object StatsRepository {
         return cached
     }
 
+    /**
+     * Замороженные дни [first]..[settledThrough] по прежним правилам (v1): из них нужна только дисциплина,
+     * сила и выносливость считаются заново из дневника и шагов, которые не удаляются.
+     */
+    private fun oldDiscipline(first: Long, settledThrough: Long): Map<Long, DayPoints> {
+        val old = HashMap<Long, DayPoints>()
+        if (first > settledThrough) return old
+        for ((key, value) in Diary.metaWithPrefix(CACHE_PREFIX)) {
+            val day = key.removePrefix(CACHE_PREFIX).toLongOrNull() ?: continue
+            if (day < first || day > settledThrough) continue
+            StatsMath.decode(day, value, ruleVersion = 1)?.let { old[day] = it }
+        }
+        return old
+    }
+
     /** Итог по базе поколения [gen]; null — базу подменили до записи кеша (расчёт надо повторить). */
     private fun compute(now: Long, today: Long, zone: ZoneId, legacyXp: Long, gen: Long): StatsSummary? {
         val device = Ledger.deviceId()
@@ -146,7 +168,9 @@ object StatsRepository {
         val cached = frozenDays(first, settledThrough)
         // Пересчитываются все дни без кеша и все незамороженные; диапазон — от самого раннего из них.
         val from = StatsMath.firstUnfrozenDay(first, today, cached.keys).coerceAtMost(today)
-        val range = computeRange(from, today, now, zone, device, firstEventMs)
+        val fresh = computeRange(from, today, now, zone, device, firstEventMs)
+        // Дисциплину из кеша прежних правил переносим как есть: её исходные события могли быть уже удалены.
+        val range = Range(StatsMath.keepOldDiscipline(fresh.days, oldDiscipline(first, settledThrough)), fresh.complete)
 
         val toFreeze = StatsMath.daysToFreeze(range.days, cached.keys, settledThrough, range.complete)
         if (toFreeze.isNotEmpty()) {
@@ -167,15 +191,37 @@ object StatsRepository {
 
         val days = HashMap<Long, DayPoints>(cached)
         days.putAll(range.days.filterKeys { it !in cached })
-        var s = 0L
-        var e = 0L
-        var d = 0L
-        for (p in days.values) {
-            s += p.strength
-            e += p.endurance
-            d += p.discipline
+        // Штрафы за простой не хранятся в кеше: они зависят от соседних дней и считаются поверх очков.
+        val since = penaltySince(today, gen) ?: return null
+        val penalized = StatsMath.withPenalties(days, since, today)
+        val totals = StatsMath.totals(penalized.days)
+        return StatsSummary(
+            today,
+            totals.getValue(Stat.STRENGTH),
+            totals.getValue(Stat.ENDURANCE),
+            totals.getValue(Stat.DISCIPLINE),
+            penalized.days,
+            legacyXp,
+            penalized.risk,
+        )
+    }
+
+    /**
+     * С какого дня действуют штрафы за простой: день первого расчёта с ними (в meta). Прошлые дни,
+     * когда правил ещё не было, не штрафуются. null — базу подменили до записи (расчёт надо повторить).
+     */
+    private fun penaltySince(today: Long, gen: Long): Long? {
+        Diary.metaGet(PENALTY_SINCE_KEY)?.toLongOrNull()?.let { return it }
+        return try {
+            Diary.write {
+                if (Diary.generation != gen) return@write null
+                Diary.metaGet(PENALTY_SINCE_KEY)?.toLongOrNull()
+                    ?: today.also { Diary.metaPut(PENALTY_SINCE_KEY, it.toString()) }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось записать начало штрафов", e)
+            today
         }
-        return StatsSummary(today, s, e, d, days, legacyXp)
     }
 
     /** Очки дней; [complete] = false — ночи прочитать не удалось, дни предварительные. */

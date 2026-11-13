@@ -47,12 +47,15 @@ class StatsMathTest {
 
     @Test
     fun strengthPlankBoundaries() {
+        // Планка — от минуты за день суммарно, дальше по очку за 30 секунд.
         assertEquals(0, strength(heldSec = 29).points)
-        assertEquals(1, strength(heldSec = 30).points)
-        assertEquals(1, strength(heldSec = 59).points)
+        assertEquals(0, strength(heldSec = 30).points)
+        assertEquals(0, strength(heldSec = 59).points)
         assertEquals(2, strength(heldSec = 60).points)
+        assertEquals(3, strength(heldSec = 90).points)
         // Миллисекунды до целой секунды не засчитываются.
-        assertEquals(0, StatsMath.strength(StrengthInput(0, 29_999, 0)).points)
+        assertEquals(0, StatsMath.strength(StrengthInput(0, 59_999, 0)).points)
+        assertEquals(2, StatsMath.strength(StrengthInput(0, 60_000, 0)).points)
     }
 
     @Test
@@ -103,17 +106,22 @@ class StatsMathTest {
         assertEquals(0, endurance(steps = null).points)
         assertTrue(endurance(steps = null).sources.isEmpty())
         assertEquals(0, endurance(steps = 0).points)
-        assertEquals(0, endurance(steps = 1999).points)
-        assertEquals(1, endurance(steps = 2000).points)
-        assertEquals(4, endurance(steps = 8400).points)
+        // Первое очко — за 5 000 шагов, дальше по очку за каждые 2 000.
+        assertEquals(0, endurance(steps = 2000).points)
+        assertEquals(0, endurance(steps = 4999).points)
+        assertEquals(1, endurance(steps = 5000).points)
+        assertEquals(1, endurance(steps = 6999).points)
+        assertEquals(2, endurance(steps = 7000).points)
+        assertEquals(2, endurance(steps = 8400).points)
+        assertEquals(3, endurance(steps = 10_000).points)
     }
 
     @Test
     fun runStepsAreNotWalking() {
-        // 10 000 шагов, из них 6 000 — бег: ходьба 4 000 → 2, бег 5,2 км → 5.
+        // 10 000 шагов, из них 6 000 — бег: ходьба 4 000 → 0 (меньше 5 000), бег 5,2 км → 5.
         val e = endurance(steps = 10_000, runSteps = 6_000, runM = 5_200)
-        assertEquals(7, e.points)
-        assertEquals(listOf(SourceKind.WALK to 2, SourceKind.RUN to 5), e.sources.map { it.kind to it.points })
+        assertEquals(5, e.points)
+        assertEquals(listOf(SourceKind.WALK to 0, SourceKind.RUN to 5), e.sources.map { it.kind to it.points })
         assertEquals(4_000L, e.sources[0].amount)
         // Шагов бега больше, чем всех шагов (данные из разных источников) — ходьба 0, не минус.
         assertEquals(0L, StatsMath.walkSteps(3_000, 5_000))
@@ -140,9 +148,9 @@ class StatsMathTest {
     @Test
     fun enduranceCapIsTen() {
         val e = endurance(steps = 16_000, runM = 3_000, complexMs = 20 * 60_000L)
-        // 8 + 3 + 4 = 15 → 10: ходьба 8, бег 2, комплексы 0.
+        // 6 + 3 + 4 = 13 → 10: ходьба 6 (1 + 11 000 / 2 000), бег 3, комплексы 1.
         assertEquals(10, e.points)
-        assertEquals(listOf(8, 2, 0), e.sources.map { it.points })
+        assertEquals(listOf(6, 3, 1), e.sources.map { it.points })
     }
 
     @Test
@@ -375,9 +383,9 @@ class StatsMathTest {
             fullDay,
         )
         assertEquals(9, p.strength)
-        assertEquals(4, p.endurance)
+        assertEquals(2, p.endurance)
         assertEquals(10, p.discipline)
-        assertEquals(23, p.total)
+        assertEquals(21, p.total)
         assertEquals(listOf(SourceKind.REPS, SourceKind.COMPLEX_DONE), p.sourcesOf(Stat.STRENGTH).map { it.kind })
     }
 
