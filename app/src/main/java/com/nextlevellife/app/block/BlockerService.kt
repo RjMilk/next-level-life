@@ -23,6 +23,7 @@ import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TimeSnapshot
 import com.nextlevellife.app.data.TrustedClock
+import com.nextlevellife.app.data.UsageDebt
 import com.nextlevellife.app.sleep.PhoneEventType
 import com.nextlevellife.app.sleep.PhoneEvents
 import com.nextlevellife.app.ui.BlockActivity
@@ -50,10 +51,11 @@ class BlockerService : AccessibilityService() {
     private var sessionPkg: String? = null
     private val ignored = mutableSetOf<String>()
     /**
-     * Просмотренное время, которое журнал не принял (ошибка базы). Списывается вместе со следующим
-     * тиком текущей сессии: строки расхода ведутся по одной сессии, старую возобновлять нельзя.
+     * Просмотры, которые журнал не принял (ошибка базы): интервалы доверенного времени с приложением
+     * и сессией. Списываются со следующим тиком строками текущей сессии, но каждый — по своим суткам
+     * ([Ledger.spend] с долгами).
      */
-    private var unpaidMs = 0L
+    private val unpaid = ArrayList<UsageDebt>()
     /** Сколько попыток списания подряд закончились ошибкой. */
     private var failedCharges = 0
 
@@ -231,8 +233,8 @@ class BlockerService : AccessibilityService() {
 
     /**
      * Списывает время, прошедшее с прошлой проверки, но не больше, чем сейчас разрешают правила,
-     * плюс долг [unpaidMs] от прошлых неудачных списаний. При ошибке журнала время не теряется,
-     * а копится в долг; счётчик [failedCharges] решает, когда блокировать.
+     * плюс долги [unpaid] от прошлых неудачных списаний. При ошибке журнала время не теряется,
+     * а копится в долг (интервалом); счётчик [failedCharges] решает, когда блокировать.
      * Правила и журнал получают один и тот же снимок доверенного времени.
      */
     private fun settle() {
@@ -245,15 +247,14 @@ class BlockerService : AccessibilityService() {
         val pkg = sessionPkg ?: return
         val time = TrustedClock.snapshot()
         val viewed = if (screenOn && elapsed > 0) minOf(elapsed, decide(time).availableMs).coerceAtLeast(0L) else 0L
-        val charge = unpaidMs + viewed
-        if (charge <= 0L) return
+        if (viewed <= 0L && unpaid.isEmpty()) return
         try {
-            Ledger.spend(sid, pkg, charge, time)
-            unpaidMs = 0L
+            Ledger.spend(sid, pkg, viewed, time, unpaid.toList())
+            unpaid.clear()
             failedCharges = 0
         } catch (e: Exception) {
-            Log.e(TAG, "Не удалось списать время (долг ${charge} мс, ошибок подряд ${failedCharges + 1})", e)
-            unpaidMs = charge
+            if (viewed > 0L) unpaid += UsageDebt(time.utcMs - viewed, time.utcMs, pkg, sid)
+            Log.e(TAG, "Не удалось списать время (долг ${unpaid.sumOf { it.durationMs }} мс, ошибок подряд ${failedCharges + 1})", e)
             failedCharges++
         }
     }

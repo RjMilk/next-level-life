@@ -88,7 +88,7 @@ object Ledger {
         // Номер строки в сессии сохраняется, чтобы ключи не повторились; сама строка считается закрытой.
         usageCursor = usageCursor?.copy(accumulatedMs = LedgerMath.USAGE_CHUNK_MS)
         reloadCacheQuietly()
-        // Учётный пояс мог прийти из копии.
+        // Пояс копии мог прийти отложенной сменой.
         TrustedClock.onDatabaseReplaced()
     }
 
@@ -102,13 +102,14 @@ object Ledger {
     fun spentTodayMs(): Long = spentMs(TrustedClock.today())
 
     /**
-     * Сколько экранного времени потрачено в учётные сутки [day] (положительное число).
+     * Сколько экранного времени потрачено в учётные сутки [day] (положительное число): расход
+     * и перенос расхода при восстановлении копии ([OpKind.SPENDING]).
      * «Сегодня» брать из [TrustedClock.today] или [TimeSnapshot.day], а не из системных часов.
      */
     fun spentMs(day: Long): Long = synchronized(Diary) {
         Diary.query(
-            "SELECT COALESCE(-SUM(delta_ms), 0) FROM balance_ops WHERE kind = ? AND accounting_day = ?",
-            OpKind.USAGE.name, day.toString(),
+            "SELECT COALESCE(-SUM(delta_ms), 0) FROM balance_ops WHERE kind IN ($SPENDING_KINDS_SQL) AND accounting_day = ?",
+            day.toString(),
         ) { it.getLong(0) }.firstOrNull() ?: 0L
     }
 
@@ -124,8 +125,8 @@ object Ledger {
     fun spendByDay(fromDay: Long, toDay: Long): Map<Long, Long> = synchronized(Diary) {
         Diary.query(
             "SELECT accounting_day, -SUM(delta_ms) FROM balance_ops " +
-                "WHERE kind = ? AND accounting_day BETWEEN ? AND ? GROUP BY accounting_day ORDER BY accounting_day",
-            OpKind.USAGE.name, fromDay.toString(), toDay.toString(),
+                "WHERE kind IN ($SPENDING_KINDS_SQL) AND accounting_day BETWEEN ? AND ? GROUP BY accounting_day ORDER BY accounting_day",
+            fromDay.toString(), toDay.toString(),
         ) { it.getLong(0) to it.getLong(1) }.toMap()
     }
 
@@ -133,8 +134,8 @@ object Ledger {
     fun usageByPackage(fromDay: Long, toDay: Long): Map<String, Long> = synchronized(Diary) {
         Diary.query(
             "SELECT source_id, -SUM(delta_ms) AS spent FROM balance_ops " +
-                "WHERE kind = ? AND accounting_day BETWEEN ? AND ? GROUP BY source_id ORDER BY spent DESC",
-            OpKind.USAGE.name, fromDay.toString(), toDay.toString(),
+                "WHERE kind IN ($SPENDING_KINDS_SQL) AND accounting_day BETWEEN ? AND ? GROUP BY source_id ORDER BY spent DESC",
+            fromDay.toString(), toDay.toString(),
         ) { it.getString(0) to it.getLong(1) }.toMap(LinkedHashMap())
     }
 
@@ -200,19 +201,30 @@ object Ledger {
      * пояса, делится на строки по суткам ([LedgerMath.splitByDay]). Сутки и время операций — из [time]
      * (доверенный момент и учётный пояс, [TrustedClock.snapshot]). Ошибки базы пробрасываются
      * (открытая строка тогда закрывается).
+     *
+     * [debts] — неоплаченные прошлые просмотры ([UsageDebt]): списываются первыми, каждый по своим суткам
+     * (по своему интервалу доверенного времени) и своему приложению, строками текущей сессии [sessionId]
+     * (ключи сессии не повторяются). Всё вместе — не больше баланса ([LedgerMath.planCharges]).
      */
-    fun spend(sessionId: String, packageName: String, elapsedMs: Long, time: TimeSnapshot = TrustedClock.snapshot()): Long {
-        if (elapsedMs <= 0L) return 0L
+    fun spend(
+        sessionId: String,
+        packageName: String,
+        elapsedMs: Long,
+        time: TimeSnapshot = TrustedClock.snapshot(),
+        debts: List<UsageDebt> = emptyList(),
+    ): Long {
+        if (elapsedMs <= 0L && debts.none { it.durationMs > 0L }) return 0L
         return synchronized(Diary) {
             val now = time.utcMs
             val zone = time.zone
             var cursor = usageCursor
             try {
                 val charged = Diary.write { db ->
-                    val charge = minOf(elapsedMs, readAccount(db).first)
-                    if (charge <= 0L) return@write 0L
-                    for (share in LedgerMath.splitByDay(now, charge, zone)) {
-                        val p = LedgerMath.planUsage(cursor, sessionId, packageName, share.day, share.ms)
+                    val parts = LedgerMath.planCharges(debts, packageName, now, elapsedMs, readAccount(db).first, zone)
+                    if (parts.isEmpty()) return@write 0L
+                    for (part in parts) {
+                        val share = part.share
+                        val p = LedgerMath.planUsage(cursor, sessionId, part.packageName, share.day, share.ms)
                         if (p.addToOpen > 0L) {
                             val open = cursor!!
                             val key = LedgerMath.usageKey(open.sessionId, open.index)
@@ -230,14 +242,15 @@ object Ledger {
                         p.newRows.forEachIndexed { i, ms ->
                             insertOp(
                                 db, OpKind.USAGE, LedgerMath.usageKey(sessionId, p.firstNewIndex + i),
-                                deltaMs = -ms, deltaXp = 0L, sourceType = "app", sourceId = packageName,
-                                occurredAtMs = share.occurredAtMs, metadataJson = "{}", zone = zone, day = share.day,
-                                recordedAtMs = now,
+                                deltaMs = -ms, deltaXp = 0L, sourceType = "app", sourceId = part.packageName,
+                                occurredAtMs = share.occurredAtMs,
+                                metadataJson = part.debtSessionId?.let { JSONObject().put("debt_session", it).toString() } ?: "{}",
+                                zone = zone, day = share.day, recordedAtMs = now,
                             )
                         }
                         cursor = p.next
                     }
-                    charge
+                    parts.sumOf { it.share.ms }
                 }
                 usageCursor = cursor
                 charged
@@ -246,6 +259,61 @@ object Ledger {
                 throw e
             }
         }
+    }
+
+    // ---------- Восстановление из копии ----------
+
+    /** Строки расхода текущего журнала (USAGE и RESTORE_CARRY) — для переноса при восстановлении. */
+    internal fun spentRowsForCarry(): List<SpentRow> = synchronized(Diary) {
+        Diary.query(
+            "SELECT idempotency_key, accounting_day, source_id, -delta_ms FROM balance_ops WHERE kind IN ($SPENDING_KINDS_SQL)",
+        ) { SpentRow(it.getString(0), it.getLong(1), it.getString(2), it.getLong(3)) }
+    }
+
+    /**
+     * Дописывает в базу копии [db] (ещё не установленную) перенос расхода: всё, что потрачено в текущем
+     * журнале [current] и чего нет в журнале копии ([LedgerMath.restoreCarry]), — операциями
+     * [OpKind.RESTORE_CARRY] по своим суткам и приложениям, не больше баланса копии. Account меняется
+     * той же транзакцией. Возвращает сколько перенесено (мс).
+     */
+    internal fun appendRestoreCarry(db: SQLiteDatabase, current: List<SpentRow>, deviceId: String, zone: ZoneId, nowMs: Long): Long {
+        val backupSpent = HashMap<String, Long>()
+        db.rawQuery("SELECT idempotency_key, -delta_ms FROM balance_ops WHERE kind IN ($SPENDING_KINDS_SQL)", null).use { c ->
+            while (c.moveToNext()) backupSpent[c.getString(0)] = c.getLong(1)
+        }
+        val parts = LedgerMath.restoreCarry(current, backupSpent, readAccount(db).first)
+        if (parts.isEmpty()) return 0L
+        val restoreId = UUID.randomUUID().toString()
+        db.beginTransaction()
+        try {
+            for (p in parts) {
+                // Время операции — внутри её суток: для прошлых суток последняя миллисекунда.
+                val occurred = minOf(nowMs, TrustedClockMath.dayStartMs(p.day + 1, zone) - 1)
+                val values = ContentValues().apply {
+                    put("id", UUID.randomUUID().toString())
+                    put("device_id", deviceId)
+                    put("idempotency_key", LedgerMath.restoreCarryKey(restoreId, p.day, p.packageName))
+                    put("kind", OpKind.RESTORE_CARRY.name)
+                    put("delta_ms", -p.ms)
+                    put("delta_xp", 0L)
+                    put("occurred_at_ms", occurred)
+                    put("recorded_at_ms", nowMs)
+                    put("accounting_day", p.day)
+                    put("zone_id", zone.id)
+                    put("source_type", "restore_carry")
+                    put("source_id", p.packageName)
+                    put("rule_version", LedgerMath.RULE_VERSION)
+                    putNull("reverses_id")
+                    put("metadata_json", JSONObject().put("restore_id", restoreId).toString())
+                }
+                db.insertOrThrow("balance_ops", null, values)
+                addToAccount(db, -p.ms, 0L, nowMs)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return parts.sumOf { it.ms }
     }
 
     // ---------- Внутреннее ----------
@@ -315,6 +383,7 @@ object Ledger {
     internal const val KEY_DEVICE_ID = "device_id"
 
     private val REWARD_KINDS_SQL = OpKind.REWARDS.joinToString(",") { "'${it.name}'" }
+    private val SPENDING_KINDS_SQL = OpKind.SPENDING.joinToString(",") { "'${it.name}'" }
 
     private const val OP_COLS =
         "seq, id, device_id, idempotency_key, kind, delta_ms, delta_xp, occurred_at_ms, recorded_at_ms, " +

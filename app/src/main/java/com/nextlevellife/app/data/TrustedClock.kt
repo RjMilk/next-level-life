@@ -29,11 +29,40 @@ data class TimeSnapshot(val utcMs: Long, val zone: ZoneId) {
 }
 
 /**
+ * Откуда взят якорь. [NETWORK] — сетевое время подтверждено (якорь по нему или впереди него);
+ * [CONSERVATIVE] — сетевого времени не было: якорь от последнего доверенного момента, время
+ * выключенного телефона потеряно (доверенное время отстаёт — это безопасная сторона).
+ * Имя пишется в meta — не переименовывать.
+ */
+enum class AnchorSource { NETWORK, CONSERVATIVE }
+
+/**
  * Якорь доверенных часов: в загрузке устройства [bootCount] моменту [anchorElapsedMs] монотонных часов
  * (SystemClock.elapsedRealtime) соответствует доверенное время [anchorUtcMs]. [bootCount] = null — номер
- * загрузки не удалось прочитать.
+ * загрузки не удалось прочитать. [source] — откуда взят якорь.
  */
-data class ClockAnchor(val bootCount: Int?, val anchorUtcMs: Long, val anchorElapsedMs: Long)
+data class ClockAnchor(
+    val bootCount: Int?,
+    val anchorUtcMs: Long,
+    val anchorElapsedMs: Long,
+    val source: AnchorSource = AnchorSource.CONSERVATIVE,
+)
+
+/**
+ * Состояние часов из meta, уже проверенное ([TrustedClockMath.parseSaved]): якорь, верхняя отметка
+ * доверенного времени [lastTrustedMs] и момент монотонных часов [lastElapsedMs], когда она записана
+ * (в той же загрузке, что и якорь). [rejected] — ключи, значения которых отброшены как недопустимые.
+ */
+data class SavedClock(
+    val anchor: ClockAnchor?,
+    val lastTrustedMs: Long?,
+    val lastElapsedMs: Long?,
+    val rejected: List<String> = emptyList(),
+) {
+    companion object {
+        val EMPTY = SavedClock(null, null, null)
+    }
+}
 
 /** Отложенная смена учётного пояса на [zoneId], запрошенная в доверенный момент [sinceMs]. */
 data class PendingZone(val zoneId: String, val sinceMs: Long) {
@@ -51,50 +80,143 @@ object TrustedClockMath {
     /** last_trusted_ms сохраняется не чаще раза в минуту. */
     const val PERSIST_INTERVAL_MS = 60_000L
 
+    /** Пока якорь консервативный, сетевое время пробуется не чаще раза в минуту. */
+    const val NETWORK_RETRY_MS = 60_000L
+
+    /** Неудавшаяся подготовка часов повторяется при обращении, не чаще раза в 5 секунд. */
+    const val INIT_RETRY_MS = 5_000L
+
     /** Смена учётного пояса вступает в силу через сутки доверенного времени. */
     const val ZONE_CHANGE_DELAY_MS = 24 * 60 * 60_000L
 
-    /** Доверенное время в пределах одной загрузки: якорь плюс прошедшее по монотонным часам. */
+    /** Допустимое время UTC: [MIN_UTC_MS] (2024-01-01) включительно … [MAX_UTC_MS] (2100-01-01) исключительно. */
+    const val MIN_UTC_MS = 1_704_067_200_000L
+    const val MAX_UTC_MS = 4_102_444_800_000L
+
+    fun isValidUtc(ms: Long?): Boolean = ms != null && ms >= MIN_UTC_MS && ms < MAX_UTC_MS
+
+    fun clampUtc(ms: Long): Long = ms.coerceIn(MIN_UTC_MS, MAX_UTC_MS - 1)
+
+    /** Сложение без переполнения: при переполнении — граница Long. */
+    fun addSaturating(a: Long, b: Long): Long = try {
+        Math.addExact(a, b)
+    } catch (e: ArithmeticException) {
+        if (b > 0) Long.MAX_VALUE else Long.MIN_VALUE
+    }
+
+    /** Доверенное время в пределах одной загрузки: якорь плюс прошедшее по монотонным часам (в допустимых пределах). */
     fun trustedNow(anchor: ClockAnchor, elapsedNowMs: Long): Long =
-        anchor.anchorUtcMs + (elapsedNowMs - anchor.anchorElapsedMs)
+        clampUtc(addSaturating(anchor.anchorUtcMs, elapsedNowMs - anchor.anchorElapsedMs))
 
     /**
-     * Та же ли это загрузка, что у сохранённого якоря. Монотонные часы ушли назад — точно новая;
-     * иначе решает номер загрузки, а если его нет с одной из сторон — остаётся только проверка часов.
+     * Разбирает meta часов ([get] — значение по ключу). Время вне [MIN_UTC_MS]…[MAX_UTC_MS], отрицательные
+     * монотонные часы и нечисла отбрасываются (ключ попадает в [SavedClock.rejected]): дальше такая
+     * загрузка считается неопределённой, как без сетевого времени.
      */
-    fun isSameBoot(saved: ClockAnchor, bootCount: Int?, elapsedNowMs: Long): Boolean = when {
-        elapsedNowMs < saved.anchorElapsedMs -> false
-        bootCount != null && saved.bootCount != null -> bootCount == saved.bootCount
-        else -> true
+    fun parseSaved(get: (String) -> String?): SavedClock {
+        val rejected = ArrayList<String>()
+        fun long(key: String, ok: (Long) -> Boolean): Long? {
+            val raw = get(key) ?: return null
+            val v = raw.toLongOrNull()
+            if (v == null || !ok(v)) {
+                rejected += key
+                return null
+            }
+            return v
+        }
+        val utc = long(TrustedClock.KEY_ANCHOR_UTC) { isValidUtc(it) }
+        val elapsed = long(TrustedClock.KEY_ANCHOR_ELAPSED) { it >= 0 }
+        val anchor = if (utc != null && elapsed != null) {
+            val source = get(TrustedClock.KEY_ANCHOR_SOURCE)?.let { s -> AnchorSource.entries.firstOrNull { it.name == s } }
+            ClockAnchor(get(TrustedClock.KEY_BOOT_COUNT)?.toIntOrNull(), utc, elapsed, source ?: AnchorSource.CONSERVATIVE)
+        } else null
+        val last = long(TrustedClock.KEY_LAST_TRUSTED) { isValidUtc(it) }
+        val lastElapsed = long(TrustedClock.KEY_LAST_ELAPSED) { it >= 0 }
+        return SavedClock(anchor, last, lastElapsed, rejected)
     }
 
     /**
-     * Доверенное время в начале новой загрузки: сетевое время, если оно есть (Android 13+);
-     * иначе системное, но не раньше последнего доверенного [lastTrustedMs] — назад время не уходит.
+     * Та же ли это загрузка, что у сохранённого якоря. Монотонные часы ниже последнего наблюдавшегося
+     * значения ([saved].anchorElapsedMs или [lastElapsedMs]) — точно новая. Иначе решает номер загрузки,
+     * а если его нет с одной из сторон — загрузка та же, только если известен последний момент
+     * монотонных часов [lastElapsedMs] этой загрузки (и сейчас не меньше его); иначе новая.
      */
-    fun bootUtcMs(networkMs: Long?, systemMs: Long, lastTrustedMs: Long?): Long = when {
-        networkMs != null -> networkMs
-        lastTrustedMs != null -> maxOf(systemMs, lastTrustedMs)
-        else -> systemMs
+    fun isSameBoot(saved: ClockAnchor, lastElapsedMs: Long?, bootCount: Int?, elapsedNowMs: Long): Boolean {
+        val seen = maxOf(saved.anchorElapsedMs, lastElapsedMs ?: 0L)
+        return when {
+            elapsedNowMs < seen -> false
+            bootCount != null && saved.bootCount != null -> bootCount == saved.bootCount
+            else -> lastElapsedMs != null
+        }
     }
 
+    /** Верхняя отметка доверенного времени: доверенное время никогда не опускается ниже неё. */
+    fun highWaterMs(saved: SavedClock): Long? =
+        listOfNotNull(saved.lastTrustedMs, saved.anchor?.anchorUtcMs).maxOrNull()
+
     /**
-     * Якорь при запуске процесса: в той же загрузке — прежний (перезапуск процесса его не меняет),
-     * иначе новый по [bootUtcMs]. Системное время [systemNowMs] участвует только в новом якоре без сети.
+     * Якорь при запуске процесса.
+     *
+     * Та же загрузка — прежний якорь (перезапуск процесса его не меняет); если он консервативный,
+     * а сетевое время [networkNowMs] впереди — переставляется на сетевое ([upgradeWithNetwork]).
+     *
+     * Новая (или неопределённая) загрузка:
+     * - есть сетевое время не ниже верхней отметки — якорь по сети ([AnchorSource.NETWORK]);
+     * - сетевое время ниже отметки — остаёмся на отметке и идём от неё (время «догонит»);
+     * - сетевого нет — отметка + elapsedRealtime на момент запуска ([AnchorSource.CONSERVATIVE]):
+     *   время выключенного телефона теряется, сутки наступают позже — безопасная сторона;
+     * - нет ни сети, ни истории (первый запуск) — системное время в допустимых пределах.
+     *
+     * Доверенное время никогда не уходит ниже отметки [highWaterMs].
+     * Системное время [systemNowMs] участвует только при первом запуске.
      */
     fun resolveAnchor(
-        saved: ClockAnchor?,
-        lastTrustedMs: Long?,
+        saved: SavedClock,
         bootCount: Int?,
         elapsedNowMs: Long,
         systemNowMs: Long,
         networkNowMs: Long?,
-    ): ClockAnchor =
-        if (saved != null && isSameBoot(saved, bootCount, elapsedNowMs)) {
-            saved.copy(bootCount = bootCount ?: saved.bootCount)
-        } else {
-            ClockAnchor(bootCount, bootUtcMs(networkNowMs, systemNowMs, lastTrustedMs), elapsedNowMs)
+    ): ClockAnchor {
+        val elapsed = elapsedNowMs.coerceAtLeast(0L)
+        val network = networkNowMs?.takeIf { isValidUtc(it) }
+        val floor = highWaterMs(saved)
+        val s = saved.anchor
+        if (s != null && isSameBoot(s, saved.lastElapsedMs, bootCount, elapsed)) {
+            var a = s.copy(bootCount = bootCount ?: s.bootCount)
+            if (floor != null && trustedNow(a, elapsed) < floor) a = a.copy(anchorUtcMs = floor, anchorElapsedMs = elapsed)
+            return upgradeWithNetwork(a, elapsed, network) ?: a
         }
+        // Неопределённость: номера загрузки нет и последнего момента монотонных часов тоже (например, данные
+        // прежней версии). Если это всё-таки та же загрузка, «отметка + uptime» убежала бы вперёд — берём
+        // меньшее из двух консервативных вариантов (продолжение прежнего якоря, но не ниже отметки).
+        val ambiguous = s != null && (bootCount == null || s.bootCount == null) && saved.lastElapsedMs == null &&
+            elapsed >= s.anchorElapsedMs
+        return when {
+            network != null && (floor == null || network >= floor) -> ClockAnchor(bootCount, network, elapsed, AnchorSource.NETWORK)
+            network != null -> ClockAnchor(bootCount, floor!!, elapsed, AnchorSource.NETWORK)
+            floor != null -> {
+                var base = addSaturating(floor, elapsed)
+                if (ambiguous) base = minOf(base, maxOf(floor, trustedNow(s!!, elapsed)))
+                ClockAnchor(bootCount, clampUtc(base), elapsed, AnchorSource.CONSERVATIVE)
+            }
+            else -> ClockAnchor(bootCount, clampUtc(systemNowMs), elapsed, AnchorSource.CONSERVATIVE)
+        }
+    }
+
+    /**
+     * Сетевое время для консервативного якоря. null — менять нечего (якорь уже сетевой или сети нет).
+     * Сеть впереди доверенного — новый якорь по сети в этой же загрузке; не впереди — якорь прежний,
+     * но помечается сетевым (время догонит само; назад оно не переставляется никогда).
+     */
+    fun upgradeWithNetwork(current: ClockAnchor, elapsedNowMs: Long, networkNowMs: Long?): ClockAnchor? {
+        if (current.source != AnchorSource.CONSERVATIVE) return null
+        val network = networkNowMs?.takeIf { isValidUtc(it) } ?: return null
+        return if (network > trustedNow(current, elapsedNowMs)) {
+            ClockAnchor(current.bootCount, network, elapsedNowMs, AnchorSource.NETWORK)
+        } else {
+            current.copy(source = AnchorSource.NETWORK)
+        }
+    }
 
     fun isSkewed(trustedMs: Long, systemMs: Long): Boolean = abs(trustedMs - systemMs) > MAX_SKEW_MS
 
@@ -102,6 +224,11 @@ object TrustedClockMath {
     fun shouldPersist(lastPersistElapsedMs: Long?, elapsedNowMs: Long): Boolean =
         lastPersistElapsedMs == null || elapsedNowMs < lastPersistElapsedMs ||
             elapsedNowMs - lastPersistElapsedMs >= PERSIST_INTERVAL_MS
+
+    /** Пора ли повторить неудавшуюся подготовку часов. */
+    fun shouldRetryInit(lastAttemptElapsedMs: Long?, elapsedNowMs: Long): Boolean =
+        lastAttemptElapsedMs == null || elapsedNowMs < lastAttemptElapsedMs ||
+            elapsedNowMs - lastAttemptElapsedMs >= INIT_RETRY_MS
 
     /** Учётный пояс на доверенный момент [nowMs]: отложенная смена применяется через [ZONE_CHANGE_DELAY_MS], не раньше. */
     fun effectiveZone(state: ZoneState, nowMs: Long): ZoneState {
@@ -122,6 +249,14 @@ object TrustedClockMath {
         state.pending?.zoneId == newZoneId -> state
         else -> state.copy(pending = PendingZone(newZoneId, nowMs))
     }
+
+    /**
+     * Шаги оплачены по суткам прежнего пояса; после смены учётного пояса границы суток сдвигаются, и уже
+     * оплаченные шаги попали бы в соседние сутки. Поэтому за сутки по день смены (в новом поясе [newZone])
+     * включительно новых начислений за шаги нет. Отметка только растёт.
+     */
+    fun stepsFrozenThrough(previous: Long?, nowMs: Long, newZone: ZoneId): Long =
+        maxOf(previous ?: Long.MIN_VALUE, LedgerMath.accountingDay(nowMs, newZone))
 
     /**
      * На какой пояс предложить кнопку «Сменить на текущий»: пояс телефона [phoneZoneId], если он не учётный
@@ -150,22 +285,48 @@ object TrustedClockMath {
 
     /** Ключи meta, которые принадлежат этой загрузке устройства: из копии не восстанавливаются. */
     val LOCAL_ONLY_KEYS = listOf(
-        TrustedClock.KEY_BOOT_COUNT, TrustedClock.KEY_ANCHOR_UTC, TrustedClock.KEY_ANCHOR_ELAPSED, TrustedClock.KEY_LAST_TRUSTED,
+        TrustedClock.KEY_BOOT_COUNT, TrustedClock.KEY_ANCHOR_UTC, TrustedClock.KEY_ANCHOR_ELAPSED,
+        TrustedClock.KEY_ANCHOR_SOURCE, TrustedClock.KEY_LAST_TRUSTED, TrustedClock.KEY_LAST_ELAPSED,
     )
 
     /**
      * Что поменять в meta базы из копии перед подменой (ключ → значение; null — удалить).
-     * Якорь, номер загрузки и last_trusted — всегда здешние. Учётный пояс — из копии; в старой копии его нет —
-     * остаётся здешний. Отложенная смена пояса из копии не переносится (её время из другой загрузки).
+     * Якорь, номер загрузки и last_trusted — всегда здешние. Учётный пояс сразу не меняется — остаётся
+     * здешний (вместе со здешней отложенной сменой). Если в копии другой пояс (или его нет — старая копия),
+     * он ставится обычной отложенной сменой с момента восстановления [nowMs], а оплата шагов замораживается
+     * по сегодняшний день (итоги шагов в копии посчитаны по суткам её пояса). Здешнего пояса нет —
+     * берётся пояс копии как есть.
      */
-    fun restoredMeta(local: Map<String, String>, backup: Map<String, String>): Map<String, String?> {
+    fun restoredMeta(local: Map<String, String>, backup: Map<String, String>, nowMs: Long): Map<String, String?> {
         val out = LinkedHashMap<String, String?>()
         for (k in LOCAL_ONLY_KEYS) out[k] = local[k]
-        if (backup[TrustedClock.KEY_ZONE] == null) out[TrustedClock.KEY_ZONE] = local[TrustedClock.KEY_ZONE]
-        out[TrustedClock.KEY_PENDING_ZONE] = null
-        out[TrustedClock.KEY_PENDING_SINCE] = null
+        val localZone = local[TrustedClock.KEY_ZONE]?.takeIf { isValidZoneId(it) }
+        val backupZone = backup[TrustedClock.KEY_ZONE]?.takeIf { isValidZoneId(it) }
+        if (localZone == null) {
+            out[TrustedClock.KEY_ZONE] = backupZone
+            out[TrustedClock.KEY_PENDING_ZONE] = null
+            out[TrustedClock.KEY_PENDING_SINCE] = null
+            return out
+        }
+        out[TrustedClock.KEY_ZONE] = localZone
+        if (backupZone == localZone) {
+            out[TrustedClock.KEY_PENDING_ZONE] = local[TrustedClock.KEY_PENDING_ZONE]
+            out[TrustedClock.KEY_PENDING_SINCE] = local[TrustedClock.KEY_PENDING_SINCE]
+        } else {
+            if (backupZone != null) {
+                out[TrustedClock.KEY_PENDING_ZONE] = backupZone
+                out[TrustedClock.KEY_PENDING_SINCE] = nowMs.toString()
+            } else {
+                out[TrustedClock.KEY_PENDING_ZONE] = local[TrustedClock.KEY_PENDING_ZONE]
+                out[TrustedClock.KEY_PENDING_SINCE] = local[TrustedClock.KEY_PENDING_SINCE]
+            }
+            val frozen = backup[TrustedClock.KEY_STEPS_FROZEN]?.toLongOrNull()
+            out[TrustedClock.KEY_STEPS_FROZEN] = stepsFrozenThrough(frozen, nowMs, ZoneId.of(localZone)).toString()
+        }
         return out
     }
+
+    fun isValidZoneId(id: String): Boolean = runCatching { ZoneId.of(id) }.isSuccess
 }
 
 /**
@@ -174,17 +335,24 @@ object TrustedClockMath {
  * В пределах одной загрузки устройства время считается от якоря по монотонным часам:
  * `trustedNow = anchorUtc + elapsedRealtime() − anchorElapsed`, поэтому перевод системных часов
  * вперёд или назад ни сутки учёта, ни ночь не меняет. Якорь ставится один раз на загрузку
- * (номер — Settings.Global.BOOT_COUNT) и сразу сохраняется в meta; перезапуск процесса его не меняет.
+ * (номер — Settings.Global.BOOT_COUNT; без него — по последнему наблюдавшемуся elapsedRealtime)
+ * и сразу сохраняется в meta; перезапуск процесса его не меняет.
  *
  * В новой загрузке якорь берётся из сетевого времени (Android 13+, SystemClock.currentNetworkTimeClock),
- * а без него — из системного, но не раньше last_trusted_ms. Это защита от ручного перевода часов,
- * не криптографическая. Ограничение: на Android 10–12 сетевого времени нет, поэтому «перевести часы
- * вперёд и перезагрузиться» по-прежнему сдвигает доверенное время вперёд (назад — нет). На Android 13+
- * то же возможно, если в начале загрузки сетевое время ещё не получено (например, в режиме полёта).
+ * а без него — консервативно: last_trusted_ms + elapsedRealtime() (время выключенного телефона теряется,
+ * доверенное время отстаёт, сутки наступают позже — безопасная сторона). Системные часы в новой загрузке
+ * не участвуют, поэтому «перевести часы вперёд и перезагрузиться» доверенное время не сдвигает.
+ * Пока якорь консервативный, сетевое время пробуется раз в минуту; появилось и оно впереди — якорь
+ * переставляется на него. Назад доверенное время не уходит никогда: last_trusted_ms — верхняя отметка.
+ * Это защита от ручного перевода часов, не криптографическая.
+ *
+ * Если базу не удалось прочитать, время идёт от запасного якоря в памяти («не доверено», [isReliable]),
+ * а подготовка повторяется при обращении, пока не удастся. Запасной якорь ничего не закрепляет.
  *
  * Учётный часовой пояс фиксируется при первом запуске и сам не меняется: сутки лимита, журнала и шагов
  * и ночной режим считаются в нём. Смена — только по запросу владельца ([requestZoneChange]) и через
- * [TrustedClockMath.ZONE_CHANGE_DELAY_MS] доверенного времени.
+ * [TrustedClockMath.ZONE_CHANGE_DELAY_MS] доверенного времени; при смене оплата шагов замораживается
+ * по день смены ([stepsFrozenThroughDay]).
  *
  * Все чтения дешёвые (из памяти); база пишется при постановке якоря, раз в минуту (last_trusted_ms)
  * и при смене пояса. Блокировка базы — монитор [Diary]; собственных блокировок, которые держатся
@@ -196,73 +364,57 @@ object TrustedClock {
     internal const val KEY_BOOT_COUNT = "clock_boot_count"
     internal const val KEY_ANCHOR_UTC = "clock_anchor_utc_ms"
     internal const val KEY_ANCHOR_ELAPSED = "clock_anchor_elapsed_ms"
+    internal const val KEY_ANCHOR_SOURCE = "clock_anchor_source"
     internal const val KEY_LAST_TRUSTED = "clock_last_trusted_ms"
+    internal const val KEY_LAST_ELAPSED = "clock_last_elapsed_ms"
     internal const val KEY_ZONE = "accounting_zone_id"
     internal const val KEY_PENDING_ZONE = "accounting_zone_pending"
     internal const val KEY_PENDING_SINCE = "accounting_zone_pending_since_ms"
+    internal const val KEY_STEPS_FROZEN = "steps_frozen_through_day"
 
+    @Volatile private var appContext: Context? = null
+    /** Якорь, посчитанный по данным базы. null — подготовка ещё не удалась. */
     @Volatile private var anchor: ClockAnchor? = null
+    /** Якорь посчитан, но в meta ещё не записан (ошибка записи или переставлен по сетевому времени). */
+    @Volatile private var anchorDirty = false
+    /** Запасной якорь, пока базу не удалось прочитать: только в памяти, до первой удачной подготовки. */
+    @Volatile private var fallback: ClockAnchor? = null
     @Volatile private var zoneState: ZoneState? = null
     @Volatile private var lastPersistElapsedMs: Long? = null
+    @Volatile private var lastInitAttemptElapsedMs: Long? = null
+    @Volatile private var lastNetworkCheckElapsedMs: Long? = null
+    /** Заморозка оплаты шагов, если смену пояса не удалось записать в базу (тогда она применена в памяти). */
+    @Volatile private var stepsFrozenInMemory: Long? = null
     @Volatile private var warnedNotInit = false
+    @Volatile private var warnedFallback = false
 
     private val persisting = AtomicBoolean(false)
     private val persistExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "TrustedClock").apply { isDaemon = true } }
 
     /**
      * Ставит или читает якорь и учётный пояс. Вызывается из [Store.init] после [Diary.init].
-     * При ошибке базы якорь живёт только в памяти (время всё равно монотонно в пределах процесса).
+     * Не бросает: при ошибке базы время идёт от запасного якоря, а подготовка повторяется при обращении.
      */
     fun init(context: Context) {
-        if (anchor != null) return
-        val elapsed = SystemClock.elapsedRealtime()
-        val system = System.currentTimeMillis()
-        val boot = bootCount(context)
-        synchronized(Diary) {
-            if (anchor != null) return
-            try {
-                val saved = readAnchor()
-                val last = Diary.metaGet(KEY_LAST_TRUSTED)?.toLongOrNull()
-                // Сетевое время нужно только для нового якоря: не трогаем его в той же загрузке.
-                val sameBoot = saved != null && TrustedClockMath.isSameBoot(saved, boot, elapsed)
-                val network = if (sameBoot) null else networkTimeMs()
-                val a = TrustedClockMath.resolveAnchor(saved, last, boot, elapsed, system, network)
-                if (a != saved) {
-                    Diary.write {
-                        a.bootCount?.let { Diary.metaPut(KEY_BOOT_COUNT, it.toString()) }
-                        Diary.metaPut(KEY_ANCHOR_UTC, a.anchorUtcMs.toString())
-                        Diary.metaPut(KEY_ANCHOR_ELAPSED, a.anchorElapsedMs.toString())
-                        Diary.metaPut(KEY_LAST_TRUSTED, TrustedClockMath.trustedNow(a, elapsed).toString())
-                    }
-                    lastPersistElapsedMs = elapsed
-                    if (!sameBoot) {
-                        Log.i(TAG, "Новый якорь: загрузка ${a.bootCount}, источник ${if (network != null) "сеть" else "система"}")
-                    }
-                }
-                anchor = a
-                zoneState = readZoneState()
-            } catch (e: Exception) {
-                Log.e(TAG, "Не удалось подготовить доверенные часы; якорь только в памяти", e)
-                anchor = ClockAnchor(boot, system, elapsed)
-                zoneState = ZoneState(ZoneId.systemDefault().id, null)
-            }
-        }
+        if (appContext == null) appContext = context.applicationContext
+        tryInit()
         logSkew("запуск")
     }
 
-    /** Доверенное время (мс эпохи). До [init] — системное (с предупреждением в лог). */
+    /** true — часы подготовлены по базе; false — пока запасное время («не доверено»). */
+    fun isReliable(): Boolean = anchor != null && zoneState != null
+
+    /** Доверенное время (мс эпохи). Пока часы не подготовлены — запасное время (с повтором подготовки). */
     fun nowMs(): Long {
-        val a = anchor
-        if (a == null) {
-            if (!warnedNotInit) {
-                warnedNotInit = true
-                Log.w(TAG, "TrustedClock.init не вызван: пока используется системное время")
-            }
-            return System.currentTimeMillis()
-        }
         val elapsed = SystemClock.elapsedRealtime()
+        var a = anchor
+        if (a == null || zoneState == null) {
+            if (TrustedClockMath.shouldRetryInit(lastInitAttemptElapsedMs, elapsed)) tryInit()
+            a = anchor
+        }
+        if (a == null) return provisionalNow(elapsed)
         val now = TrustedClockMath.trustedNow(a, elapsed)
-        if (TrustedClockMath.shouldPersist(lastPersistElapsedMs, elapsed)) persistLastTrusted(now, elapsed)
+        if (TrustedClockMath.shouldPersist(lastPersistElapsedMs, elapsed)) persistAsync(elapsed)
         return now
     }
 
@@ -288,6 +440,15 @@ object TrustedClock {
     }
 
     /**
+     * По какие учётные сутки включительно шаги не оплачиваются (после смены учётного пояса); null — нет.
+     * Читает meta под блокировкой [Diary] (можно внутри [Diary.write]). Ошибки базы пробрасываются.
+     */
+    fun stepsFrozenThroughDay(): Long? {
+        val stored = synchronized(Diary) { Diary.metaGet(KEY_STEPS_FROZEN)?.toLongOrNull() }
+        return listOfNotNull(stored, stepsFrozenInMemory).maxOrNull()
+    }
+
+    /**
      * Запросить смену учётного пояса на [newZone] (по умолчанию — текущий пояс телефона).
      * Вступает в силу через сутки; запрос на текущий учётный пояс отменяет отложенную смену.
      */
@@ -296,7 +457,7 @@ object TrustedClock {
         synchronized(Diary) {
             val state = TrustedClockMath.effectiveZone(zoneState ?: readZoneState(), now)
             val next = TrustedClockMath.requestZone(state, newZone.id, now)
-            writeZoneState(next)
+            writeZoneState(next, now)
         }
         Store.notifyChanged()
     }
@@ -330,16 +491,123 @@ object TrustedClock {
         }
     }
 
-    /** Здешние значения meta, которые восстановление не должно перезаписать (якорь, пояс). */
+    /** Здешние значения meta, которые восстановление не должно перезаписать (якорь, пояс, отложенная смена). */
     internal fun localMetaForRestore(): Map<String, String> = synchronized(Diary) {
         val out = HashMap<String, String>()
-        for (k in TrustedClockMath.LOCAL_ONLY_KEYS + KEY_ZONE) Diary.metaGet(k)?.let { out[k] = it }
-        // last_trusted_ms в базе может отставать до минуты — берём текущее.
-        anchor?.let { out[KEY_LAST_TRUSTED] = TrustedClockMath.trustedNow(it, SystemClock.elapsedRealtime()).toString() }
+        for (k in TrustedClockMath.LOCAL_ONLY_KEYS + listOf(KEY_ZONE, KEY_PENDING_ZONE, KEY_PENDING_SINCE)) {
+            Diary.metaGet(k)?.let { out[k] = it }
+        }
+        // В базе якорь мог ещё не записаться, а last_trusted_ms отстаёт до минуты — берём текущие.
+        anchor?.let { a ->
+            val elapsed = SystemClock.elapsedRealtime()
+            a.bootCount?.let { out[KEY_BOOT_COUNT] = it.toString() }
+            out[KEY_ANCHOR_UTC] = a.anchorUtcMs.toString()
+            out[KEY_ANCHOR_ELAPSED] = a.anchorElapsedMs.toString()
+            out[KEY_ANCHOR_SOURCE] = a.source.name
+            val stored = out[KEY_LAST_TRUSTED]?.toLongOrNull()
+            out[KEY_LAST_TRUSTED] = maxOf(stored ?: Long.MIN_VALUE, TrustedClockMath.trustedNow(a, elapsed)).toString()
+            out[KEY_LAST_ELAPSED] = elapsed.toString()
+        }
         out
     }
 
     // ---------- Внутреннее ----------
+
+    /**
+     * Подготовка часов: чтение meta, якорь, запись, учётный пояс — каждый шаг со своей ошибкой.
+     * true — готово. До [Diary.init] и внутри открытой транзакции ничего не делает (и ничего не закрепляет).
+     */
+    private fun tryInit(): Boolean {
+        if (isReliable()) return true
+        val ctx = appContext ?: return false
+        val elapsed = SystemClock.elapsedRealtime()
+        lastInitAttemptElapsedMs = elapsed
+        val boot = bootCount(ctx)
+        val system = System.currentTimeMillis()
+        val network = networkTimeMs()
+        synchronized(Diary) {
+            if (isReliable()) return true
+            val db = try {
+                Diary.db()
+            } catch (e: IllegalStateException) {
+                // Diary.init ещё не вызван: запасной якорь не ставим, просто ждём.
+                return false
+            } catch (e: Exception) {
+                Log.e(TAG, "База не открывается; время не доверено", e)
+                useFallback(boot, elapsed, system, network)
+                return false
+            }
+            // Внутри чужой транзакции не пишем: сбой записи откатил бы и её.
+            if (db.inTransaction()) return false
+
+            if (anchor == null) {
+                val saved = try {
+                    TrustedClockMath.parseSaved { Diary.metaGet(it) }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Не удалось прочитать якорь; время не доверено", e)
+                    useFallback(boot, elapsed, system, network)
+                    return false
+                }
+                if (saved.rejected.isNotEmpty()) {
+                    Log.w(TAG, "Недопустимые значения часов в базе отброшены: ${saved.rejected}; время неопределённое")
+                }
+                if (network != null && !TrustedClockMath.isValidUtc(network)) {
+                    Log.w(TAG, "Сетевое время вне допустимых пределов: $network; не используется")
+                }
+                val a = TrustedClockMath.resolveAnchor(saved, boot, elapsed, system, network)
+                val floor = TrustedClockMath.highWaterMs(saved)
+                if (network != null && floor != null && TrustedClockMath.isValidUtc(network) && network < floor) {
+                    Log.w(TAG, "Сетевое время ниже last_trusted на ${(floor - network) / 1000} с: остаёмся на отметке")
+                }
+                anchor = a
+                fallback = null
+                try {
+                    writeClock(a, elapsed)
+                    anchorDirty = false
+                    lastPersistElapsedMs = elapsed
+                } catch (e: Exception) {
+                    // Якорь посчитан по данным базы — им пользуемся; запись повторится раз в минуту.
+                    Log.e(TAG, "Не удалось записать якорь; повтор позже", e)
+                    anchorDirty = true
+                }
+                if (a.anchorElapsedMs == elapsed && a != saved.anchor) {
+                    Log.i(TAG, "Новый якорь: загрузка ${a.bootCount}, источник ${a.source}")
+                }
+            }
+            if (zoneState == null) {
+                zoneState = try {
+                    readZoneState()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Не удалось прочитать учётный пояс; пока пояс телефона", e)
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    /** Запасной якорь в памяти: сетевое время, если есть, иначе системное — с пометкой «не доверено». */
+    private fun useFallback(boot: Int?, elapsed: Long, system: Long, network: Long?) {
+        if (fallback != null) return
+        val base = network?.takeIf { TrustedClockMath.isValidUtc(it) } ?: system
+        fallback = ClockAnchor(boot, TrustedClockMath.clampUtc(base), elapsed, AnchorSource.CONSERVATIVE)
+    }
+
+    private fun provisionalNow(elapsed: Long): Long {
+        val f = fallback
+        if (f != null) {
+            if (!warnedFallback) {
+                warnedFallback = true
+                Log.w(TAG, "Доверенные часы не подготовлены: запасное время (не доверено)")
+            }
+            return TrustedClockMath.trustedNow(f, elapsed)
+        }
+        if (!warnedNotInit) {
+            warnedNotInit = true
+            Log.w(TAG, "TrustedClock ещё не подготовлен: пока системное время (не закрепляется)")
+        }
+        return TrustedClockMath.clampUtc(System.currentTimeMillis())
+    }
 
     private fun zoneAt(nowMs: Long): ZoneId {
         val state = zoneState ?: return ZoneId.systemDefault()
@@ -350,21 +618,26 @@ object TrustedClock {
                     val current = zoneState ?: state
                     val again = TrustedClockMath.effectiveZone(current, nowMs)
                     if (again != current) {
-                        writeZoneState(again)
+                        writeZoneState(again, nowMs)
                         Log.i(TAG, "Учётный пояс сменён: ${current.zoneId} → ${again.zoneId}")
                     }
                 }
                 Store.notifyChanged()
             } catch (e: Exception) {
-                // Не записалось — применяем в памяти, запись повторится при следующем чтении после перезапуска.
+                // Не записалось — применяем в памяти (и заморозку шагов тоже), запись повторится при следующем чтении после перезапуска.
                 Log.e(TAG, "Не удалось сохранить смену учётного пояса", e)
+                if (eff.zoneId != state.zoneId) {
+                    stepsFrozenInMemory = TrustedClockMath.stepsFrozenThrough(stepsFrozenInMemory, nowMs, zoneOf(eff.zoneId))
+                }
                 zoneState = eff
             }
         }
         return zoneOf((zoneState ?: eff).zoneId)
     }
 
-    private fun writeZoneState(s: ZoneState) {
+    /** Пишет учётный пояс; если сам пояс меняется — в той же транзакции замораживает оплату шагов по день смены. */
+    private fun writeZoneState(s: ZoneState, nowMs: Long) {
+        val previous = zoneState
         Diary.write {
             Diary.metaPut(KEY_ZONE, s.zoneId)
             val p = s.pending
@@ -375,44 +648,101 @@ object TrustedClock {
                 Diary.metaPut(KEY_PENDING_ZONE, p.zoneId)
                 Diary.metaPut(KEY_PENDING_SINCE, p.sinceMs.toString())
             }
+            if (previous != null && previous.zoneId != s.zoneId) {
+                val old = Diary.metaGet(KEY_STEPS_FROZEN)?.toLongOrNull()
+                val frozen = TrustedClockMath.stepsFrozenThrough(old, nowMs, zoneOf(s.zoneId))
+                Diary.metaPut(KEY_STEPS_FROZEN, frozen.toString())
+                Log.i(TAG, "Оплата шагов заморожена по сутки $frozen (смена пояса)")
+            }
         }
         zoneState = s
     }
 
     /** Под блокировкой Diary. Пояса ещё нет — фиксируется текущий пояс телефона. */
     private fun readZoneState(): ZoneState {
-        var zone = Diary.metaGet(KEY_ZONE)?.takeIf { isValidZone(it) }
+        var zone = Diary.metaGet(KEY_ZONE)?.takeIf { TrustedClockMath.isValidZoneId(it) }
         if (zone == null) {
             zone = ZoneId.systemDefault().id
             Diary.metaPut(KEY_ZONE, zone)
             Log.i(TAG, "Учётный пояс зафиксирован: $zone")
         }
-        val pendingId = Diary.metaGet(KEY_PENDING_ZONE)?.takeIf { isValidZone(it) }
-        val since = Diary.metaGet(KEY_PENDING_SINCE)?.toLongOrNull()
+        val pendingId = Diary.metaGet(KEY_PENDING_ZONE)?.takeIf { TrustedClockMath.isValidZoneId(it) }
+        val since = Diary.metaGet(KEY_PENDING_SINCE)?.toLongOrNull()?.takeIf { TrustedClockMath.isValidUtc(it) }
         val pending = if (pendingId != null && since != null) PendingZone(pendingId, since) else null
         return ZoneState(zone, pending)
     }
 
-    private fun readAnchor(): ClockAnchor? {
-        val utc = Diary.metaGet(KEY_ANCHOR_UTC)?.toLongOrNull() ?: return null
-        val elapsed = Diary.metaGet(KEY_ANCHOR_ELAPSED)?.toLongOrNull() ?: return null
-        return ClockAnchor(Diary.metaGet(KEY_BOOT_COUNT)?.toIntOrNull(), utc, elapsed)
+    /**
+     * Под блокировкой Diary: якорь, его источник и верхняя отметка last_trusted (не уменьшается)
+     * вместе с моментом монотонных часов [elapsed].
+     */
+    private fun writeClock(a: ClockAnchor, elapsed: Long) {
+        Diary.write {
+            if (a.bootCount != null) Diary.metaPut(KEY_BOOT_COUNT, a.bootCount.toString()) else Diary.metaDelete(KEY_BOOT_COUNT)
+            Diary.metaPut(KEY_ANCHOR_UTC, a.anchorUtcMs.toString())
+            Diary.metaPut(KEY_ANCHOR_ELAPSED, a.anchorElapsedMs.toString())
+            Diary.metaPut(KEY_ANCHOR_SOURCE, a.source.name)
+            writeLast(a, elapsed)
+        }
     }
 
-    private fun persistLastTrusted(now: Long, elapsed: Long) {
+    /** last_trusted — только вверх; last_elapsed — всегда текущий (по нему узнаётся та же загрузка). */
+    private fun writeLast(a: ClockAnchor, elapsed: Long) {
+        val now = TrustedClockMath.trustedNow(a, elapsed)
+        val stored = Diary.metaGet(KEY_LAST_TRUSTED)?.toLongOrNull()?.takeIf { TrustedClockMath.isValidUtc(it) }
+        if (stored == null || now > stored) Diary.metaPut(KEY_LAST_TRUSTED, now.toString())
+        Diary.metaPut(KEY_LAST_ELAPSED, elapsed.toString())
+    }
+
+    /**
+     * Раз в минуту, в фоне: сетевое время для консервативного якоря, затем запись якоря (если он ещё
+     * не записан) и last_trusted_ms.
+     */
+    private fun persistAsync(elapsedAtCall: Long) {
         if (!persisting.compareAndSet(false, true)) return
-        lastPersistElapsedMs = elapsed
+        lastPersistElapsedMs = elapsedAtCall
         persistExecutor.execute {
             try {
+                maybeUpgradeWithNetwork()
                 synchronized(Diary) {
-                    val stored = Diary.metaGet(KEY_LAST_TRUSTED)?.toLongOrNull()
-                    if (stored == null || now > stored) Diary.metaPut(KEY_LAST_TRUSTED, now.toString())
+                    val a = anchor ?: return@synchronized
+                    val elapsed = SystemClock.elapsedRealtime()
+                    if (anchorDirty) {
+                        writeClock(a, elapsed)
+                        anchorDirty = false
+                    } else {
+                        Diary.write { writeLast(a, elapsed) }
+                    }
                 }
                 logSkew("проверка раз в минуту")
             } catch (e: Exception) {
                 Log.e(TAG, "Не удалось сохранить last_trusted_ms", e)
             } finally {
                 persisting.set(false)
+            }
+        }
+    }
+
+    /** Пока якорь консервативный — не чаще раза в минуту пробует сетевое время; вперёд — переставляет якорь. */
+    private fun maybeUpgradeWithNetwork() {
+        val a = anchor ?: return
+        if (a.source != AnchorSource.CONSERVATIVE) return
+        val elapsed = SystemClock.elapsedRealtime()
+        val last = lastNetworkCheckElapsedMs
+        if (last != null && elapsed >= last && elapsed - last < TrustedClockMath.NETWORK_RETRY_MS) return
+        lastNetworkCheckElapsedMs = elapsed
+        val network = networkTimeMs() ?: return
+        synchronized(Diary) {
+            val current = anchor ?: return
+            val up = TrustedClockMath.upgradeWithNetwork(current, SystemClock.elapsedRealtime(), network) ?: return
+            if (up == current) return
+            val before = TrustedClockMath.trustedNow(current, up.anchorElapsedMs)
+            anchor = up
+            anchorDirty = true
+            if (up.anchorUtcMs > before) {
+                Log.i(TAG, "Сетевое время получено: доверенное время вперёд на ${(up.anchorUtcMs - before) / 1000} с")
+            } else {
+                Log.i(TAG, "Сетевое время получено и не впереди доверенного: якорь прежний")
             }
         }
     }
@@ -436,8 +766,6 @@ object TrustedClock {
             null
         }
     }
-
-    private fun isValidZone(id: String): Boolean = runCatching { ZoneId.of(id) }.isSuccess
 
     private fun zoneOf(id: String): ZoneId = runCatching { ZoneId.of(id) }.getOrElse { ZoneId.systemDefault() }
 }

@@ -165,4 +165,82 @@ class LedgerMathTest {
     fun zeroChargeRejected() {
         LedgerMath.planUsage(null, "s", "app", 100, 0)
     }
+
+    // ---------- Долг списания после сбоя базы ----------
+
+    private val moscow = ZoneId.of("Europe/Moscow")
+    private val min = 60_000L
+    private fun ms(y: Int, mo: Int, d: Int, h: Int, mi: Int) = LocalDateTime.of(y, mo, d, h, mi).atZone(moscow).toInstant().toEpochMilli()
+    private fun day(y: Int, m: Int, d: Int) = LocalDate.of(y, m, d).toEpochDay()
+
+    @Test
+    fun debtIsChargedToItsOwnDaysNotToday() {
+        // База не принимала списания с 23:50 до 23:58 13 ноября; записалось только в 00:10 14 ноября.
+        val debt = UsageDebt(ms(2026, 11, 13, 23, 50), ms(2026, 11, 13, 23, 58), "app.a", "old")
+        val now = ms(2026, 11, 14, 0, 10)
+        val parts = LedgerMath.planCharges(listOf(debt), "app.b", now, 2 * min, balanceMs = 60 * min, zone = moscow)
+        assertEquals(listOf("app.a" to day(2026, 11, 13), "app.b" to day(2026, 11, 14)), parts.map { it.packageName to it.share.day })
+        assertEquals(listOf(8 * min, 2 * min), parts.map { it.share.ms })
+        assertEquals("old", parts[0].debtSessionId)
+        assertEquals(null, parts[1].debtSessionId)
+        // Долг через полночь делится по суткам.
+        val across = UsageDebt(ms(2026, 11, 13, 23, 55), ms(2026, 11, 14, 0, 5), "app.a", "old")
+        val p2 = LedgerMath.planCharges(listOf(across), "app.a", now, 0, 60 * min, moscow)
+        assertEquals(listOf(day(2026, 11, 13) to 5 * min, day(2026, 11, 14) to 5 * min), p2.map { it.share.day to it.share.ms })
+    }
+
+    @Test
+    fun debtsAndCurrentAreCappedByBalanceOldestFirst() {
+        val d1 = UsageDebt(ms(2026, 11, 13, 10, 0), ms(2026, 11, 13, 10, 3), "a", "s1")
+        val d2 = UsageDebt(ms(2026, 11, 13, 9, 0), ms(2026, 11, 13, 9, 2), "b", "s0")
+        val now = ms(2026, 11, 13, 11, 0)
+        val parts = LedgerMath.planCharges(listOf(d1, d2), "c", now, 5 * min, balanceMs = 4 * min, zone = moscow)
+        // Сначала старый долг (2 мин), затем 2 из 3 минут следующего; на текущий баланса не осталось.
+        assertEquals(listOf("b" to 2 * min, "a" to 2 * min), parts.map { it.packageName to it.share.ms })
+        assertEquals(4 * min, parts.sumOf { it.share.ms })
+        assertTrue(LedgerMath.planCharges(listOf(d1), "c", now, 5 * min, 0L, moscow).isEmpty())
+        // Без долгов — как прежде: только текущий просмотр, не больше баланса.
+        assertEquals(listOf(3 * min), LedgerMath.planCharges(emptyList(), "c", now, 5 * min, 3 * min, moscow).map { it.share.ms })
+    }
+
+    // ---------- Перенос расхода при восстановлении копии ----------
+
+    @Test
+    fun restoreCarriesSpendingMadeAfterBackup() {
+        val d13 = day(2026, 11, 13)
+        val d14 = day(2026, 11, 14)
+        // Копия сделана, когда в открытой строке s:0 было 20 с; потом строка доросла до 60 с, и появились новые.
+        val backup = mapOf("usage:s:0" to 20_000L, "usage:old:0" to 60_000L)
+        val current = listOf(
+            SpentRow("usage:old:0", d13, "app.a", 60_000),
+            SpentRow("usage:s:0", d13, "app.a", 60_000),
+            SpentRow("usage:s:1", d13, "app.a", 30_000),
+            SpentRow("usage:t:0", d14, "app.b", 45_000),
+            SpentRow("restore_carry:r:$d14:app.b", d14, "app.b", 10_000), // перенос прошлого восстановления тоже переносится
+        )
+        val carry = LedgerMath.restoreCarry(current, backup, restoredBalanceMs = 10 * min)
+        assertEquals(listOf(CarryPart(d13, "app.a", 70_000), CarryPart(d14, "app.b", 55_000)), carry)
+
+        // Расход после копии весь в копии (ничего не тратили) — переносить нечего.
+        assertTrue(LedgerMath.restoreCarry(current.take(1), backup, 10 * min).isEmpty())
+    }
+
+    @Test
+    fun restoreCarryNeverTakesBalanceBelowZeroAndPrefersLatestDays() {
+        val d13 = day(2026, 11, 13)
+        val d14 = day(2026, 11, 14)
+        val current = listOf(SpentRow("usage:a:0", d13, "x", 60_000), SpentRow("usage:b:0", d14, "y", 40_000))
+        // В копии баланс 50 с: сегодняшние 40 с — целиком, из вчерашних — остаток 10 с.
+        assertEquals(listOf(CarryPart(d13, "x", 10_000), CarryPart(d14, "y", 40_000)),
+            LedgerMath.restoreCarry(current, emptyMap(), restoredBalanceMs = 50_000))
+        assertTrue(LedgerMath.restoreCarry(current, emptyMap(), restoredBalanceMs = 0).isEmpty())
+        assertTrue(LedgerMath.restoreCarry(current, emptyMap(), restoredBalanceMs = -5).isEmpty())
+    }
+
+    @Test
+    fun restoreCarryCountsAsSpending() {
+        assertTrue(OpKind.RESTORE_CARRY in OpKind.SPENDING && OpKind.USAGE in OpKind.SPENDING)
+        assertTrue(OpKind.RESTORE_CARRY !in OpKind.REWARDS)
+        assertEquals("restore_carry:r1:20405:app.a", LedgerMath.restoreCarryKey("r1", 20405, "app.a"))
+    }
 }

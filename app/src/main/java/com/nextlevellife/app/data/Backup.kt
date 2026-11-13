@@ -16,8 +16,11 @@ import java.util.zip.ZipOutputStream
 
 /** Итог восстановления из копии. */
 sealed interface RestoreResult {
-    /** Данные заменены. [createdAtMs] и [sourceDeviceId] — из манифеста копии. */
-    data class Ok(val createdAtMs: Long, val sourceDeviceId: String?) : RestoreResult
+    /**
+     * Данные заменены. [createdAtMs] и [sourceDeviceId] — из манифеста копии. [carriedMs] — сколько расхода,
+     * сделанного после копии, перенесено в восстановленный журнал ([OpKind.RESTORE_CARRY]).
+     */
+    data class Ok(val createdAtMs: Long, val sourceDeviceId: String?, val carriedMs: Long = 0L) : RestoreResult
 
     /** Ничего не изменено; [reason] — понятная человеку причина. */
     data class Error(val reason: String) : RestoreResult
@@ -48,7 +51,7 @@ object Backup {
                 .put(BackupMath.KEY_DB_SCHEMA, Diary.SCHEMA_VERSION)
                 .put("app_version", appVersionName(context))
                 .put("app_version_code", appVersionCode(context))
-                .put("created_at_ms", System.currentTimeMillis())
+                .put("created_at_ms", TrustedClock.nowMs()) // доверенное время, не системные часы
                 .put("device_id", Ledger.deviceId())
             val prefs = Store.exportPrefs()
 
@@ -73,8 +76,10 @@ object Backup {
      * Восстанавливает данные из копии. Сначала всё читается и проверяется во временной папке;
      * текущие данные меняются только после этого, а при сбое подмены возвращаются как были.
      * Идентификатор этой установки (device_id) и якорь доверенных часов (номер загрузки, якорь,
-     * last_trusted_ms) сохраняются прежними; учётный часовой пояс берётся из копии
-     * ([TrustedClockMath.restoredMeta]).
+     * last_trusted_ms) сохраняются прежними. Учётный часовой пояс остаётся здешним; другой пояс копии
+     * ставится обычной отложенной сменой на 24 часа ([TrustedClockMath.restoredMeta]).
+     * Расход, сделанный после копии (его нет в журнале копии), переносится в восстановленный журнал
+     * ([Ledger.appendRestoreCarry]): «сделал копию → потратил → восстановил» минуты не возвращает.
      */
     fun restore(context: Context, input: InputStream): RestoreResult {
         Store.init(context)
@@ -141,9 +146,10 @@ object Backup {
             checkDbFile(dbTmp, schema!!)?.let { return RestoreResult.Error(it) }
 
             // 5. Подмена.
-            return swap(context, dbTmp, newPrefs, newPrefsJson).let { error ->
+            val carried = LongArray(1)
+            return swap(context, dbTmp, newPrefs, newPrefsJson) { carried[0] = it }.let { error ->
                 if (error != null) RestoreResult.Error(error)
-                else RestoreResult.Ok(manifest.optLong("created_at_ms", 0L), manifest.optString("device_id").ifEmpty { null })
+                else RestoreResult.Ok(manifest.optLong("created_at_ms", 0L), manifest.optString("device_id").ifEmpty { null }, carried[0])
             }
         } catch (e: Exception) {
             Log.e(TAG, "Восстановление не удалось", e)
@@ -231,11 +237,23 @@ object Backup {
      */
     private fun swap(
         context: Context, newDb: File, newPrefs: Store.PrefsSnapshot, newPrefsJson: JSONObject,
+        onCarried: (Long) -> Unit,
     ): String? = synchronized(Diary) {
         val dbFile = Diary.dbFile(context)
         val localDeviceId = runCatching { Ledger.deviceId() }.getOrNull()
-        // Якорь доверенных часов и номер загрузки — здешние, из копии не берутся; учётный пояс — из копии.
+        // Якорь доверенных часов, номер загрузки и учётный пояс — здешние; пояс копии — отложенной сменой.
         val localClockMeta = runCatching { TrustedClock.localMetaForRestore() }.getOrNull()
+        val nowMs = TrustedClock.nowMs()
+        val zone = runCatching { TrustedClock.zone() }.getOrElse { java.time.ZoneId.systemDefault() }
+        // Расход текущего журнала: то, чего нет в копии, переносится. Журнал не читается (база испорчена) —
+        // восстановление не запрещаем: ради такого случая копия и делается; переноса тогда нет.
+        val currentSpent = try {
+            Ledger.spentRowsForCarry()
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось прочитать расход текущего журнала: восстановление без переноса расхода", e)
+            null
+        }
+        var carriedMs = 0L
         val oldPrefsJson = Store.exportPrefs()
         val oldPrefs = Store.parsePrefs(oldPrefsJson)
         val staging = File(dbFile.path + STAGING)
@@ -245,35 +263,39 @@ object Backup {
         var installed = false
         var prefsWritten = false
 
-        // Новая база готовится целиком до остановки текущей: копия и device_id этой установки.
+        // Новая база готовится целиком до остановки текущей: копия, device_id этой установки,
+        // здешние часы и пояс, перенос расхода после копии.
         try {
             staging.delete()
             newDb.inputStream().use { input -> staging.outputStream().use { input.copyTo(it) } }
-            if (localDeviceId != null || localClockMeta != null) {
-                SQLiteDatabase.openDatabase(staging.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
-                    fun putMeta(key: String, value: String) {
-                        db.insertWithOnConflict(
-                            "meta", null,
-                            android.content.ContentValues().apply {
-                                put("key", key)
-                                put("value", value)
-                            },
-                            SQLiteDatabase.CONFLICT_REPLACE,
-                        )
-                    }
-                    if (localDeviceId != null) putMeta(Ledger.KEY_DEVICE_ID, localDeviceId)
-                    if (localClockMeta != null) {
-                        val backupMeta = HashMap<String, String>()
-                        db.rawQuery("SELECT key, value FROM meta", null).use { c ->
-                            while (c.moveToNext()) backupMeta[c.getString(0)] = c.getString(1)
-                        }
-                        for ((key, value) in TrustedClockMath.restoredMeta(localClockMeta, backupMeta)) {
-                            if (value != null) putMeta(key, value) else db.delete("meta", "key = ?", arrayOf(key))
-                        }
+            SQLiteDatabase.openDatabase(staging.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+                fun putMeta(key: String, value: String) {
+                    db.insertWithOnConflict(
+                        "meta", null,
+                        android.content.ContentValues().apply {
+                            put("key", key)
+                            put("value", value)
+                        },
+                        SQLiteDatabase.CONFLICT_REPLACE,
+                    )
+                }
+                if (localDeviceId != null) putMeta(Ledger.KEY_DEVICE_ID, localDeviceId)
+                val backupMeta = HashMap<String, String>()
+                db.rawQuery("SELECT key, value FROM meta", null).use { c ->
+                    while (c.moveToNext()) backupMeta[c.getString(0)] = c.getString(1)
+                }
+                if (localClockMeta != null) {
+                    for ((key, value) in TrustedClockMath.restoredMeta(localClockMeta, backupMeta, nowMs)) {
+                        if (value != null) putMeta(key, value) else db.delete("meta", "key = ?", arrayOf(key))
                     }
                 }
-                for (s in listOf("-wal", "-shm", "-journal")) File(staging.path + s).delete()
+                if (currentSpent != null) {
+                    val deviceId = localDeviceId ?: backupMeta[Ledger.KEY_DEVICE_ID] ?: "restore"
+                    carriedMs = Ledger.appendRestoreCarry(db, currentSpent, deviceId, zone, nowMs)
+                    if (carriedMs > 0) Log.i(TAG, "Перенесён расход после копии: $carriedMs мс")
+                }
             }
+            for (s in listOf("-wal", "-shm", "-journal")) File(staging.path + s).delete()
             // Остатки прошлых попыток мешают понять стадию по файлам — убираем заранее.
             for (suffix in SUFFIXES) {
                 val bak = File(dbFile.path + suffix + BAK)
@@ -313,6 +335,7 @@ object Backup {
             // События экрана после снимка копии потеряны — это пропуск наблюдения для ночного перерыва.
             runCatching { com.nextlevellife.app.sleep.PhoneEvents.onDatabaseReplaced() }
             Store.notifyChanged()
+            onCarried(carriedMs)
             null
         } catch (e: Exception) {
             Log.e(TAG, "Подмена не удалась, возвращаю прежние данные", e)

@@ -206,9 +206,19 @@ object ActivityMath {
     /**
      * Сколько доначислить за день: только «вверх» и только если начисление включено и день
      * не раньше дня включения [sinceDay]. Уменьшение данных ничего не списывает.
+     * Дни по [frozenThroughDay] включительно не оплачиваются (только показываются): после смены
+     * учётного пояса границы суток сдвинулись, и уже оплаченные шаги попали бы в соседние сутки.
      */
-    fun rewardDelta(dueMs: Long, rewardedMs: Long, enabled: Boolean, day: Long, sinceDay: Long?): Long = when {
+    fun rewardDelta(
+        dueMs: Long,
+        rewardedMs: Long,
+        enabled: Boolean,
+        day: Long,
+        sinceDay: Long?,
+        frozenThroughDay: Long? = null,
+    ): Long = when {
         !enabled || sinceDay == null || day < sinceDay -> 0L
+        frozenThroughDay != null && day <= frozenThroughDay -> 0L
         else -> (dueMs - rewardedMs).coerceAtLeast(0L)
     }
 

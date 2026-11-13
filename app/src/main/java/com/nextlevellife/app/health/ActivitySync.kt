@@ -46,6 +46,8 @@ data class ActivitySyncState(
  * уже начисленного (rewarded_ms), одной транзакцией пишется операция STEPS_REWARD с ключом
  * `steps:v2:<day>:<due>` на разницу и обновляется rewarded_ms. Уменьшение данных ничего не списывает.
  * Сутки — учётные ([TrustedClock]): доверенное время и учётный пояс, а не часы и пояс телефона.
+ * После смены учётного пояса сутки по день смены включительно не оплачиваются
+ * ([TrustedClock.stepsFrozenThroughDay]): иначе оплаченные шаги, сдвинувшись в соседние сутки, оплатились бы снова.
  */
 object ActivitySync {
     private const val TAG = "ActivitySync"
@@ -136,6 +138,8 @@ object ActivitySync {
         val from = days.first()
         val to = days.last()
         return Diary.write { db ->
+            // После смены учётного пояса сутки по день смены не оплачиваются (только показываются).
+            val frozenThrough = TrustedClock.stepsFrozenThroughDay()
             val oldDays = Diary.activityDays(from, to).associateBy { it.day }
             val oldRuns = Diary.activityRuns(from, to)
             var changed = oldRuns != runs.sortedWith(compareBy({ it.startMs }, { it.externalId }))
@@ -145,7 +149,7 @@ object ActivitySync {
                 val old = oldDays[t.day]
                 val rewarded = old?.rewardedMs ?: 0L
                 val due = ActivityMath.due(t)
-                val delta = ActivityMath.rewardDelta(due.totalMs, rewarded, enabled, t.day, since)
+                val delta = ActivityMath.rewardDelta(due.totalMs, rewarded, enabled, t.day, since, frozenThrough)
                 var newRewarded = rewarded
                 if (delta > 0) {
                     val walkSteps = ActivityMath.walkSteps(t.steps, t.runSteps)

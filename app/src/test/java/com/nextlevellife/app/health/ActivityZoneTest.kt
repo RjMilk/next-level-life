@@ -47,6 +47,29 @@ class ActivityZoneTest {
     }
 
     @Test
+    fun zoneChangeDoesNotPayStepsTwice() {
+        val d13 = day(2026, 11, 13)
+        val d14 = day(2026, 11, 14)
+        val since = d13 - 10
+        // По Москве 13 ноября: 18:00–21:00 — 6 000 шагов, оплачены (30 мин) в сутках 13 ноября.
+        val paid13 = ActivityMath.due(6_000, 0, 0).totalMs
+        assertEquals(30 * min, ActivityMath.rewardDelta(paid13, 0, true, d13, since))
+        // В 21:00 по Москве применена смена на Токио: это уже 03:00 14 ноября, и те же шаги
+        // (18:00–21:00 Москвы = 00:00–03:00 Токио) попадают в токийские сутки 14 ноября с rewarded_ms = 0.
+        val changeAt = ms(2026, 11, 13, 21, 0)
+        val frozen = com.nextlevellife.app.data.TrustedClockMath.stepsFrozenThrough(null, changeAt, tokyo)
+        assertEquals(d14, frozen)
+        val due14 = ActivityMath.due(6_000 + 4_000, 0, 0).totalMs
+        // Без заморозки шаги оплатились бы второй раз…
+        assertEquals(due14, ActivityMath.rewardDelta(due14, 0, true, d14, since))
+        // …а с ней сутки по день смены только показываются.
+        assertEquals(0L, ActivityMath.rewardDelta(due14, 0, true, d14, since, frozenThroughDay = frozen))
+        assertEquals(0L, ActivityMath.rewardDelta(paid13 + 10 * min, paid13, true, d13, since, frozenThroughDay = frozen))
+        // Следующие сутки оплачиваются как обычно.
+        assertEquals(10 * min, ActivityMath.rewardDelta(10 * min, 0, true, d14 + 1, since, frozenThroughDay = frozen))
+    }
+
+    @Test
     fun dayBoundariesFollowAccountingZone() {
         // Сутки 14 ноября в Токио начинаются в 18:00 13 ноября по Москве.
         assertEquals(ms(2026, 11, 13, 18, 0), ActivityMath.dayStartMs(day(2026, 11, 14), tokyo))

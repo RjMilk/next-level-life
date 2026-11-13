@@ -18,11 +18,19 @@ enum class OpKind {
     /** Пока только объявлено. */
     REVERSAL,
     /** Пока только объявлено. */
-    EMERGENCY_FEE;
+    EMERGENCY_FEE,
+    /**
+     * Перенос расхода при восстановлении копии (отрицательная дельта): расход, сделанный после копии,
+     * дописывается в восстановленный журнал по своим суткам и приложениям — баланс и дневной расход не откатываются.
+     */
+    RESTORE_CARRY;
 
     companion object {
         /** Начисления за занятия: их сумма — «заработано за день». */
         val REWARDS = setOf(SET_REWARD, COMPLEX_REWARD, STEPS_REWARD, RUN_REWARD, CARD_REWARD)
+
+        /** Расход экранного времени: из них считаются дневной расход (лимит) и расход по приложениям. */
+        val SPENDING = setOf(USAGE, RESTORE_CARRY)
     }
 }
 
@@ -51,6 +59,23 @@ data class UsagePlan(
 /** Часть списания в учётных сутках [day]: [ms] расхода, время операции [occurredAtMs]. */
 data class DayShare(val day: Long, val ms: Long, val occurredAtMs: Long)
 
+/**
+ * Неоплаченный просмотр (журнал не принял списание): интервал [startMs, endMs) доверенного времени
+ * в приложении [packageName], сессия службы [sessionId]. Списывается позже по своим суткам.
+ */
+data class UsageDebt(val startMs: Long, val endMs: Long, val packageName: String, val sessionId: String) {
+    val durationMs: Long get() = (endMs - startMs).coerceAtLeast(0L)
+}
+
+/** Часть списания: приложение [packageName], доля суток [share]; [debtSessionId] — сессия долга (null — текущий просмотр). */
+data class ChargePart(val packageName: String, val share: DayShare, val debtSessionId: String? = null)
+
+/** Строка расхода (USAGE или RESTORE_CARRY): ключ, учётные сутки, приложение, потрачено (мс, > 0). */
+data class SpentRow(val key: String, val day: Long, val packageName: String, val spentMs: Long)
+
+/** Перенос расхода при восстановлении: [ms] в учётные сутки [day] по приложению [packageName]. */
+data class CarryPart(val day: Long, val packageName: String, val ms: Long)
+
 /** Чистая логика журнала, без Android: её проверяют юнит-тесты. */
 object LedgerMath {
     /** Одна строка USAGE копит не больше минуты расхода. */
@@ -64,6 +89,7 @@ object LedgerMath {
     fun setKey(sessionId: String) = "set:$sessionId"
     fun complexKey(sessionId: String) = "complex:$sessionId"
     fun usageKey(sessionId: String, index: Int) = "usage:$sessionId:$index"
+    fun restoreCarryKey(restoreId: String, day: Long, packageName: String) = "restore_carry:$restoreId:$day:$packageName"
 
     /**
      * Учётные сутки (LocalDate.toEpochDay) момента [timeMs] в поясе [zone].
@@ -128,5 +154,56 @@ object LedgerMath {
             else -> open!!.copy(accumulatedMs = open.accumulatedMs + addToOpen)
         }
         return UsagePlan(addToOpen, rows, firstNewIndex, next)
+    }
+
+    /**
+     * Что списать за один тик: сначала долги [debts] (старые первыми), каждый по своим суткам — по концу
+     * своего интервала, затем текущий просмотр [elapsedMs] приложения [packageName], закончившийся в [endMs].
+     * Всего — не больше баланса [balanceMs]; не хватает — у части списывается её конец (как и раньше).
+     */
+    fun planCharges(
+        debts: List<UsageDebt>,
+        packageName: String,
+        endMs: Long,
+        elapsedMs: Long,
+        balanceMs: Long,
+        zone: ZoneId,
+    ): List<ChargePart> {
+        var left = balanceMs.coerceAtLeast(0L)
+        val out = ArrayList<ChargePart>()
+        fun take(pkg: String, end: Long, ms: Long, debtSession: String?) {
+            val charge = minOf(ms, left)
+            if (charge <= 0L) return
+            for (share in splitByDay(end, charge, zone)) out += ChargePart(pkg, share, debtSession)
+            left -= charge
+        }
+        for (d in debts.sortedBy { it.endMs }) take(d.packageName, d.endMs, d.durationMs, d.sessionId)
+        take(packageName, endMs, elapsedMs.coerceAtLeast(0L), null)
+        return out
+    }
+
+    /**
+     * Перенос расхода при восстановлении копии. [current] — строки расхода текущего журнала (до подмены),
+     * [backup] — расход по ключам в журнале копии. Переносится всё, чего в копии нет или меньше
+     * (расход после копии, в том числе прежние переносы), по суткам и приложениям. Всего — не больше
+     * баланса копии [restoredBalanceMs] (баланс не уходит ниже нуля); не хватает — сначала поздние сутки
+     * (сегодняшний расход важнее для лимита). Результат — по возрастанию суток, затем приложения.
+     */
+    fun restoreCarry(current: List<SpentRow>, backup: Map<String, Long>, restoredBalanceMs: Long): List<CarryPart> {
+        val acc = LinkedHashMap<Pair<Long, String>, Long>()
+        for (r in current) {
+            val diff = r.spentMs - (backup[r.key] ?: 0L).coerceAtLeast(0L)
+            if (diff > 0L) acc[r.day to r.packageName] = (acc[r.day to r.packageName] ?: 0L) + diff
+        }
+        var left = restoredBalanceMs.coerceAtLeast(0L)
+        val out = ArrayList<CarryPart>()
+        val latestFirst = acc.entries.sortedWith(compareBy({ -it.key.first }, { it.key.second }))
+        for ((k, ms) in latestFirst) {
+            val c = minOf(ms, left)
+            if (c <= 0L) break
+            out += CarryPart(k.first, k.second, c)
+            left -= c
+        }
+        return out.sortedWith(compareBy({ it.day }, { it.packageName }))
     }
 }
