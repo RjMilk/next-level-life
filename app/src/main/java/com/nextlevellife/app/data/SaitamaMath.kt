@@ -264,7 +264,7 @@ object SaitamaMath {
 
     /** «63/100» у повторений; у бега — «4,2 / 10 км» (null — бег не подтверждён). */
     fun valueText(p: SaitamaDay, goal: SaitamaGoal): String? = when (goal) {
-        SaitamaGoal.RUN -> p.runM?.let { "${km(it)} / ${Saitama.RUN_GOAL_M / 1000} км" }
+        SaitamaGoal.RUN -> p.runM?.let { "${km(it)}/${Saitama.RUN_GOAL_M / 1000} км" }
         else -> "${p.repsOf(goal)}/${Saitama.REPS_GOAL}"
     }
 
@@ -299,7 +299,7 @@ object SaitamaMath {
     /** Строка карточки на главной: «Сегодня 63 · 0 · 100 · 4,2 км»; бег не подтверждён — «· ? км». */
     fun cardLine(p: SaitamaDay): String =
         "Сегодня " + SaitamaGoal.reps.joinToString(" · ") { p.repsOf(it).toString() } +
-            " · " + (p.runM?.let { km(it) } ?: "?") + " км"
+            " · " + (p.runM?.let { km(it) + " км" } ?: "бег не подтверждён")
 
     /** «🔥 Серия 3 дня». */
     fun streakText(n: Int): String = "🔥 Серия $n ${daysWord(n)}"

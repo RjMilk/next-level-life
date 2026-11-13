@@ -41,7 +41,7 @@ class SaitamaMathTest {
         assertEquals(30, p.repsOf(SaitamaGoal.ABS))
         assertEquals(15, p.repsOf(SaitamaGoal.SQUATS))
         assertEquals("63/100", SaitamaMath.valueText(p, SaitamaGoal.PUSHUPS))
-        assertEquals("4,2 / 10 км", SaitamaMath.valueText(p, SaitamaGoal.RUN))
+        assertEquals("4,2/10 км", SaitamaMath.valueText(p, SaitamaGoal.RUN))
         assertEquals(0.63f, SaitamaMath.fraction(p, SaitamaGoal.PUSHUPS), 0.0001f)
         assertFalse(p.full)
     }
@@ -75,7 +75,7 @@ class SaitamaMathTest {
         assertFalse(p.full)
         assertNull(SaitamaMath.valueText(p, SaitamaGoal.RUN))
         assertEquals("Сегодня осталось: 10 км бега (бег не подтверждён)", SaitamaMath.remainingText(p))
-        assertEquals("Сегодня 100 · 100 · 100 · ? км", SaitamaMath.cardLine(p))
+        assertEquals("Сегодня 100 · 100 · 100 · бег не подтверждён", SaitamaMath.cardLine(p))
         // Для характеристик: без строки активности день не полный.
         assertFalse(SaitamaMath.isFullDay(fullSets(), null))
         assertTrue(SaitamaMath.isFullDay(fullSets(), activity(runM = 10_000L)))
@@ -103,7 +103,7 @@ class SaitamaMathTest {
     fun remainingTextAndCardLine() {
         val p = SaitamaMath.dayOf(day, listOf(set("pushups", 63), set("squats", 99), set("abs", 100)), 4_250L)
         assertEquals("Сегодня осталось: 37 отжиманий, 1 приседание, 5,8 км бега", SaitamaMath.remainingText(p))
-        assertEquals("Сегодня 63 · 100 · 99 · 4,2 км", SaitamaMath.cardLine(p))
+        assertEquals("Сегодня 63 · 100 · 99 · 4,2 км", SaitamaMath.cardLine(p))
         val q = SaitamaMath.dayOf(day, listOf(set("pushups", 98), set("abs", 22)), 10_000L)
         assertEquals("Сегодня осталось: 2 отжимания, 78 на пресс, 100 приседаний", SaitamaMath.remainingText(q))
     }

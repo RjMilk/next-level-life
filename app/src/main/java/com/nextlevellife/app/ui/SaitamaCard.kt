@@ -53,7 +53,7 @@ fun SaitamaCard(onClick: () -> Unit) {
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text("Сайтама", style = MaterialTheme.typography.titleLarge, color = Accent)
-            Text("Каждый день 100 · 100 · 100 + 10 км", style = MaterialTheme.typography.bodyMedium)
+            Text("Каждый день 100 · 100 · 100 + 10 км", style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(4.dp))
             val s = state
             if (s != null) {
