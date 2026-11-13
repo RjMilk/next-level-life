@@ -61,7 +61,7 @@ object StatsGuide {
             "За повторения и планку вместе — не больше ${points(StatsMath.STRENGTH_WORK_CAP)} в день",
             "Всего — не больше ${points(StatsMath.DAY_CAP)} в день",
         ),
-        penalty = penaltyText(StatsMath.STRENGTH_FREE_IDLE_DAYS, "без тренировки", "День хотя бы с одним очком силы обнуляет счёт."),
+        penalty = penaltyText(Stat.STRENGTH, "День хотя бы с одним очком силы обнуляет счёт."),
         example = "3 подхода по 15 отжиманий и минута планки → 4 + 2 = ${points(6)}",
     )
 
@@ -86,7 +86,12 @@ object StatsGuide {
             "Всего — не больше ${points(StatsMath.DAY_CAP)} в день",
             "Без Health Connect очки за шаги и бег не начисляются",
         ),
-        penalty = "Штрафа за простой нет.",
+        penalty = penaltyText(
+            Stat.ENDURANCE,
+            "Очко выносливости — от ${thousands(StatsMath.WALK_FIRST_POINT_STEPS)} шагов, " +
+                "${StatsMath.RUN_METERS_PER_POINT / 1000} км бега или ${StatsMath.COMPLEX_MS_PER_POINT / 60_000} минут " +
+                "комплекса; такой день обнуляет счёт. Дни без данных о шагах не считаются и тоже обнуляют счёт.",
+        ),
         example = "10${NBSP}000 шагов → 1 + 2 = ${points(3)}",
     )
 
@@ -123,19 +128,17 @@ object StatsGuide {
                     "за эту ночь или сутки очков нет",
                 "Без ночного режима и дневного лимита дисциплину не заработать",
             ),
-            penalty = penaltyText(StatsMath.DISCIPLINE_FREE_IDLE_DAYS, "без очков дисциплины", "Любое очко дисциплины обнуляет счёт."),
+            penalty = penaltyText(Stat.DISCIPLINE, "Любое очко дисциплины обнуляет счёт."),
             example = "Ночь без телефона и без блокировок, день в лимите → 4 + 3 + 3 = ${points(10)}",
         )
     }
 
-    /** «3 дня подряд без тренировки — без штрафа. С 4-го дня: −1, на 5-й −2, дальше −3 в день. …» */
-    private fun penaltyText(free: Int, what: String, reset: String): String {
-        val p1 = StatsMath.idlePenalty(free + 1, free)
-        val p2 = StatsMath.idlePenalty(free + 2, free)
-        val max = -StatsMath.MAX_IDLE_PENALTY
-        return "${daysLabel(free)} подряд $what — без штрафа. С ${free + 1}-го дня: ${StatsText.signed(p1)}, " +
-            "на ${free + 2}-й ${StatsText.signed(p2)}, дальше ${StatsText.signed(max)} в день. $reset " +
-            "Ниже нуля очки не опускаются."
+    /** «Каждые 3 дня подряд без очков силы — −1 очко: через 3 дня, через 6, через 9… <сброс> Ниже нуля…» */
+    private fun penaltyText(stat: Stat, reset: String): String {
+        val n = StatsMath.IDLE_PERIOD_DAYS
+        return "Каждые ${StatsText.daysLabel(n.toLong())} подряд ${StatsText.idleWhat(stat)} — " +
+            "${StatsText.signed(-StatsMath.IDLE_PENALTY)}$NBSP${StatsText.pointsWord(StatsMath.IDLE_PENALTY.toLong())}: " +
+            "на ${n}-й день, на ${2 * n}-й, на ${3 * n}-й и так далее. $reset Ниже нуля очки не опускаются."
     }
 
     /** Что входит в уровень — абзацы экрана уровня. */
@@ -143,8 +146,8 @@ object StatsGuide {
         "Общий уровень — это сумма очков силы, выносливости и дисциплины за всё время.",
         "Каждая характеристика даёт до ${points(StatsMath.DAY_CAP)} в день, всего до " +
             "${points(StatsMath.DAY_CAP * Stat.entries.size)} в день.",
-        "Если забросить тренировки или дисциплину, начинаются штрафы: очки постепенно уменьшаются, " +
-            "и уровень может опуститься. Выносливость не штрафуется.",
+        "Если забросить характеристику, каждые ${StatsMath.IDLE_PERIOD_DAYS} дня простоя подряд снимают " +
+            "по ${StatsMath.IDLE_PENALTY} очку — медленно, с запасом на отдых, но уровень может опуститься.",
         "Минуты экранного времени в уровень не входят: минуты ты тратишь, а очки копятся.",
         "У каждой характеристики свой уровень по той же лестнице.",
     )
@@ -158,14 +161,6 @@ object StatsGuide {
 
     /** «1 очко», «2 очка», «10 очков». */
     fun points(n: Int): String = "$n$NBSP${StatsText.pointsWord(n.toLong())}"
-
-    /** «2 дня», «3 дня», «5 дней». */
-    private fun daysLabel(n: Int): String = "$n$NBSP" + when {
-        n % 100 in 11..14 -> "дней"
-        n % 10 == 1 -> "день"
-        n % 10 in 2..4 -> "дня"
-        else -> "дней"
-    }
 
     private fun thousands(n: Long): String = ActivityMath.formatThousands(n)
 }

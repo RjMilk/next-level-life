@@ -21,17 +21,22 @@ object StatsText {
     fun signed(n: Int): String = if (n < 0) "−${-n}" else "+$n"
 
     /**
-     * Предупреждение о штрафе за сегодня: «Сегодня ещё без очков силы — завтра сила −1»; штрафа не будет — null.
+     * Предупреждение о штрафе за сегодня: «Если сегодня без очков силы — сила −1»; штрафа не будет — null.
      */
     fun riskLine(stat: Stat, risk: Int): String? {
         if (risk >= 0) return null
-        val what = when (stat) {
-            Stat.STRENGTH -> "Сегодня ещё без очков силы"
-            Stat.DISCIPLINE -> "Сегодня без очков дисциплины"
-            Stat.ENDURANCE -> return null
-        }
-        return "$what — завтра ${stat.title.lowercase()} ${signed(risk)}"
+        return "Если сегодня ${idleWhat(stat)} — ${stat.title.lowercase()} ${signed(risk)}"
     }
+
+    /** Что значит простой характеристики: «без очков силы», «без очков выносливости», «без очков дисциплины». */
+    fun idleWhat(stat: Stat): String = when (stat) {
+        Stat.STRENGTH -> "без очков силы"
+        Stat.ENDURANCE -> "без очков выносливости"
+        Stat.DISCIPLINE -> "без очков дисциплины"
+    }
+
+    /** «1 день», «3 дня», «6 дней». */
+    fun daysLabel(n: Long): String = "$n$NBSP${plural(n, "день", "дня", "дней")}"
 
     /** «87 очков», «1 очко», «1 234 очка». */
     fun pointsLabel(points: Long): String =
@@ -62,8 +67,9 @@ object StatsText {
             SourceKind.PHONE_FREE_NIGHT -> "Ночь без телефона"
             SourceKind.LIMIT_KEPT -> "расход ${s.amount}$NBSP% лимита"
             SourceKind.NIGHT_NO_BLOCKS -> "ночью без блокировок"
-            SourceKind.STRENGTH_IDLE -> "${s.amount}-й день без тренировки"
-            SourceKind.DISCIPLINE_IDLE -> "${s.amount}-й день без дисциплины"
+            SourceKind.STRENGTH_IDLE -> "${daysLabel(s.amount)} подряд ${idleWhat(Stat.STRENGTH)}"
+            SourceKind.ENDURANCE_IDLE -> "${daysLabel(s.amount)} подряд ${idleWhat(Stat.ENDURANCE)}"
+            SourceKind.DISCIPLINE_IDLE -> "${daysLabel(s.amount)} подряд ${idleWhat(Stat.DISCIPLINE)}"
         }
         val why = when {
             s.capped -> " (потолок)"

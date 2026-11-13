@@ -43,6 +43,7 @@ enum class SourceKind(val stat: Stat) {
 
     /** Штраф за простой: [PointSource.amount] — какой по счёту день подряд без очков, очки отрицательные. */
     STRENGTH_IDLE(Stat.STRENGTH),
+    ENDURANCE_IDLE(Stat.ENDURANCE),
     DISCIPLINE_IDLE(Stat.DISCIPLINE),
 }
 
@@ -133,8 +134,12 @@ data class LevelProgress(val level: Int, val points: Long, val from: Long, val t
  */
 object StatsMath {
     /** Версия правил: при смене кеш итогов дней ([StatsRepository]) пересчитывается. */
-    /** 2 — пороги: подход от 10, планка от минуты, ходьба от 5 000 шагов. */
-    const val RULE_VERSION = 2
+    /**
+     * 2 — пороги: подход от 10, планка от минуты, ходьба от 5 000 шагов.
+     * 3 — источник ходьбы и при 0 шагов (штраф выносливости отличает «мало шагов» от «нет данных»).
+     * Правила дисциплины с версии 1 не менялись: её очки из кеша прежних версий переносятся ([keepOldDiscipline]).
+     */
+    const val RULE_VERSION = 3
 
     /** Потолок очков одной характеристики за день. */
     const val DAY_CAP = 10
@@ -209,8 +214,11 @@ object StatsMath {
             left -= pts
             sources += PointSource(kind, amount, pts, raw)
         }
-        val walk = walkSteps(input.steps, input.runSteps)
-        if (walk > 0) add(SourceKind.WALK, walk, walkPoints(walk))
+        // Шаги известны (даже 0) — источник ходьбы есть: по нему штраф за простой отличает «мало шагов» от «нет данных».
+        if (input.steps != null) {
+            val walk = walkSteps(input.steps, input.runSteps)
+            add(SourceKind.WALK, walk, walkPoints(walk))
+        }
         if (input.runMeters > 0) add(SourceKind.RUN, input.runMeters, (input.runMeters / RUN_METERS_PER_POINT).toInt())
         if (input.complexMs > 0) {
             add(SourceKind.COMPLEX_TIME, input.complexMs, (input.complexMs / COMPLEX_MS_PER_POINT).toInt(), COMPLEX_TIME_CAP)
@@ -277,24 +285,31 @@ object StatsMath {
 
     // ---------- Штрафы за простой ----------
 
-    /** Сколько дней подряд без силы проходят без штрафа: день отдыха и ещё два. */
-    const val STRENGTH_FREE_IDLE_DAYS = 3
+    /** Штраф приходит за каждые столько дней простоя подряд: сила за пару дней не пропадает, нужно время на отдых. */
+    const val IDLE_PERIOD_DAYS = 3
 
-    /** Сколько дней подряд без дисциплины проходят без штрафа. */
-    const val DISCIPLINE_FREE_IDLE_DAYS = 2
+    /** Сколько очков снимает один штраф. */
+    const val IDLE_PENALTY = 1
 
-    /** Больше этого штраф за день не растёт. */
-    const val MAX_IDLE_PENALTY = 3
+    /** Штраф за [idleDay]-й день простоя подряд: −1 на 3-й, 6-й, 9-й… день, в остальные — 0. */
+    fun idlePenalty(idleDay: Int): Int =
+        if (idleDay > 0 && idleDay % IDLE_PERIOD_DAYS == 0) -IDLE_PENALTY else 0
 
-    /** Штраф за [idleDay]-й день подряд без очков: первые [free] — 0, затем −1, −2 и дальше −3 в день. */
-    fun idlePenalty(idleDay: Int, free: Int): Int =
-        if (idleDay <= free) 0 else -minOf(idleDay - free, MAX_IDLE_PENALTY)
+    /**
+     * Простаивала ли характеристика в день [p]: true — день простоя, false — очки были, null — неизвестно
+     * (сбрасывает счёт, как день с очками). Выносливость: простой — шаги известны, а очков нет
+     * (меньше 5 000 шагов, без бега и комплексов); без данных о шагах (нет Health Connect) — неизвестно.
+     */
+    fun idle(p: DayPoints, stat: Stat): Boolean? = when {
+        p.of(stat) > 0 -> false
+        stat == Stat.ENDURANCE && p.sources.none { it.kind == SourceKind.WALK } -> null
+        else -> true
+    }
 
-    /** Сколько дней простоя проходят без штрафа; у выносливости штрафа нет (null). */
-    fun freeIdleDays(stat: Stat): Int? = when (stat) {
-        Stat.STRENGTH -> STRENGTH_FREE_IDLE_DAYS
-        Stat.DISCIPLINE -> DISCIPLINE_FREE_IDLE_DAYS
-        Stat.ENDURANCE -> null
+    private fun idleKind(stat: Stat): SourceKind = when (stat) {
+        Stat.STRENGTH -> SourceKind.STRENGTH_IDLE
+        Stat.ENDURANCE -> SourceKind.ENDURANCE_IDLE
+        Stat.DISCIPLINE -> SourceKind.DISCIPLINE_IDLE
     }
 
     /**
@@ -305,13 +320,13 @@ object StatsMath {
 
     /**
      * Штрафы за простой поверх очков дней [days]. Действуют с дня [since] (раньше этих правил не было) и только
-     * на завершённые дни до [today]: сегодня штрафа нет, пока день идёт. Простой — день, когда характеристика
-     * не получила ни одного очка (до штрафа). Предварительный день (данные о ночи не прочитаны) обрывает
-     * подсчёт: его результат ещё неизвестен, и за него и после него штрафов в этом расчёте нет.
+     * на завершённые дни до [today]: сегодня штрафа нет, пока день идёт. Простой — [idle]; каждый 3-й день
+     * простоя подряд снимает 1 очко. Предварительный день (данные о ночи не прочитаны) обрывает подсчёт:
+     * его результат ещё неизвестен, и за него и после него штрафов в этом расчёте нет.
      */
     fun withPenalties(days: Map<Long, DayPoints>, since: Long, today: Long): Penalized {
         val out = HashMap(days)
-        val idle = HashMap<Stat, Int>()
+        val idleRun = HashMap<Stat, Int>()
         var broken = false
         for (day in since until today) {
             val p = days[day] ?: DayPoints.empty(day)
@@ -319,29 +334,28 @@ object StatsMath {
                 broken = true
                 break
             }
-            var strength = p.strength
-            var discipline = p.discipline
-            val extra = ArrayList<PointSource>()
+            var q = p
             for (stat in Stat.entries) {
-                val free = freeIdleDays(stat) ?: continue
-                val run = if (p.of(stat) == 0) (idle[stat] ?: 0) + 1 else 0
-                idle[stat] = run
-                val penalty = idlePenalty(run, free)
+                val run = if (idle(p, stat) == true) (idleRun[stat] ?: 0) + 1 else 0
+                idleRun[stat] = run
+                val penalty = idlePenalty(run)
                 if (penalty == 0) continue
-                val kind = if (stat == Stat.STRENGTH) SourceKind.STRENGTH_IDLE else SourceKind.DISCIPLINE_IDLE
-                extra += PointSource(kind, run.toLong(), penalty)
-                if (stat == Stat.STRENGTH) strength += penalty else discipline += penalty
+                q = q.copy(
+                    strength = q.strength + if (stat == Stat.STRENGTH) penalty else 0,
+                    endurance = q.endurance + if (stat == Stat.ENDURANCE) penalty else 0,
+                    discipline = q.discipline + if (stat == Stat.DISCIPLINE) penalty else 0,
+                    sources = q.sources + PointSource(idleKind(stat), run.toLong(), penalty),
+                )
             }
-            if (extra.isNotEmpty()) {
-                out[day] = p.copy(strength = strength, discipline = discipline, sources = p.sources + extra)
-            }
+            if (q !== p) out[day] = q
         }
         val risk = HashMap<Stat, Int>()
         if (!broken && today >= since) {
             val t = days[today] ?: DayPoints.empty(today)
             for (stat in Stat.entries) {
-                val free = freeIdleDays(stat) ?: continue
-                risk[stat] = if (t.of(stat) > 0) 0 else idlePenalty((idle[stat] ?: 0) + 1, free)
+                // Сегодня ещё может набраться: риск — если день так и закончится без очков. День без данных
+                // о шагах счёт сбросит, поэтому риска для выносливости нет, пока шаги не пришли.
+                risk[stat] = if (idle(t, stat) == true) idlePenalty((idleRun[stat] ?: 0) + 1) else 0
             }
         }
         return Penalized(out, risk)

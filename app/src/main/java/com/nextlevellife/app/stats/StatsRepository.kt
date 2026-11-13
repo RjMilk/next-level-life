@@ -144,8 +144,8 @@ object StatsRepository {
     }
 
     /**
-     * Замороженные дни [first]..[settledThrough] по прежним правилам (v1): из них нужна только дисциплина,
-     * сила и выносливость считаются заново из дневника и шагов, которые не удаляются.
+     * Замороженные дни [first]..[settledThrough] по прежним правилам (любая версия ниже действующей): из них
+     * нужна только дисциплина, сила и выносливость считаются заново из дневника и шагов, которые не удаляются.
      */
     private fun oldDiscipline(first: Long, settledThrough: Long): Map<Long, DayPoints> {
         val old = HashMap<Long, DayPoints>()
@@ -153,7 +153,8 @@ object StatsRepository {
         for ((key, value) in Diary.metaWithPrefix(CACHE_PREFIX)) {
             val day = key.removePrefix(CACHE_PREFIX).toLongOrNull() ?: continue
             if (day < first || day > settledThrough) continue
-            StatsMath.decode(day, value, ruleVersion = 1)?.let { old[day] = it }
+            (StatsMath.RULE_VERSION - 1 downTo 1).firstNotNullOfOrNull { StatsMath.decode(day, value, ruleVersion = it) }
+                ?.let { old[day] = it }
         }
         return old
     }
