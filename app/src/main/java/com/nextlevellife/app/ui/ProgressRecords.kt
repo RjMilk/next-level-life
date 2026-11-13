@@ -20,8 +20,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.nextlevellife.app.data.ActivityRun
 import com.nextlevellife.app.data.ExerciseRecord
 import com.nextlevellife.app.data.ExerciseTotal
+import com.nextlevellife.app.health.ActivityMath
 
 @Composable
 internal fun RecordsCard(
@@ -31,10 +33,29 @@ internal fun RecordsCard(
     expanded: String?,
     history: List<Pair<Long, ExerciseTotal>>?,
     onToggle: (String) -> Unit,
+    bestStepsDay: Pair<Long, Long>? = null,
+    longestRun: ActivityRun? = null,
+    today: Long = 0L,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text("Рекорды", style = MaterialTheme.typography.titleMedium)
+
+            if (bestStepsDay != null || longestRun != null) {
+                SectionLabel("Шаги и бег")
+                bestStepsDay?.let { (day, steps) ->
+                    RecordRow(
+                        "Больше всего шагов · ${ProgressMath.dateLabel(day, today)}",
+                        ActivityMath.formatThousands(steps),
+                    )
+                }
+                longestRun?.let { r ->
+                    RecordRow(
+                        "Самая длинная пробежка · ${ProgressMath.dateLabel(r.day, today)}",
+                        ActivityMath.formatKm(r.distanceM),
+                    )
+                }
+            }
 
             SectionLabel("Минотавр — лучшее время")
             minotaurBest.forEach { (weight, ms) ->

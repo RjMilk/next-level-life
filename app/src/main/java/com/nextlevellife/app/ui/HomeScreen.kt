@@ -52,6 +52,8 @@ import com.nextlevellife.app.data.Minotaur
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.Weights
+import com.nextlevellife.app.health.ActivitySync
+import com.nextlevellife.app.health.HealthAvailability
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
@@ -74,10 +76,12 @@ fun HomeScreen(
     onExercise: (String) -> Unit,
     onComplex: (String) -> Unit,
     onProgress: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     val context = LocalContext.current
     val version by Store.version.collectAsState()
     val widthClass = currentWidthClass()
+    val health by ActivitySync.state.collectAsState()
 
     // Первый запуск: сразу заполняем список блокировки набором по умолчанию.
     LaunchedEffect(Unit) {
@@ -105,7 +109,12 @@ fun HomeScreen(
     val today = LocalDate.now().toEpochDay()
     val todayDigest by produceState(cachedToday?.takeIf { it.first == today }?.second, version, today) {
         value = withContext(Dispatchers.IO) {
-            runCatching { ProgressMath.digestDay(Diary.setsForDay(today), Diary.runsForDay(today)) }.getOrNull()
+            runCatching {
+                ProgressMath.digestDay(
+                    Diary.setsForDay(today), Diary.runsForDay(today),
+                    activity = runCatching { Diary.activityDay(today) }.getOrNull(),
+                )
+            }.getOrNull()
         }?.also { cachedToday = today to it }
     }
     val spentToday by produceState(cachedSpent?.takeIf { it.first == today }?.second, version, today, resumeCount) {
@@ -152,7 +161,7 @@ fun HomeScreen(
             night = if (nightOn) nightStart to nightEnd else null,
             large = widthClass == WidthClass.EXPANDED,
         )
-        TodayCard(todayDigest, onProgress)
+        TodayCard(todayDigest, health.availability, onProgress, onSettings)
         LevelCard(xp, streak)
     }
     val earn: @Composable () -> Unit = {
@@ -280,9 +289,17 @@ private fun BalanceScore(balanceMs: Long, large: Boolean) {
 
 // ---------- Сегодня, уровень ----------
 
-/** «Сегодня»: итог дня и не больше двух строк активности; нажатие открывает вкладку «Прогресс». */
+/**
+ * «Сегодня»: итог дня, не больше двух строк тренировок, затем шаги и бег из Health Connect;
+ * нажатие открывает вкладку «Прогресс». Без подключения — одна строка-ссылка в настройки.
+ */
 @Composable
-private fun TodayCard(digest: ProgressMath.DayDigest?, onProgress: () -> Unit) {
+private fun TodayCard(
+    digest: ProgressMath.DayDigest?,
+    health: HealthAvailability?,
+    onProgress: () -> Unit,
+    onSettings: () -> Unit,
+) {
     Card(
         Modifier
             .fillMaxWidth()
@@ -291,7 +308,7 @@ private fun TodayCard(digest: ProgressMath.DayDigest?, onProgress: () -> Unit) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Сегодня", style = MaterialTheme.typography.titleMedium)
-                if (digest == null || digest.isEmpty) {
+                if (digest == null || !digest.hasWorkout) {
                     Text(
                         "Тренировок ещё не было",
                         style = MaterialTheme.typography.bodyMedium,
@@ -315,6 +332,26 @@ private fun TodayCard(digest: ProgressMath.DayDigest?, onProgress: () -> Unit) {
                     ProgressMath.moreLine(rest)?.let {
                         Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                }
+                when (health) {
+                    HealthAvailability.CONNECTED -> ProgressMath.todayActivityLines(digest?.activity).forEach { line ->
+                        Text(
+                            line,
+                            style = MaterialTheme.typography.bodyMedium.merge(Tabular),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    HealthAvailability.NOT_CONNECTED, HealthAvailability.UPDATE_REQUIRED -> Text(
+                        "Подключи Health Connect, чтобы видеть шаги",
+                        modifier = Modifier
+                            .padding(top = 2.dp)
+                            .clickable(onClickLabel = "Открыть настройки", onClick = onSettings),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    // Ещё не проверяли или на телефоне нет Health Connect — строки нет.
+                    else -> Unit
                 }
             }
             Chevron()

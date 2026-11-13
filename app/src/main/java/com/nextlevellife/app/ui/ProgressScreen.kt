@@ -15,6 +15,7 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -32,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.nextlevellife.app.data.ActivityRun
 import com.nextlevellife.app.data.ComplexRun
 import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.ExerciseRecord
@@ -40,6 +42,9 @@ import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.SetEntry
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.Weights
+import com.nextlevellife.app.health.ActivityMath
+import com.nextlevellife.app.health.ActivitySync
+import com.nextlevellife.app.health.HealthAvailability
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -59,6 +64,13 @@ private data class Overview(
     val minotaurBest: List<Pair<Int, Long?>>,
     val cindyBest: Pair<Int, Int>?,
     val records: List<ExerciseRecord>,
+    /** Шаги по дням диаграммы (null — данных нет) и метры бега. */
+    val chartSteps: List<Long?> = emptyList(),
+    val chartRunMeters: List<Long> = emptyList(),
+    /** За дни диаграммы есть хоть какие-то данные Health Connect. */
+    val hasActivityData: Boolean = false,
+    val bestStepsDay: Pair<Long, Long>? = null,
+    val longestRun: ActivityRun? = null,
 )
 
 /** День вместе с номером: пока грузится новый, на экране не перепутать даты. */
@@ -86,24 +98,32 @@ fun ProgressScreen(modifier: Modifier = Modifier) {
     var savedMonth by rememberSaveable { mutableStateOf<Int?>(null) }
     var savedDay by rememberSaveable { mutableStateOf<Long?>(null) }
     var expanded by rememberSaveable { mutableStateOf<String?>(null) }
+    var chartMetricName by rememberSaveable { mutableStateOf(ProgressMath.ChartMetric.REPS.name) }
+    val chartMetric = ProgressMath.ChartMetric.entries.firstOrNull { it.name == chartMetricName } ?: ProgressMath.ChartMetric.REPS
     val month = (savedMonth ?: currentMonth).coerceAtMost(currentMonth)
     val selected = (savedDay ?: today).coerceAtMost(today)
+    val health by ActivitySync.state.collectAsState()
+    val connectHealth = rememberHealthConnectAction()
 
     val overview by produceState(ProgressCache.overview, version, today) {
         value = withContext(Dispatchers.IO) { loadOverview(today) }.also { ProgressCache.overview = it }
     }
     val trained by produceState(ProgressCache.trained?.takeIf { it.first == month }?.second ?: emptySet(), version, month) {
         value = withContext(Dispatchers.IO) {
-            runCatching {
-                Diary.trainedDays(ProgressMath.firstDayOfMonth(month), ProgressMath.lastDayOfMonth(month))
-            }.getOrDefault(emptySet())
+            val from = ProgressMath.firstDayOfMonth(month)
+            val to = ProgressMath.lastDayOfMonth(month)
+            // Пробежка делает день тренировочным, обычные шаги — нет.
+            runCatching { Diary.trainedDays(from, to) }.getOrDefault(emptySet()) +
+                runCatching { Diary.runDays(from, to) }.getOrDefault(emptySet())
         }.also { ProgressCache.trained = month to it }
     }
     val dayData by produceState(ProgressCache.day, version, selected) {
         value = withContext(Dispatchers.IO) {
             val sets = runCatching { Diary.setsForDay(selected) }.getOrDefault(emptyList<SetEntry>())
             val runs = runCatching { Diary.runsForDay(selected) }.getOrDefault(emptyList<ComplexRun>())
-            DayData(selected, ProgressMath.digestDay(sets, runs))
+            val activity = runCatching { Diary.activityDay(selected) }.getOrNull()
+            val activityRuns = runCatching { Diary.activityRunsForDay(selected) }.getOrDefault(emptyList())
+            DayData(selected, ProgressMath.digestDay(sets, runs, activity, activityRuns))
         }.also { ProgressCache.day = it }
     }
     val history by produceState(ProgressCache.history, version, expanded) {
@@ -144,6 +164,10 @@ fun ProgressScreen(modifier: Modifier = Modifier) {
     }
     val details: @Composable () -> Unit = {
         val o = overview
+        val availability = health.availability
+        if (availability == HealthAvailability.NOT_CONNECTED || availability == HealthAvailability.UPDATE_REQUIRED) {
+            ConnectHealthCard { connectHealth(health.access) }
+        }
         when {
             o == null -> Unit // грузится: обычно доли секунды
             !o.hasEntries -> EmptyDiaryCard()
@@ -152,7 +176,12 @@ fun ProgressScreen(modifier: Modifier = Modifier) {
                 ChartCard(
                     days = o.chartDays,
                     reps = o.chartReps,
+                    steps = o.chartSteps,
+                    runMeters = o.chartRunMeters,
                     earnedMs = o.chartEarnedMs,
+                    metric = chartMetric,
+                    showMetrics = o.hasActivityData || health.connected,
+                    onMetric = { chartMetricName = it.name },
                     today = today,
                     selected = selected,
                     onSelect = { day ->
@@ -167,6 +196,9 @@ fun ProgressScreen(modifier: Modifier = Modifier) {
                     expanded = expanded,
                     history = history?.takeIf { it.first == expanded }?.second,
                     onToggle = { id -> expanded = if (expanded == id) null else id },
+                    bestStepsDay = o.bestStepsDay,
+                    longestRun = o.longestRun,
+                    today = today,
                 )
             }
         }
@@ -235,6 +267,9 @@ private fun loadOverview(today: Long): Overview {
             compareBy<ExerciseRecord> { exerciseOrder.indexOf(it.exerciseId).let { i -> if (i < 0) Int.MAX_VALUE else i } }
                 .thenBy { it.exerciseName }
         )
+    val activity = runCatching { Diary.activityDays(days.first(), days.last()) }.getOrDefault(emptyList())
+        .associateBy { it.day }
+    val (bestSteps, longestRun) = runCatching { Diary.activityRecords() }.getOrDefault(null to null)
     return Overview(
         xp = Store.xp(),
         streak = Store.streak(),
@@ -245,7 +280,29 @@ private fun loadOverview(today: Long): Overview {
         minotaurBest = Weights.all.map { w -> w to minotaurBestMs(w) },
         cindyBest = cindyBestRounds(),
         records = records,
+        chartSteps = days.map { activity[it]?.steps },
+        chartRunMeters = days.map { activity[it]?.runDistanceM ?: 0L },
+        hasActivityData = activity.values.any { it.steps != null || it.runsCount > 0 },
+        bestStepsDay = bestSteps,
+        longestRun = longestRun,
     )
+}
+
+/** Без разрешения Health Connect: короткое приглашение с кнопкой. */
+@Composable
+private fun ConnectHealthCard(onConnect: () -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                "Подключи Health Connect, чтобы видеть шаги и пробежки",
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Row {
+                Spacer(Modifier.weight(1f))
+                Button(onClick = onConnect, shape = ButtonShape) { Text("Подключить") }
+            }
+        }
+    }
 }
 
 @Composable
@@ -296,14 +353,26 @@ private fun DayCard(selected: Long, today: Long, data: DayData?, modifier: Modif
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(ProgressMath.dayTitle(selected, today), style = MaterialTheme.typography.titleMedium)
             val digest = data?.takeIf { it.day == selected }?.digest ?: return@Column
-            if (digest.isEmpty) {
+            // Шаги и пробежки — перед подходами.
+            val activity = digest.activity
+            if (activity != null || digest.activityRuns.isNotEmpty()) {
+                SectionLabel("Шаги и бег")
+                StatRow(ProgressMath.stepsCells(activity?.steps))
+                digest.activityRuns.forEach { r -> StatRow(ProgressMath.activityRunCells(r)) }
+                activity?.rewardedMs?.let { ActivityMath.rewardLine(it) }?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall.merge(Tabular), color = Accent)
+                }
+            }
+            if (!digest.hasWorkout) {
                 Text(
-                    "В этот день тренировок не было",
+                    if (digest.hasActivity) "Подходов не было" else "В этот день тренировок не было",
+                    modifier = Modifier.padding(top = if (activity != null) 6.dp else 0.dp),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 return@Column
             }
+            if (activity != null) SectionLabel("Тренировка")
             Text(
                 ProgressMath.summaryLine(digest.sets, digest.reps, digest.earnedMs),
                 style = MaterialTheme.typography.titleSmall.merge(Tabular),

@@ -1,11 +1,14 @@
 package com.nextlevellife.app.ui
 
+import com.nextlevellife.app.data.ActivityDay
+import com.nextlevellife.app.data.ActivityRun
 import com.nextlevellife.app.data.Cindy
 import com.nextlevellife.app.data.ComplexRun
 import com.nextlevellife.app.data.DiaryMath
 import com.nextlevellife.app.data.ExerciseTotal
 import com.nextlevellife.app.data.Minotaur
 import com.nextlevellife.app.data.SetEntry
+import com.nextlevellife.app.health.ActivityMath
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -259,16 +262,32 @@ internal object ProgressMath {
         val runs: List<ComplexRun>,
         val totals: List<ExerciseTotal>,
         val looseSets: List<SetEntry>,
+        /** Шаги и пробежки дня из Health Connect; null — за день ничего не записано. */
+        val activity: ActivityDay? = null,
+        /** Пробежки дня по времени. */
+        val activityRuns: List<ActivityRun> = emptyList(),
     ) {
-        val isEmpty: Boolean get() = sets == 0 && runs.isEmpty()
+        /** Были подходы или комплексы. */
+        val hasWorkout: Boolean get() = sets > 0 || runs.isNotEmpty()
+
+        /** Были шаги (больше нуля) или пробежка. */
+        val hasActivity: Boolean get() = activity?.hasActivity == true || activityRuns.isNotEmpty()
+
+        /** День пустой: ни тренировок, ни шагов, ни пробежек. */
+        val isEmpty: Boolean get() = !hasWorkout && !hasActivity
     }
 
     /**
      * Собирает итог дня без двойного учёта: повторения и награда комплекса уже разложены
      * по его подходам, поэтому прохождение добавляется к сумме, только если у него
-     * в дневнике нет ни одного подхода.
+     * в дневнике нет ни одного подхода. Шаги и пробежки ([activity]) в эти суммы не входят.
      */
-    fun digestDay(sets: List<SetEntry>, runs: List<ComplexRun>): DayDigest {
+    fun digestDay(
+        sets: List<SetEntry>,
+        runs: List<ComplexRun>,
+        activity: ActivityDay? = null,
+        activityRuns: List<ActivityRun> = emptyList(),
+    ): DayDigest {
         val sorted = sets.sortedWith(compareBy({ it.timeMs }, { it.id }))
         val runIdsWithSets = sorted.mapNotNullTo(HashSet()) { it.runId }
         val orphanRuns = runs.filter { it.id !in runIdsWithSets }
@@ -279,7 +298,63 @@ internal object ProgressMath {
             runs = runs.sortedWith(compareBy({ it.timeMs }, { it.id })),
             totals = DiaryMath.totals(sorted),
             looseSets = sorted.filter { it.runId == null },
+            activity = activity,
+            activityRuns = activityRuns.sortedWith(compareBy({ it.startMs }, { it.externalId })),
         )
+    }
+
+    // ---------- Шаги и пробежки ----------
+
+    /** «Шаги» | «8 420»; нет данных — «—», подтверждённый ноль — «0». */
+    fun stepsCells(steps: Long?): Cells = Cells("Шаги", ActivityMath.stepsValue(steps))
+
+    /** «Бег · 07:12» | «5,2 км · 31 мин». */
+    fun activityRunCells(r: ActivityRun, zone: ZoneId = ZoneId.systemDefault()): Cells =
+        Cells("Бег · ${clock(r.startMs, zone)}", "${ActivityMath.formatKm(r.distanceM)} · ${ActivityMath.formatMinutes(r.durationMs)}")
+
+    /** Строки «Сегодня» на главной: «Шаги · 8 420» и, если бегал, «Бег · 5,2 км · 31 мин». */
+    fun todayActivityLines(activity: ActivityDay?): List<String> {
+        val lines = mutableListOf(ActivityMath.stepsLine(activity?.steps))
+        if (activity != null && activity.runsCount > 0) lines += ActivityMath.runLine(activity.runDistanceM, activity.runDurationMs)
+        return lines
+    }
+
+    /** Что показывает диаграмма за 14 дней: один показатель за раз. */
+    enum class ChartMetric(val label: String) {
+        REPS("Повторы"),
+        STEPS("Шаги"),
+        RUN_KM("Бег, км"),
+    }
+
+    /** Значения столбиков: повторения, шаги или метры бега по дням (нет данных — 0). */
+    fun chartValues(metric: ChartMetric, reps: List<Int>, steps: List<Long?>, runMeters: List<Long>): List<Long> = when (metric) {
+        ChartMetric.REPS -> reps.map { it.toLong() }
+        ChartMetric.STEPS -> steps.map { it ?: 0L }
+        ChartMetric.RUN_KM -> runMeters
+    }
+
+    /** Высоты столбиков для длинных значений (шаги, метры): как [barFractions]. */
+    fun barFractionsLong(values: List<Long>, minVisible: Float = 0.04f): List<Float> {
+        val max = values.maxOrNull() ?: return emptyList()
+        if (max <= 0) return values.map { 0f }
+        return values.map { v -> if (v <= 0) 0f else (v.toDouble() / max).toFloat().coerceIn(minVisible, 1f) }
+    }
+
+    /** Подпись под заголовком диаграммы: итог за [days] дней по выбранному показателю. */
+    fun chartSummary(metric: ChartMetric, days: Int, values: List<Long>, earnedMs: Long): String {
+        val total = values.sum()
+        return when (metric) {
+            ChartMetric.REPS -> "За $days ${daysWord(days)}: $total ${repsWord((total % 1000).toInt())}, +${formatEarned(earnedMs)}"
+            ChartMetric.STEPS -> "За $days ${daysWord(days)}: ${ActivityMath.formatThousands(total)} ${ActivityMath.stepsWord(total)}"
+            ChartMetric.RUN_KM -> "За $days ${daysWord(days)}: ${ActivityMath.formatKm(total)} бега"
+        }
+    }
+
+    /** Описание столбика для TalkBack: «12 ноя: 8 420 шагов». */
+    fun barDescription(metric: ChartMetric, day: Long, value: Long): String = "${shortDate(day)}: " + when (metric) {
+        ChartMetric.REPS -> "$value ${repsWord((value % 1000).toInt())}"
+        ChartMetric.STEPS -> "${ActivityMath.formatThousands(value)} ${ActivityMath.stepsWord(value)}"
+        ChartMetric.RUN_KM -> "${ActivityMath.formatKm(value)} бега"
     }
 
     // ---------- Диаграмма ----------

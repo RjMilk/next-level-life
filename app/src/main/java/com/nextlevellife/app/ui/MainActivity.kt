@@ -1,13 +1,26 @@
 package com.nextlevellife.app.ui
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Alignment
+import com.nextlevellife.app.health.ActivitySync
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -61,15 +74,37 @@ class MainActivity : ComponentActivity() {
     /** Увеличивается в onResume, чтобы главный экран перепроверил разрешения. */
     private var resumeCount by mutableIntStateOf(0)
 
+    /** Открыто ли пояснение о разрешениях Health Connect (его просит сам Health Connect). */
+    private var showRationale by mutableStateOf(false)
+
+    /** Activity запущена только ради пояснения: «Понятно» закрывает её и возвращает в Health Connect. */
+    private var rationaleOnly = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
         enableEdgeToEdge()
+        if (savedInstanceState == null && isRationaleIntent(intent)) {
+            showRationale = true
+            rationaleOnly = true
+        }
         setContent {
             NextLevelTheme {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     var screen by rememberSaveable { mutableStateOf(HOME) }
                     var tab by rememberSaveable { mutableStateOf(TAB_TRAINING) }
+                    // Пояснение — поверх всего; экран и вкладка под ним сохраняются.
+                    if (showRationale) {
+                        BackHandler(onBack = ::closeRationale)
+                        HealthRationaleScreen(onClose = ::closeRationale)
+                        return@Surface
+                    }
+                    // Возврат в приложение и смена вкладки: шаги и пробежки из Health Connect
+                    // (проверка доступа; само чтение — не чаще раза в 5 минут).
+                    val onTabs = screen == HOME
+                    LaunchedEffect(resumeCount, onTabs, tab) {
+                        if (onTabs && resumeCount > 0) ActivitySync.request(this@MainActivity)
+                    }
                     // Состояние вкладок (прокрутка, выбранный день) сохраняется, пока вкладка скрыта.
                     val tabStates = rememberSaveableStateHolder()
                     val goHome = { screen = HOME }
@@ -117,6 +152,7 @@ class MainActivity : ComponentActivity() {
                                                 onExercise = { screen = "$EXERCISE$it" },
                                                 onComplex = { screen = "$COMPLEX$it" },
                                                 onProgress = { tab = TAB_PROGRESS },
+                                                onSettings = { tab = TAB_SETTINGS },
                                             )
                                         }
                                         screen == APPS -> AppsScreen(onBack = goHome)
@@ -144,11 +180,78 @@ class MainActivity : ComponentActivity() {
         resumeCount++
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // Приложение уже открыто: пояснение показываем поверх, «Понятно» возвращает к экранам.
+        if (isRationaleIntent(intent)) showRationale = true
+    }
+
+    private fun closeRationale() {
+        showRationale = false
+        if (rationaleOnly) {
+            rationaleOnly = false
+            finish()
+        }
+    }
+
+    private fun isRationaleIntent(intent: Intent?): Boolean =
+        intent?.action == ACTION_SHOW_RATIONALE || intent?.action == Intent.ACTION_VIEW_PERMISSION_USAGE
+
     private companion object {
         const val HOME = "home"
         const val APPS = "apps"
         const val COMPLEX = "complex:"
         const val EXERCISE = "exercise:"
+
+        /** Health Connect (Android 13 и старше) просит показать, зачем приложению разрешения. */
+        const val ACTION_SHOW_RATIONALE = "androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE"
+    }
+}
+
+/** Пояснение о разрешениях Health Connect: что читается, зачем и куда (никуда). */
+@Composable
+private fun HealthRationaleScreen(onClose: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .verticalScroll(rememberScrollState())
+            .wrapContentWidth(Alignment.CenterHorizontally)
+            .widthIn(max = ContentMaxWidth)
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text("Шаги и пробежки", style = MaterialTheme.typography.headlineMedium)
+        Text(
+            "Next Level Life читает из Health Connect только три вида данных:",
+            style = MaterialTheme.typography.bodyLarge,
+        )
+        Card(Modifier.fillMaxWidth(), shape = CardShape) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("• Шаги — сколько прошёл за день", style = MaterialTheme.typography.bodyMedium)
+                Text("• Дистанция — сколько пробежал", style = MaterialTheme.typography.bodyMedium)
+                Text("• Тренировки — чтобы найти пробежки и не оплачивать их шаги второй раз", style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        Text(
+            "Зачем: показать шаги и пробежки на экранах «Тренировка» и «Прогресс» и, если включено " +
+                "в настройках, начислить за них экранное время.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            "Данные остаются на этом телефоне и никуда не отправляются. Приложение ничего не пишет " +
+                "в Health Connect и не читает его в фоне. Доступ можно отозвать в Health Connect в любой момент.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(
+            onClick = onClose,
+            shape = ButtonShape,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp),
+        ) { Text("Понятно") }
     }
 }
 

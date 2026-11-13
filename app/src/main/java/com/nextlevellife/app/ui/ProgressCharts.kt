@@ -15,7 +15,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -168,22 +172,47 @@ private fun ArrowButton(symbol: String, description: String, enabled: Boolean, o
 
 // ---------- Диаграмма за 14 дней ----------
 
+/**
+ * Диаграмма за последние дни: один показатель за раз — повторы, шаги или километры бега.
+ * Переключатель показателей виден, только если есть что показывать кроме повторов ([showMetrics]).
+ * Нажатие на столбик выбирает день.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ChartCard(
     days: List<Long>,
     reps: List<Int>,
+    steps: List<Long?>,
+    runMeters: List<Long>,
     earnedMs: Long,
+    metric: ProgressMath.ChartMetric,
+    showMetrics: Boolean,
+    onMetric: (ProgressMath.ChartMetric) -> Unit,
     today: Long,
     selected: Long,
     onSelect: (Long) -> Unit,
 ) {
-    val total = reps.sum()
-    val fractions = ProgressMath.barFractions(reps)
+    val shown = if (showMetrics) metric else ProgressMath.ChartMetric.REPS
+    val values = ProgressMath.chartValues(shown, reps, steps, runMeters)
+    val fractions = ProgressMath.barFractionsLong(values)
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Последние ${days.size} дней", style = MaterialTheme.typography.titleMedium)
+            if (showMetrics) {
+                val metrics = ProgressMath.ChartMetric.entries
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    metrics.forEachIndexed { i, m ->
+                        SegmentedButton(
+                            selected = shown == m,
+                            onClick = { onMetric(m) },
+                            shape = SegmentedButtonDefaults.itemShape(i, metrics.size),
+                            icon = {},
+                        ) { Text(m.label, maxLines = 1) }
+                    }
+                }
+            }
             Text(
-                "За ${days.size} дней: $total ${ProgressMath.repsWord(total)}, +${ProgressMath.formatEarned(earnedMs)}",
+                ProgressMath.chartSummary(shown, days.size, values, earnedMs),
                 style = MaterialTheme.typography.bodySmall.merge(Tabular),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -195,7 +224,7 @@ internal fun ChartCard(
                 days.forEachIndexed { i, day ->
                     val isToday = day == today
                     val isSelected = day == selected
-                    val count = reps.getOrElse(i) { 0 }
+                    val value = values.getOrElse(i) { 0L }
                     Column(
                         Modifier
                             .weight(1f)
@@ -204,8 +233,7 @@ internal fun ChartCard(
                             .background(if (isSelected) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent)
                             .clickable(role = Role.Button) { onSelect(day) }
                             .semantics {
-                                contentDescription =
-                                    "${ProgressMath.shortDate(day)}: $count ${ProgressMath.repsWord(count)}"
+                                contentDescription = ProgressMath.barDescription(shown, day, value)
                                 this.selected = isSelected
                             }
                             .padding(horizontal = 2.dp, vertical = 4.dp),

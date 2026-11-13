@@ -143,7 +143,8 @@ class LedgerMathTest {
 
     @Test
     fun ledgerMigrationIsAppendedAndHasAllColumns() {
-        assertEquals(2, Diary.MIGRATIONS.size)
+        // Миграции только дописываются: с 0.4 есть третья (шаги и пробежки).
+        assertTrue(Diary.MIGRATIONS.size >= 2)
         // Первая миграция не тронута: дневник по-прежнему создаётся первым шагом.
         assertTrue(Diary.MIGRATIONS[0].first().contains("CREATE TABLE complex_runs"))
         val ops = Diary.MIGRATIONS[1].first { it.contains("CREATE TABLE balance_ops") }

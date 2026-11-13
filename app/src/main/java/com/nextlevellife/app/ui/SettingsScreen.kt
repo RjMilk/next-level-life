@@ -38,6 +38,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,11 +54,18 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.nextlevellife.app.data.ActivityDay
 import com.nextlevellife.app.data.Backup
+import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.RestoreResult
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
+import com.nextlevellife.app.health.ActivityMath
+import com.nextlevellife.app.health.ActivitySync
+import com.nextlevellife.app.health.HealthAccess
+import com.nextlevellife.app.health.HealthAvailability
+import com.nextlevellife.app.health.HealthConnect
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -66,6 +74,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.time.LocalDate
+import java.time.ZoneId
 
 /**
  * Вкладка «Настройки»: прокручиваемая колонка не шире [ContentMaxWidth] по центру.
@@ -91,7 +100,7 @@ fun SettingsScreen(onApps: () -> Unit, modifier: Modifier = Modifier) {
             Text("Настройки", style = MaterialTheme.typography.headlineMedium)
             ScreenTimeSection(version)
             NightModeSection(version)
-            // Здесь — раздел «Шаги» (Health Connect): StepsSection(version), между ночным режимом и блокировкой.
+            StepsSection(version)
             BlockingSection(version, onApps)
             DataSection(version)
             AboutSection()
@@ -338,7 +347,139 @@ private fun NightTimeDialog(
     }
 }
 
-// ---------- 3. Блокировка ----------
+// ---------- 3. Шаги и пробежки (Health Connect) ----------
+
+/**
+ * Действие кнопки «Подключить / Открыть Health Connect» по текущему доступу: окно разрешений,
+ * страница в магазине (нужно обновить) или сам Health Connect (всё уже выдано).
+ * [onDenied] — окно разрешений закрылось без доступа к шагам (например, отказ уже дважды:
+ * тогда система окно больше не показывает и разрешить можно только в самом Health Connect).
+ */
+@Composable
+internal fun rememberHealthConnectAction(onDenied: () -> Unit = {}): (HealthAccess?) -> Unit {
+    val context = LocalContext.current
+    val appContext = context.applicationContext
+    val launcher = rememberLauncherForActivityResult(HealthConnect.permissionContract()) { granted ->
+        if (HealthConnect.STEPS_PERMISSION !in granted) onDenied()
+        ActivitySync.request(appContext, force = true)
+    }
+    return { access ->
+        when {
+            access == null -> ActivitySync.request(appContext)
+            access.availability == HealthAvailability.UPDATE_REQUIRED -> HealthConnect.openStore(context)
+            access.availability == HealthAvailability.UNAVAILABLE -> Unit
+            access.availability == HealthAvailability.CONNECTED && access.canReadRuns ->
+                HealthConnect.openHealthConnect(context)
+            else -> try {
+                launcher.launch(HealthConnect.PERMISSIONS)
+            } catch (e: Exception) {
+                HealthConnect.openHealthConnect(context)
+            }
+        }
+    }
+}
+
+/** Подпись состояния подключения. */
+private fun healthStatusText(access: HealthAccess?): String = when (access?.availability) {
+    null -> "Проверяю…"
+    HealthAvailability.UNAVAILABLE -> "Недоступно на этом телефоне"
+    HealthAvailability.UPDATE_REQUIRED -> "Нужно установить или обновить"
+    HealthAvailability.NOT_CONNECTED -> "Не подключено"
+    HealthAvailability.CONNECTED -> if (access.canReadRuns) "Подключено" else "Подключено, без тренировок"
+}
+
+@Composable
+private fun StepsSection(version: Int) {
+    val appContext = LocalContext.current.applicationContext
+    val sync by ActivitySync.state.collectAsState()
+    val access = sync.access
+    val enabled = remember(version) { Settings.stepsRewardEnabled }
+    val today = LocalDate.now().toEpochDay()
+    val day by produceState<ActivityDay?>(null, version, today) {
+        value = withContext(Dispatchers.IO) { runCatching { Diary.activityDay(today) }.getOrNull() }
+    }
+    var denied by rememberSaveable { mutableStateOf(false) }
+    val connect = rememberHealthConnectAction(onDenied = { denied = true })
+
+    // Раздел открыт — проверим доступ (дешёво; само чтение ограничено по частоте).
+    LaunchedEffect(Unit) { ActivitySync.request(appContext) }
+    LaunchedEffect(sync.connected) { if (sync.connected) denied = false }
+
+    SettingsSection("Шаги и пробежки") {
+        SettingsRow("Health Connect", healthStatusText(access))
+        val button = when {
+            access == null || access.availability == HealthAvailability.UNAVAILABLE -> null
+            access.availability == HealthAvailability.UPDATE_REQUIRED -> "Установить Health Connect"
+            access.availability == HealthAvailability.CONNECTED && access.canReadRuns -> "Открыть Health Connect"
+            else -> "Подключить Health Connect"
+        }
+        if (button != null) {
+            val primary = access?.availability != HealthAvailability.CONNECTED
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                val modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                if (primary) {
+                    Button(onClick = { connect(access) }, shape = ButtonShape, modifier = modifier) { Text(button) }
+                } else {
+                    OutlinedButton(onClick = { connect(access) }, shape = ButtonShape, modifier = modifier) { Text(button) }
+                }
+            }
+        }
+        if (access?.availability == HealthAvailability.CONNECTED && !access.canReadRuns) {
+            SettingsText("Нет доступа к тренировкам и дистанции — пробежки не видны")
+        }
+        if (denied) {
+            SettingsText(
+                "Доступ не выдан. Разреши чтение шагов, дистанции и тренировок в самом Health Connect",
+                color = Bad,
+            )
+            SettingsRow("Открыть Health Connect", onClick = { HealthConnect.openHealthConnect(appContext) })
+        }
+
+        HorizontalDivider(Modifier.padding(top = 4.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+        SettingsSwitchRow("Начислять минуты за ходьбу и бег", enabled) { on ->
+            Settings.setStepsRewardEnabled(on)
+            if (on) ActivitySync.request(appContext, force = true)
+        }
+        SettingsText(
+            "5 минут за 1000 шагов, 10 минут за километр бега, вместе не больше 60 минут в день. " +
+                "Шаги пробежки второй раз не оплачиваются"
+        )
+
+        if (sync.connected || day != null) {
+            HorizontalDivider(Modifier.padding(top = 4.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+            val d = day
+            SettingsText("Сегодня: ${ActivityMath.stepsPhrase(d?.steps)}", color = MaterialTheme.colorScheme.onSurface)
+            if (d != null && d.runsCount > 0) {
+                SettingsText(ActivityMath.runLine(d.runDistanceM, d.runDurationMs), color = MaterialTheme.colorScheme.onSurface)
+            }
+            if (d != null && d.rewardedMs > 0) {
+                ActivityMath.rewardLine(d.rewardedMs)?.let { SettingsText("Начислено сегодня: $it", color = Good) }
+            }
+            SettingsText(ActivityMath.sourcesLine(d?.sources.orEmpty()))
+            SettingsText(ActivityMath.updatedLine(sync.lastSyncMs, System.currentTimeMillis(), ZoneId.systemDefault()))
+            sync.error?.let { SettingsText(it, color = Bad) }
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                OutlinedButton(
+                    onClick = { ActivitySync.request(appContext, force = true) },
+                    enabled = !sync.running,
+                    shape = ButtonShape,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp),
+                ) { Text(if (sync.running) "Обновляю…" else "Обновить") }
+                if (sync.running) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 4.dp))
+            }
+        }
+        SettingsText(
+            "В Garmin Connect включи передачу данных в Health Connect. Данные появляются после синхронизации часов",
+            modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+        )
+    }
+}
+
+// ---------- 4. Блокировка ----------
 
 @Composable
 private fun BlockingSection(version: Int, onApps: () -> Unit) {
@@ -352,7 +493,7 @@ private fun BlockingSection(version: Int, onApps: () -> Unit) {
     }
 }
 
-// ---------- 4. Данные ----------
+// ---------- 5. Данные ----------
 
 /** Итог последней операции с копией: текст и ошибка ли это. */
 private data class BackupStatus(val text: String, val isError: Boolean)
@@ -479,7 +620,7 @@ private fun DataSection(version: Int) {
     }
 }
 
-// ---------- 5. О приложении ----------
+// ---------- 6. О приложении ----------
 
 private val LICENSE_FILES = listOf(
     "Inter" to "licenses/OFL-Inter.txt",

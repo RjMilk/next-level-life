@@ -15,3 +15,5 @@ keystore.properties
 /poselogs/
 # Граф кода (graphify): создаётся заново, в репозиторий не кладём
 /graphify-out/
+# Рабочие копии исполнителей
+/.claude/worktrees/

@@ -28,9 +28,24 @@ object Settings {
     val nightEndMin: Int
         get() = Store.prefs().getInt(KEY_NIGHT_END, DEFAULT_NIGHT_END_MIN)
 
-    /** Начислять ли минуты за шаги (для следующей версии). */
+    /**
+     * Начислять ли минуты за ходьбу и бег (Health Connect). По умолчанию выключено: сначала
+     * владелец сверяет цифры. Включено только вместе с днём включения [stepsRewardSinceDay] —
+     * так копия из старой версии (где по умолчанию было «включено») не начнёт платить сама.
+     */
     val stepsRewardEnabled: Boolean
-        get() = Store.prefs().getBoolean(KEY_STEPS_REWARD, true)
+        get() = Store.prefs().getBoolean(KEY_STEPS_REWARD, false) && stepsRewardSinceDay != null
+
+    /** С какого дня (LocalDate.toEpochDay) платить за шаги; выставляется при включении. null — ещё не включали. */
+    val stepsRewardSinceDay: Long?
+        get() = Store.prefs().takeIf { it.contains(KEY_STEPS_SINCE) }?.getLong(KEY_STEPS_SINCE, 0L)
+
+    /**
+     * Когда последний раз удалось прочитать Health Connect (мс эпохи); null — ни разу.
+     * Служебное значение: в резервную копию не входит.
+     */
+    val activityLastSyncMs: Long?
+        get() = Store.prefs().getLong(KEY_ACTIVITY_LAST_SYNC, -1L).takeIf { it > 0L }
 
     fun setDailyLimitMin(minutes: Int) {
         require(minutes in BlockRules.LIMIT_RANGE) { "Дневной лимит вне диапазона ${BlockRules.LIMIT_RANGE}: $minutes" }
@@ -55,9 +70,21 @@ object Settings {
         Store.notifyChanged()
     }
 
-    fun setStepsRewardEnabled(enabled: Boolean) {
-        Store.prefs().edit().putBoolean(KEY_STEPS_REWARD, enabled).apply()
+    /**
+     * Включение запоминает день [today]: дни раньше него не оплачиваются. Повторное включение
+     * уже включённого день не сдвигает; выключение и новое включение — сдвигает.
+     */
+    fun setStepsRewardEnabled(enabled: Boolean, today: Long = java.time.LocalDate.now().toEpochDay()) {
+        val edit = Store.prefs().edit().putBoolean(KEY_STEPS_REWARD, enabled)
+        if (enabled && !stepsRewardEnabled) edit.putLong(KEY_STEPS_SINCE, today)
+        edit.apply()
         Store.notifyChanged()
+    }
+
+    /** Отметка успешного чтения Health Connect; экраны не будит — это делает синхронизация. */
+    internal fun setActivityLastSyncMs(timeMs: Long) {
+        require(timeMs > 0L) { "Время синхронизации должно быть положительным: $timeMs" }
+        Store.prefs().edit().putLong(KEY_ACTIVITY_LAST_SYNC, timeMs).apply()
     }
 
     /**
@@ -87,4 +114,6 @@ object Settings {
     internal const val KEY_NIGHT_END = "settings_night_end_min"
     internal const val KEY_STEPS_REWARD = "settings_steps_reward_enabled"
     internal const val KEY_LAST_BACKUP = "settings_last_backup_ms"
+    internal const val KEY_STEPS_SINCE = "settings_steps_reward_since_day"
+    internal const val KEY_ACTIVITY_LAST_SYNC = "activity_last_sync_ms"
 }

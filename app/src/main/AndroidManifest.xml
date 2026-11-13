@@ -13,6 +13,16 @@
     <uses-feature
         android:name="android.hardware.camera.any"
         android:required="false" />
+    <!-- Шаги и пробежки (часы Garmin, телефон) из Health Connect: только чтение, только пока приложение открыто.
+         Фоновое чтение и история старше 30 дней не запрашиваются. Данные остаются на телефоне. -->
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_DISTANCE" />
+    <uses-permission android:name="android.permission.health.READ_EXERCISE" />
+
+    <!-- Health Connect на Android 13 и старше — отдельное приложение. -->
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+    </queries>
 
     <application
         android:allowBackup="false"
@@ -30,7 +40,23 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Health Connect (Android 13 и старше) показывает отсюда, зачем нужны разрешения. -->
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
         </activity>
+
+        <!-- То же пояснение для Android 14+: системный экран разрешений Health Connect. -->
+        <activity-alias
+            android:name=".ui.ViewPermissionUsageActivity"
+            android:exported="true"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE"
+            android:targetActivity=".ui.MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
 
         <activity
             android:name=".ui.BlockActivity"

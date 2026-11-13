@@ -35,6 +35,7 @@ import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.Weights
+import com.nextlevellife.app.health.ActivitySync
 
 /** Показывается поверх заблокированного приложения: баланс на нуле, дневной лимит исчерпан или ночной режим. */
 class BlockActivity : ComponentActivity() {
@@ -43,6 +44,8 @@ class BlockActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Store.init(this)
         enableEdgeToEdge()
+        // Подтянуть шаги и пробежки: при включённом начислении баланс может пополниться (не чаще раза в 5 минут).
+        ActivitySync.request(this)
 
         // «Назад» не возвращает в заблокированное приложение, а уводит на рабочий стол.
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {

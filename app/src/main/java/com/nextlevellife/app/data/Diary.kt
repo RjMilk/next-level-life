@@ -38,6 +38,41 @@ data class ExerciseRecord(
     val totalReps: Long, val sets: Int, val lastDay: Long,
 )
 
+/**
+ * Шаги и пробежки за локальные сутки из Health Connect.
+ * [steps] — все шаги за день (агрегат Health Connect без двойного счёта); null — данных нет.
+ * [runSteps] — шаги во время пробежек с дистанцией (не оплачиваются второй раз как ходьба).
+ * [sources] — пакеты приложений, откуда пришли данные. [rewardedMs] — сколько уже начислено за день.
+ */
+data class ActivityDay(
+    val day: Long,
+    val steps: Long?,
+    val runDistanceM: Long,
+    val runDurationMs: Long,
+    val runSteps: Long,
+    val runsCount: Int,
+    val sources: List<String>,
+    val rewardedMs: Long,
+    val updatedAtMs: Long,
+) {
+    /** Есть что показать: шаги или пробежка. Подтверждённый ноль шагов днём активности не считается. */
+    val hasActivity: Boolean get() = (steps ?: 0L) > 0L || runsCount > 0
+}
+
+/** Одна пробежка из Health Connect. [day] — локальные сутки начала. */
+data class ActivityRun(
+    val externalId: String,
+    val startMs: Long,
+    val endMs: Long,
+    val day: Long,
+    val distanceM: Long,
+    val steps: Long,
+    val source: String,
+    val exerciseType: Int,
+) {
+    val durationMs: Long get() = (endMs - startMs).coerceAtLeast(0L)
+}
+
 /** Подход, который ещё не записан: время, день и прохождение проставляет [Diary]. */
 data class NewSet(
     val exerciseId: String, val exerciseName: String, val weightKg: Int?,
@@ -196,11 +231,92 @@ object Diary {
         ) { it.toRun() }
     }
 
-    /** Есть ли в дневнике хоть одна запись. */
+    /** Есть ли в дневнике хоть одна запись: подход, комплекс, день с шагами или пробежка. */
     @Synchronized
     fun hasEntries(): Boolean = query(
-        "SELECT EXISTS(SELECT 1 FROM sets) OR EXISTS(SELECT 1 FROM complex_runs)",
+        "SELECT EXISTS(SELECT 1 FROM sets) OR EXISTS(SELECT 1 FROM complex_runs) " +
+            "OR EXISTS(SELECT 1 FROM activity_days WHERE steps > 0 OR runs_count > 0)",
     ) { it.getInt(0) != 0 }.firstOrNull() ?: false
+
+    // ---------- Шаги и пробежки (Health Connect) ----------
+
+    @Synchronized
+    fun activityDay(day: Long): ActivityDay? =
+        query("SELECT $ACTIVITY_COLS FROM activity_days WHERE day = ?", day.toString()) { it.toActivityDay() }.firstOrNull()
+
+    /** Дни активности в [fromDay]..[toDay], только те, что записаны. */
+    @Synchronized
+    fun activityDays(fromDay: Long, toDay: Long): List<ActivityDay> = query(
+        "SELECT $ACTIVITY_COLS FROM activity_days WHERE day BETWEEN ? AND ? ORDER BY day",
+        fromDay.toString(), toDay.toString(),
+    ) { it.toActivityDay() }
+
+    @Synchronized
+    fun activityRunsForDay(day: Long): List<ActivityRun> = activityRuns(day, day)
+
+    @Synchronized
+    fun activityRuns(fromDay: Long, toDay: Long): List<ActivityRun> = query(
+        "SELECT $ACTIVITY_RUN_COLS FROM activity_runs WHERE day BETWEEN ? AND ? ORDER BY start_ms, external_id",
+        fromDay.toString(), toDay.toString(),
+    ) { it.toActivityRun() }
+
+    /** Дни с пробежкой: в календаре они тренировочные. Обычные шаги день тренировочным не делают. */
+    @Synchronized
+    fun runDays(fromDay: Long, toDay: Long): Set<Long> = query(
+        "SELECT DISTINCT day FROM activity_runs WHERE day BETWEEN ? AND ?",
+        fromDay.toString(), toDay.toString(),
+    ) { it.getLong(0) }.toSet()
+
+    /** Рекорды активности: (день, шаги) с наибольшим числом шагов и самая длинная пробежка. */
+    @Synchronized
+    fun activityRecords(): Pair<Pair<Long, Long>?, ActivityRun?> {
+        val steps = query(
+            "SELECT day, steps FROM activity_days WHERE steps > 0 ORDER BY steps DESC, day DESC LIMIT 1",
+        ) { it.getLong(0) to it.getLong(1) }.firstOrNull()
+        val run = query(
+            "SELECT $ACTIVITY_RUN_COLS FROM activity_runs WHERE distance_m > 0 " +
+                "ORDER BY distance_m DESC, start_ms DESC LIMIT 1",
+        ) { it.toActivityRun() }.firstOrNull()
+        return steps to run
+    }
+
+    /** Записывает день активности целиком (вставка или замена). Только внутри [write] из ActivitySync. */
+    internal fun upsertActivityDay(db: SQLiteDatabase, d: ActivityDay) {
+        val values = ContentValues().apply {
+            put("day", d.day)
+            if (d.steps != null) put("steps", d.steps) else putNull("steps")
+            put("run_distance_m", d.runDistanceM)
+            put("run_duration_ms", d.runDurationMs)
+            put("run_steps", d.runSteps)
+            put("runs_count", d.runsCount)
+            put("sources", d.sources.joinToString(","))
+            put("rewarded_ms", d.rewardedMs)
+            put("updated_at_ms", d.updatedAtMs)
+        }
+        db.insertWithOnConflict("activity_days", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    /**
+     * Заменяет пробежки дней [fromDay]..[toDay] свежим списком: удалённые в Health Connect
+     * пропадают и здесь. Только внутри [write] из ActivitySync.
+     */
+    internal fun replaceActivityRuns(db: SQLiteDatabase, fromDay: Long, toDay: Long, runs: List<ActivityRun>) {
+        db.delete("activity_runs", "day BETWEEN ? AND ?", arrayOf(fromDay.toString(), toDay.toString()))
+        for (r in runs) {
+            val values = ContentValues().apply {
+                put("external_id", r.externalId)
+                put("start_ms", r.startMs)
+                put("end_ms", r.endMs)
+                put("day", r.day)
+                put("distance_m", r.distanceM)
+                put("steps", r.steps)
+                put("source", r.source)
+                put("exercise_type", r.exerciseType)
+            }
+            // Та же сессия могла остаться за окном (сдвиг часового пояса) — заменяем её.
+            db.insertWithOnConflict("activity_runs", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+        }
+    }
 
     /**
      * Рекорды по всем упражнениям, которые встречались в дневнике, одним запросом.
@@ -348,6 +464,23 @@ object Diary {
         runId = longOrNull(10),
     )
 
+    private const val ACTIVITY_COLS =
+        "day, steps, run_distance_m, run_duration_ms, run_steps, runs_count, sources, rewarded_ms, updated_at_ms"
+    private const val ACTIVITY_RUN_COLS =
+        "external_id, start_ms, end_ms, day, distance_m, steps, source, exercise_type"
+
+    private fun Cursor.toActivityDay() = ActivityDay(
+        day = getLong(0), steps = longOrNull(1), runDistanceM = getLong(2), runDurationMs = getLong(3),
+        runSteps = getLong(4), runsCount = getInt(5),
+        sources = getString(6).split(',').filter { it.isNotBlank() },
+        rewardedMs = getLong(7), updatedAtMs = getLong(8),
+    )
+
+    private fun Cursor.toActivityRun() = ActivityRun(
+        externalId = getString(0), startMs = getLong(1), endMs = getLong(2), day = getLong(3),
+        distanceM = getLong(4), steps = getLong(5), source = getString(6), exerciseType = getInt(7),
+    )
+
     private fun Cursor.toRun() = ComplexRun(
         id = getLong(0), timeMs = getLong(1), day = getLong(2), complexId = getString(3),
         weightKg = intOrNull(4), durationMs = getLong(5), rounds = intOrNull(6),
@@ -448,6 +581,32 @@ object Diary {
             )""",
             "INSERT INTO account (id, balance_ms, xp, updated_at_ms) VALUES (1, 0, 0, 0)",
             "CREATE TABLE meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)",
+        ),
+        // 2 → 3: шаги и пробежки из Health Connect (версия 0.4). steps = NULL — данных за день нет.
+        listOf(
+            """CREATE TABLE activity_days (
+                day INTEGER PRIMARY KEY,
+                steps INTEGER,
+                run_distance_m INTEGER NOT NULL DEFAULT 0,
+                run_duration_ms INTEGER NOT NULL DEFAULT 0,
+                run_steps INTEGER NOT NULL DEFAULT 0,
+                runs_count INTEGER NOT NULL DEFAULT 0,
+                sources TEXT NOT NULL DEFAULT '',
+                rewarded_ms INTEGER NOT NULL DEFAULT 0,
+                updated_at_ms INTEGER NOT NULL
+            )""",
+            """CREATE TABLE activity_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                external_id TEXT NOT NULL UNIQUE,
+                start_ms INTEGER NOT NULL,
+                end_ms INTEGER NOT NULL,
+                day INTEGER NOT NULL,
+                distance_m INTEGER NOT NULL,
+                steps INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                exercise_type INTEGER NOT NULL
+            )""",
+            "CREATE INDEX idx_activity_runs_day ON activity_runs(day)",
         ),
     )
 }

@@ -56,5 +56,8 @@ dependencies {
     implementation("androidx.camera:camera-view:$camerax")
     implementation("com.google.mlkit:pose-detection-accurate:18.0.0-beta5")
 
+    // Шаги и пробежки с часов Garmin и телефона: только чтение из Health Connect, данные не покидают телефон.
+    implementation("androidx.health.connect:connect-client:1.1.0")
+
     testImplementation("junit:junit:4.13.2")
 }
