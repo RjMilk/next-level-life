@@ -118,6 +118,34 @@ class RepSound internal constructor(context: Context) {
         later(340) { tone(ToneGenerator.TONE_DTMF_D, 450) }
     }
 
+    /** Удержание (планка) началось: двойной сигнал «готов» и голосом «Старт». */
+    fun holdStart() {
+        if (released) return
+        ready()
+        speak(HoldSpeech.START, TextToSpeech.QUEUE_FLUSH)
+    }
+
+    /** Удержание идёт уже [seconds] секунд (кратно 10): щелчок и голосом «десять», «двадцать»… */
+    fun holdSeconds(seconds: Int) {
+        if (released) return
+        tone(ToneGenerator.TONE_DTMF_9, 60)
+        speak(HoldSpeech.seconds(seconds), TextToSpeech.QUEUE_FLUSH)
+    }
+
+    /** Удержание оборвалось: низкий сигнал и «Стоп». */
+    fun holdStop() {
+        if (released) return
+        handler.removeCallbacksAndMessages(null)
+        tone(ToneGenerator.TONE_PROP_NACK, 200)
+        speak(HoldSpeech.STOP, TextToSpeech.QUEUE_FLUSH)
+    }
+
+    /** Отрезок упёрся в потолок: «Максимум за подход — 3 минуты» (в очередь за числом). */
+    fun holdMax() {
+        if (released) return
+        speak(HoldSpeech.MAX, TextToSpeech.QUEUE_ADD)
+    }
+
     /** Произнести фразу. interrupt = true прерывает текущую речь. */
     fun say(text: String, interrupt: Boolean = true) {
         if (released || text.isBlank()) return
@@ -176,6 +204,32 @@ class RepSound internal constructor(context: Context) {
 
     private fun later(delayMs: Long, block: () -> Unit) {
         handler.postDelayed({ if (!released) block() }, delayMs)
+    }
+}
+
+/** Фразы удержания (планки) для голоса. Чистая логика — проверяется тестами. */
+object HoldSpeech {
+    const val START = "Старт"
+    const val STOP = "Стоп"
+    const val MAX = "Максимум за подход — 3 минуты"
+    const val SHORT = "Меньше 10 секунд — не засчитано"
+
+    private val tens = listOf(
+        "", "десять", "двадцать", "тридцать", "сорок", "пятьдесят",
+        "шестьдесят", "семьдесят", "восемьдесят", "девяносто",
+    )
+    private val hundreds = listOf(
+        "", "сто", "двести", "триста", "четыреста", "пятьсот",
+        "шестьсот", "семьсот", "восемьсот", "девятьсот",
+    )
+
+    /**
+     * Число секунд словами для голоса: 10 → «десять», 120 → «сто двадцать», 180 → «сто восемьдесят».
+     * Словами — только круглые десятки от 10 до 990; остальное — цифрами (движок речи прочтёт сам).
+     */
+    fun seconds(n: Int): String {
+        if (n <= 0 || n >= 1000 || n % 10 != 0) return n.toString()
+        return listOf(hundreds[n / 100], tens[(n % 100) / 10]).filter { it.isNotEmpty() }.joinToString(" ")
     }
 }
 

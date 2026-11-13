@@ -32,6 +32,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextAlign
@@ -41,6 +42,8 @@ import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.Weights
 import com.nextlevellife.app.data.Workouts
+import com.nextlevellife.app.pose.CountKind
+import com.nextlevellife.app.pose.RepCounters
 import com.nextlevellife.app.pose.rememberRepSound
 import kotlinx.coroutines.delay
 import java.util.UUID
@@ -49,6 +52,11 @@ import java.util.UUID
 @Composable
 fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
     val ex = remember(exerciseId) { Exercises.byId(exerciseId) }
+    // Удержание (планка) считается временем: свой экран без повторений и без reset() по исходной позе.
+    if (ex.hold) {
+        HoldExerciseScreen(ex, onDone)
+        return
+    }
     val haptics = rememberHaptics()
     val sound = rememberRepSound()
     KeepScreenOn()
@@ -243,6 +251,299 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
                 )
             },
         )
+    }
+}
+
+/**
+ * Удержание позы (планка). Табло — время «м:сс» и «засчитано 1:20»; «Готово» записывает подход через
+ * [Workouts.recordHold]. Счётчик создаётся один раз при входе на экран, reset() — только «Заново»
+ * и уход с экрана. Засчитанное время, начало подхода и sessionId переживают пересоздание Activity;
+ * движок при пересоздании новый, а уже засчитанное прибавляется к его времени ([HoldMath.total]).
+ */
+@Composable
+private fun HoldExerciseScreen(ex: Exercise, onDone: () -> Unit) {
+    val haptics = rememberHaptics()
+    val sound = rememberRepSound()
+    KeepScreenOn()
+
+    // Всё объявлено до выбора раскладки: позиционные ключи не зависят от ширины окна.
+    var creditedMs by rememberSaveable { mutableLongStateOf(0L) }
+    var startedAt by rememberSaveable { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    var showExit by rememberSaveable { mutableStateOf(false) }
+    var showRestart by rememberSaveable { mutableStateOf(false) }
+    var recorded by rememberSaveable { mutableStateOf(false) }
+    var recordedHeldMs by rememberSaveable { mutableLongStateOf(0L) }
+    var recordedElapsedMs by rememberSaveable { mutableLongStateOf(0L) }
+    var recordedEarnedMs by rememberSaveable { mutableLongStateOf(0L) }
+    var recordedXp by rememberSaveable { mutableLongStateOf(0L) }
+    var saveFailed by rememberSaveable { mutableStateOf(false) }
+    val sessionId = rememberSaveable { UUID.randomUUID().toString() }
+    var frontCamera by rememberSaveable { mutableStateOf(true) }
+
+    // Счётчик — один на экран. creditedMs на момент создания — засчитанное до пересоздания.
+    val tracker = remember(ex.id) {
+        RepCounters.forExercise(ex.id)?.takeIf { it.kind == CountKind.HOLD }?.let { HoldTracker(it, creditedMs) }
+    }
+    DisposableEffect(tracker) { onDispose { tracker?.counter?.reset() } }
+    LaunchedEffect(tracker) {
+        if (tracker != null) snapshotFlow { tracker.board.creditedMs }.collect { creditedMs = it }
+    }
+
+    var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = SystemClock.elapsedRealtime()
+            delay(500)
+        }
+    }
+    val elapsedMs = if (recorded || saveFailed) recordedElapsedMs else (now - startedAt).coerceAtLeast(0L)
+
+    fun finish() {
+        if (recorded) return
+        // Повтор после сбоя — с тем же временем, что и первая попытка.
+        val held = if (saveFailed) recordedHeldMs else creditedMs
+        if (held <= 0L) return
+        val duration = if (saveFailed) recordedElapsedMs else (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
+        val result = Workouts.recordHold(ex, held, duration, sessionId)
+        recordedHeldMs = held
+        recordedElapsedMs = duration
+        showExit = false
+        if (!result.saved) {
+            saveFailed = true
+            return
+        }
+        saveFailed = false
+        recorded = true
+        recordedEarnedMs = result.earnedMs
+        recordedXp = result.xp
+        haptics.strong()
+        sound.done()
+    }
+
+    fun restart() {
+        showRestart = false
+        tracker?.restart()
+        creditedMs = 0L
+        startedAt = SystemClock.elapsedRealtime()
+    }
+
+    fun requestExit() {
+        if (creditedMs > 0L && !recorded) showExit = true else onDone()
+    }
+
+    BackHandler(enabled = !recorded) { requestExit() }
+
+    val widthClass = currentWidthClass()
+    val scoreInPanel = widthClass == WidthClass.EXPANDED
+    val canFinish = creditedMs > 0L && !recorded
+    val canRestart = !recorded && !saveFailed
+    // Засчитанное есть — сначала спросить: «Заново» его стирает.
+    val onRestart: () -> Unit = {
+        if (creditedMs > 0L) {
+            showRestart = true
+        } else {
+            restart()
+        }
+    }
+
+    val camera: @Composable (Modifier) -> Unit = { modifier ->
+        CameraHoldPanel(
+            exercise = ex,
+            tracker = tracker,
+            // На диалогах время не считается: человек смотрит в экран, а не стоит в планке.
+            active = !recorded && !showExit && !saveFailed && !showRestart,
+            sound = sound,
+            frontCamera = frontCamera,
+            onFrontCameraChange = { frontCamera = it },
+            modifier = modifier,
+            showScore = !scoreInPanel,
+        )
+    }
+
+    val panelWidth = widthClass.workoutPanelWidth
+    if (panelWidth == null) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(widthClass.outerPadding),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ExerciseTitle(ex, widthClass)
+            ExerciseTimer(elapsedMs, widthClass)
+            HoldRewardInfo(ex, creditedMs, stacked = false)
+            camera(
+                Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+            )
+            HoldBottomBar(
+                canFinish = canFinish, canRestart = canRestart,
+                onCancel = { requestExit() }, onRestart = onRestart, onFinish = { finish() },
+            )
+        }
+    } else {
+        WorkoutSideLayout(widthClass, panelWidth, camera) {
+            if (scoreInPanel) {
+                ExerciseTitle(ex, widthClass)
+                ExerciseTimer(elapsedMs, widthClass)
+                if (tracker != null) {
+                    HoldScore(
+                        tracker,
+                        onCamera = false,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                    )
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
+                HoldRewardInfo(ex, creditedMs, stacked = true)
+            } else {
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    ExerciseTitle(ex, widthClass)
+                    ExerciseTimer(elapsedMs, widthClass)
+                    HoldRewardInfo(ex, creditedMs, stacked = true)
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            OutlinedButton(
+                onClick = onRestart,
+                enabled = canRestart,
+                shape = ButtonShape,
+                contentPadding = TightButtonPadding,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = MainButtonHeight),
+            ) { Text("Заново", style = MaterialTheme.typography.titleMedium, maxLines = 1) }
+            Spacer(Modifier.height(12.dp))
+            StackedButtons(canFinish = canFinish, onCancel = { requestExit() }, onFinish = { finish() })
+        }
+    }
+
+    val heldText = ProgressMath.formatHold(creditedMs)
+    if (showExit && !recorded && !saveFailed) {
+        AlertDialog(
+            onDismissRequest = { showExit = false },
+            title = { Text("Записать $heldText планки?") },
+            text = { Text("Без записи время за неё не начислится.") },
+            confirmButton = { TextButton(onClick = { finish() }) { Text("Записать") } },
+            dismissButton = {
+                TextButton(onClick = {
+                    showExit = false
+                    onDone()
+                }) { Text("Выйти без записи", color = Bad) }
+                TextButton(onClick = { showExit = false }) { Text("Продолжить") }
+            },
+        )
+    }
+
+    if (showRestart && !recorded && !saveFailed) {
+        AlertDialog(
+            onDismissRequest = { showRestart = false },
+            title = { Text("Начать заново?") },
+            text = { Text("Засчитанное время ($heldText) пропадёт.", style = MaterialTheme.typography.bodyLarge.merge(Tabular)) },
+            confirmButton = { TextButton(onClick = { restart() }) { Text("Заново", color = Bad) } },
+            dismissButton = { TextButton(onClick = { showRestart = false }) { Text("Продолжить") } },
+        )
+    }
+
+    if (saveFailed && !recorded) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Не удалось записать") },
+            text = {
+                Text(
+                    "Подход (${ProgressMath.formatHold(recordedHeldMs)} планки) не сохранился, время не начислено. " +
+                        "Можно попробовать ещё раз.",
+                    style = MaterialTheme.typography.bodyLarge.merge(Tabular),
+                )
+            },
+            confirmButton = { TextButton(onClick = { finish() }) { Text("Повторить") } },
+            dismissButton = {
+                TextButton(onClick = onDone) { Text("Выйти без записи", color = Bad) }
+            },
+        )
+    }
+
+    if (recorded) {
+        AlertDialog(
+            onDismissRequest = onDone,
+            confirmButton = { TextButton(onClick = onDone) { Text("Отлично") } },
+            title = { Text("Тренировка записана") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        HoldMath.resultLine(recordedHeldMs, recordedEarnedMs),
+                        style = MaterialTheme.typography.bodyLarge.merge(Tabular),
+                    )
+                    Text(
+                        "+$recordedXp опыта",
+                        style = MaterialTheme.typography.bodyMedium.merge(Tabular),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+        )
+    }
+}
+
+/** Цена секунды удержания и заработанное; в узкой панели — двумя строками. */
+@Composable
+private fun HoldRewardInfo(ex: Exercise, creditedMs: Long, stacked: Boolean) {
+    val one = HoldMath.priceLine(ex)
+    val earned = formatShort(Exercises.holdRewardMs(ex, creditedMs))
+    val style = MaterialTheme.typography.titleMedium.merge(Tabular)
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    if (stacked) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(one, color = muted, style = style)
+            Text("Заработано: $earned", color = muted, style = style)
+        }
+    } else {
+        Text("$one · заработано $earned", color = muted, style = style)
+    }
+}
+
+/** Кнопки под камерой для удержания (узкий экран): «Отмена», «Заново», «Готово». */
+@Composable
+private fun HoldBottomBar(
+    canFinish: Boolean, canRestart: Boolean,
+    onCancel: () -> Unit, onRestart: () -> Unit, onFinish: () -> Unit,
+) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(
+            onClick = onCancel,
+            shape = ButtonShape,
+            contentPadding = TightButtonPadding,
+            modifier = Modifier
+                .weight(1f)
+                .height(64.dp),
+        ) { Text("Отмена", style = MaterialTheme.typography.titleMedium, maxLines = 1) }
+        OutlinedButton(
+            onClick = onRestart,
+            enabled = canRestart,
+            shape = ButtonShape,
+            contentPadding = TightButtonPadding,
+            modifier = Modifier
+                .weight(1f)
+                .height(64.dp),
+        ) { Text("Заново", style = MaterialTheme.typography.titleMedium, maxLines = 1) }
+        Button(
+            onClick = onFinish,
+            enabled = canFinish,
+            shape = ButtonShape,
+            contentPadding = TightButtonPadding,
+            modifier = Modifier
+                .weight(1.4f)
+                .height(64.dp),
+        ) { Text("Готово", style = MaterialTheme.typography.titleLarge, maxLines = 1) }
     }
 }
 

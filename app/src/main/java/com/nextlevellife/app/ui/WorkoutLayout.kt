@@ -150,6 +150,26 @@ internal object Scoreboard {
         return fitSp(max, MIN_TIMER_SP, widthDp, maxOf(chars, 5), fontScale)
     }
 
+    /** Нижняя граница табло удержания: «12:30» в узкой панели не должно вылезать за край. */
+    const val MIN_HOLD_SP = 56
+
+    /** Подпись под табло удержания («засчитано 1:20») — titleLarge 22/28. */
+    const val HOLD_CAPTION_LINE_SP = 28
+
+    /**
+     * Размер табло удержания «м:сс» для области [widthDp] × [heightDp]: самый крупный размер класса
+     * ширины (как у счётчика повторений), не меньше [MIN_HOLD_SP]; под числом — строка подписи.
+     * [chars] — длина строки времени (не меньше 4, чтобы 0:59 → 1:00 не меняло размер).
+     */
+    fun holdSp(widthClass: WidthClass, widthDp: Float, heightDp: Float, chars: Int, fontScale: Float = 1f): Int {
+        val n = maxOf(4, chars)
+        return ladder(maxCountSp(widthClass), MIN_HOLD_SP).firstOrNull { sp ->
+            val w = n * DIGIT_EM * sp * fontScale + 2 * BLOCK_PAD_H_DP
+            val h = (lineFor(sp) + HOLD_CAPTION_LINE_SP) * fontScale + 2 * BLOCK_PAD_V_DP
+            w <= widthDp && h <= heightDp
+        } ?: MIN_HOLD_SP
+    }
+
     /** Таймер в шапке одиночного упражнения. */
     fun exerciseTimerSp(widthClass: WidthClass): Int = if (widthClass == WidthClass.EXPANDED) 56 else 40
 
@@ -258,6 +278,66 @@ private fun RepCounterBlock(count: Int, target: Int?, counting: Boolean, size: C
                     Text("$target", color = targetColor, style = targetStyle, maxLines = 1, softWrap = false)
                 }
             }
+        }
+    }
+}
+
+/** Как выглядит табло удержания. */
+internal enum class HoldTone {
+    /** Время идёт и засчитывается — акцентный цвет. */
+    LIVE,
+
+    /** Идёт отрезок короче 10 с: время видно, но приглушено. */
+    PENDING,
+
+    /** Удержания сейчас нет. */
+    IDLE,
+}
+
+/**
+ * Табло удержания: время «м:сс» шрифтом табло и подпись под ним («засчитано 1:20»,
+ * «засчитается с 10 секунд»). Само подбирает размер под область [modifier], как [FittedRepCounter].
+ * [captionWarn] — подпись-предупреждение («Меньше 10 секунд — не засчитано»).
+ */
+@Composable
+internal fun FittedHoldTimer(
+    time: String,
+    caption: String,
+    tone: HoldTone,
+    captionWarn: Boolean,
+    onCamera: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val widthClass = currentWidthClass()
+    val fontScale = LocalDensity.current.fontScale
+    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+        val sp = Scoreboard.holdSp(widthClass, maxWidth.value, maxHeight.value, time.length, fontScale)
+        val idle = if (onCamera) Color.White.copy(alpha = 0.6f) else MaterialTheme.colorScheme.onSurfaceVariant
+        val timeColor = when (tone) {
+            HoldTone.LIVE -> Accent
+            HoldTone.PENDING -> Accent.copy(alpha = 0.45f)
+            HoldTone.IDLE -> idle
+        }
+        val captionColor = when {
+            captionWarn -> Warn
+            onCamera -> Color.White.copy(alpha = 0.85f)
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        val base = if (onCamera) Modifier.background(CameraScrim, RoundedCornerShape(24.dp)) else Modifier
+        Column(
+            base
+                .padding(horizontal = Scoreboard.BLOCK_PAD_H_DP.dp, vertical = Scoreboard.BLOCK_PAD_V_DP.dp)
+                .clearAndSetSemantics { contentDescription = "Планка $time, $caption" },
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            ScoreText(time, sp, timeColor)
+            Text(
+                caption,
+                color = captionColor,
+                style = MaterialTheme.typography.titleLarge.merge(Tabular),
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+            )
         }
     }
 }

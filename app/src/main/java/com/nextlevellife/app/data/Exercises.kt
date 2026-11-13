@@ -9,6 +9,10 @@ import kotlin.math.roundToLong
  *
  * [minSecondsPerRep] защищает от «натыкивания»: засчитывается не больше повторений,
  * чем физически можно сделать за прошедшее время.
+ *
+ * [hold] — упражнение-удержание (планка): считается не повторениями, а временем. У него
+ * [rewardSecondsPerRep] — секунды экранного времени за секунду засчитанного удержания
+ * (см. [Exercises.holdRewardMs]), [minSecondsPerRep] не используется.
  */
 data class Exercise(
     val id: String,
@@ -16,6 +20,7 @@ data class Exercise(
     val rewardSecondsPerRep: Int,
     val minSecondsPerRep: Double,
     val kettlebell: Boolean = false,
+    val hold: Boolean = false,
 )
 
 object Weights {
@@ -36,13 +41,16 @@ object Exercises {
     val abs = Exercise("abs", "Пресс", 35, 0.7)
     val pullups = Exercise("pullups", "Подтягивания", 60, 1.2)
 
+    /** Планка на предплечьях: 5 секунд за секунду удержания — минута = 5 минут = 10 отжиманий. */
+    val plank = Exercise("plank", "Планка", 5, 0.0, hold = true)
+
     val thruster = Exercise("thruster", "Трастер", 45, 1.5, kettlebell = true)
     val swing = Exercise("swings", "Мах гирей", 30, 0.8, kettlebell = true)
     val sumoPull = Exercise("sumo_pull", "Тяга сумо к подбородку", 30, 1.0, kettlebell = true)
     val row = Exercise("row", "Тяга к поясу в наклоне", 25, 1.0, kettlebell = true)
     val deadlift = Exercise("deadlift", "Становая тяга", 25, 1.0, kettlebell = true)
 
-    val bodyweight = listOf(pushups, squats, abs, pullups)
+    val bodyweight = listOf(pushups, squats, abs, pullups, plank)
     val kettlebell = listOf(thruster, swing, sumoPull, row, deadlift)
     val all = bodyweight + kettlebell
 
@@ -53,6 +61,13 @@ object Exercises {
         val factor = if (ex.kettlebell) Weights.factor(weightKg) else 1.0
         return (reps * ex.rewardSecondsPerRep * factor * 1000).roundToLong()
     }
+
+    /**
+     * Награда в миллисекундах за [heldMs] засчитанного удержания (планка): платятся только
+     * целые секунды, по [Exercise.rewardSecondsPerRep] секунд за каждую. 1:20 планки = 6 мин 40 сек.
+     */
+    fun holdRewardMs(ex: Exercise, heldMs: Long): Long =
+        (heldMs.coerceAtLeast(0L) / 1000) * ex.rewardSecondsPerRep * 1000L
 
     /** Опыт: 1 очко за каждые 10 секунд заработанного времени. */
     fun xp(rewardMs: Long): Long = rewardMs / 10_000

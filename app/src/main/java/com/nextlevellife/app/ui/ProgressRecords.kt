@@ -93,13 +93,9 @@ private fun RecordRow(label: String, value: String) {
 
 @Composable
 private fun ExerciseRecordRow(r: ExerciseRecord, isOpen: Boolean, onClick: () -> Unit) {
-    val best = r.bestReps
-    val bestText = when {
-        best == null -> "Лучший подход: —"
-        r.bestWeightKg != null -> "Лучший подход: $best повт. · ${r.bestWeightKg} кг"
-        else -> "Лучший подход: $best повт."
-    }
-    val totalWord = ProgressMath.repsWord((r.totalReps % 100).toInt())
+    // Планка — временем («Лучший подход: 1:20», «12:30 всего»), остальное — повторениями.
+    val bestText = ProgressMath.recordBestLine(r)
+    val (totalValue, totalCaption) = ProgressMath.recordTotal(r)
     Row(
         Modifier
             .fillMaxWidth()
@@ -122,9 +118,9 @@ private fun ExerciseRecordRow(r: ExerciseRecord, isOpen: Boolean, onClick: () ->
             )
         }
         Column(horizontalAlignment = Alignment.End) {
-            Text("${r.totalReps}", style = MaterialTheme.typography.titleMedium.merge(Tabular))
+            Text(totalValue, style = MaterialTheme.typography.titleMedium.merge(Tabular))
             Text(
-                "$totalWord всего",
+                totalCaption,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

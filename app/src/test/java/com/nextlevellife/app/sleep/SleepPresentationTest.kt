@@ -125,7 +125,8 @@ class SleepPresentationTest {
 
     @Test
     fun schemaHasSleepTables() {
-        assertEquals(5, Diary.SCHEMA_VERSION)
+        // Таблицы ночного перерыва — шаг 4 → 5; дальше схема растёт (5 → 6 — подходы-удержания).
+        assertTrue(Diary.SCHEMA_VERSION >= 5)
         val sql = Diary.MIGRATIONS[4].joinToString("\n")
         for (table in BackupMath.SLEEP_TABLES) assertTrue(table, "CREATE TABLE $table" in sql)
         assertTrue("dedup_key TEXT NOT NULL UNIQUE" in sql)

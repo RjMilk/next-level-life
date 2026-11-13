@@ -341,7 +341,7 @@ private fun TodayCard(
                     )
                 } else {
                     Text(
-                        ProgressMath.summaryLine(digest.sets, digest.reps, digest.earnedMs),
+                        digest.summary,
                         style = MaterialTheme.typography.titleSmall.merge(Tabular),
                         color = Accent,
                     )
@@ -537,10 +537,18 @@ private fun ExerciseCard(ex: Exercise, modifier: Modifier, onExercise: (String) 
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(ex.name, style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "1 повт = ${formatShort(Exercises.rewardMs(ex, 1, Weights.DEFAULT))}",
+                    exercisePriceLine(ex),
                     style = MaterialTheme.typography.bodySmall.merge(Tabular),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (ex.hold) {
+                    // Планку камера видит только сбоку: телефон ставится на пол.
+                    Text(
+                        "камера сбоку, на полу",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -550,6 +558,14 @@ private fun ExerciseCard(ex: Exercise, modifier: Modifier, onExercise: (String) 
 private fun Chevron() {
     Text("›", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
+
+/** Цена упражнения для карточки: «1 повт = 30 сек»; у удержания — «1 сек = 5 сек». */
+internal fun exercisePriceLine(ex: Exercise): String =
+    if (ex.hold) {
+        "1 сек = ${formatShort(Exercises.holdRewardMs(ex, 1_000L))}"
+    } else {
+        "1 повт = ${formatShort(Exercises.rewardMs(ex, 1, Weights.DEFAULT))}"
+    }
 
 /** «2 ч 22 мин», «1 мин 30 сек», «45 сек». */
 fun formatShort(ms: Long): String {

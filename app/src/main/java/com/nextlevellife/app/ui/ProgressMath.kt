@@ -5,7 +5,9 @@ import com.nextlevellife.app.data.ActivityRun
 import com.nextlevellife.app.data.Cindy
 import com.nextlevellife.app.data.ComplexRun
 import com.nextlevellife.app.data.DiaryMath
+import com.nextlevellife.app.data.ExerciseRecord
 import com.nextlevellife.app.data.ExerciseTotal
+import com.nextlevellife.app.data.Measurement
 import com.nextlevellife.app.data.Minotaur
 import com.nextlevellife.app.data.SetEntry
 import com.nextlevellife.app.health.ActivityMath
@@ -137,25 +139,79 @@ internal object ProgressMath {
         return if (frac == 0L) "$whole мин" else "$whole,$frac мин"
     }
 
-    /** «3 подхода · 35 повторений · +22 мин». */
-    fun summaryLine(sets: Int, reps: Int, earnedMs: Long): String =
-        "$sets ${setsWord(sets)} · $reps ${repsWord(reps)} · +${formatEarned(earnedMs)}"
+    /**
+     * «3 подхода · 35 повторений · +22 мин»; с планкой — «4 подхода · 35 повторений · 2:40 планки · +34 мин»;
+     * только планка — «1 подход · 1:20 планки · +6,7 мин». Секунды с повторениями не складываются.
+     */
+    fun summaryLine(sets: Int, reps: Int, earnedMs: Long, heldMs: Long = 0L): String = buildList {
+        add("$sets ${setsWord(sets)}")
+        if (reps > 0 || heldMs <= 0L) add("$reps ${repsWord(reps)}")
+        if (heldMs > 0L) add("${formatHold(heldMs)} планки")
+        add("+${formatEarned(earnedMs)}")
+    }.joinToString(" · ")
+
+    /**
+     * Время удержания «м:сс» по целым секундам: «0:45», «1:20», «12:30»; от часа — «1:05:00».
+     * Отрицательное — как ноль.
+     */
+    fun formatHold(ms: Long): String {
+        val s = ms.coerceAtLeast(0L) / 1000
+        val h = s / 3600
+        return if (h > 0) "%d:%02d:%02d".format(h, (s % 3600) / 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
+    }
+
+    /** Показатель подхода или итога: «35 повт.» или у удержания «1:20». */
+    private fun amount(measurement: Measurement, reps: Int, heldMs: Long): String =
+        if (measurement == Measurement.HOLD) formatHold(heldMs) else "$reps повт."
 
     /** «Мах гирей 24 кг» или «Отжимания». */
     fun exerciseLabel(name: String, weightKg: Int?): String =
         if (weightKg != null) "$name $weightKg кг" else name
 
-    /** «Отжимания — 2 подхода, 35 повт.». */
+    /** «Отжимания — 2 подхода, 35 повт.»; «Планка — 2 подхода, 2:40». */
     fun totalLine(t: ExerciseTotal): String =
-        "${exerciseLabel(t.exerciseName, t.weightKg)} — ${t.sets} ${setsWord(t.sets)}, ${t.reps} повт."
+        "${exerciseLabel(t.exerciseName, t.weightKg)} — ${t.sets} ${setsWord(t.sets)}, ${amount(t.measurement, t.reps, t.heldMs)}"
 
-    /** «Отжимания — 20 повт.» — короткая строка для карточки «Сегодня». */
+    /** «Отжимания — 20 повт.»; «Планка — 2:40» — короткая строка для карточки «Сегодня». */
     fun totalRepsLine(t: ExerciseTotal): String =
-        "${exerciseLabel(t.exerciseName, t.weightKg)} — ${t.reps} повт."
+        "${exerciseLabel(t.exerciseName, t.weightKg)} — ${amount(t.measurement, t.reps, t.heldMs)}"
 
-    /** «21:00 · Отжимания · 15 повт. · +7,5 мин». */
+    /** «21:00 · Отжимания · 15 повт. · +7,5 мин»; «21:00 · Планка · 1:20 · +6,7 мин». */
     fun setLine(s: SetEntry, zone: ZoneId = ZoneId.systemDefault()): String =
-        "${clock(s.timeMs, zone)} · ${exerciseLabel(s.exerciseName, s.weightKg)} · ${s.reps} повт. · +${formatEarned(s.earnedMs)}"
+        "${clock(s.timeMs, zone)} · ${exerciseLabel(s.exerciseName, s.weightKg)} · " +
+            "${amount(s.measurement, s.reps, s.heldMs)} · +${formatEarned(s.earnedMs)}"
+
+    // ---------- Рекорды упражнений ----------
+
+    /** «Лучший подход: 15 повт. · 24 кг», «Лучший подход: 1:20», не было отдельных подходов — «Лучший подход: —». */
+    fun recordBestLine(r: ExerciseRecord): String {
+        if (r.measurement == Measurement.HOLD) return "Лучший подход: ${r.bestHeldMs?.let { formatHold(it) } ?: "—"}"
+        val best = r.bestReps
+        return when {
+            best == null -> "Лучший подход: —"
+            r.bestWeightKg != null -> "Лучший подход: $best повт. · ${r.bestWeightKg} кг"
+            else -> "Лучший подход: $best повт."
+        }
+    }
+
+    /** Итог «всего» справа в строке рекорда: число и подпись под ним («350» / «повторений всего», «12:30» / «всего»). */
+    fun recordTotal(r: ExerciseRecord): Pair<String, String> =
+        if (r.measurement == Measurement.HOLD) {
+            formatHold(r.totalHeldMs) to "всего"
+        } else {
+            "${r.totalReps}" to "${repsWord((r.totalReps % 100).toInt())} всего"
+        }
+
+    /** Одной строкой: «Планка — лучший подход 1:20, всего 12:30», «Отжимания — лучший подход 30 повт., всего 350 повт.». */
+    fun recordLine(r: ExerciseRecord): String {
+        val (best, total) = if (r.measurement == Measurement.HOLD) {
+            (r.bestHeldMs?.let { formatHold(it) } ?: "—") to formatHold(r.totalHeldMs)
+        } else {
+            val w = r.bestWeightKg?.let { " · $it кг" } ?: ""
+            (r.bestReps?.let { "$it повт.$w" } ?: "—") to "${r.totalReps} повт."
+        }
+        return "${r.exerciseName} — лучший подход $best, всего $total"
+    }
 
     /** «Минотавр 16 кг — 24:35», «Синди — 12 кругов + 7 повт.», незавершённый — с пометкой. */
     fun complexLine(r: ComplexRun): String {
@@ -179,15 +235,18 @@ internal object ProgressMath {
     /** Строка таблицы: [label] слева, [value] справа табличными цифрами. */
     data class Cells(val label: String, val value: String)
 
-    /** «Отжимания» | «2 подхода · 35 повт.». */
+    /** «Отжимания» | «2 подхода · 35 повт.»; «Планка» | «2 подхода · 2:40». */
     fun totalCells(t: ExerciseTotal): Cells =
-        Cells(exerciseLabel(t.exerciseName, t.weightKg), "${t.sets} ${setsWord(t.sets)} · ${t.reps} повт.")
+        Cells(
+            exerciseLabel(t.exerciseName, t.weightKg),
+            "${t.sets} ${setsWord(t.sets)} · ${amount(t.measurement, t.reps, t.heldMs)}",
+        )
 
-    /** «21:00  Отжимания» | «15 повт. · +7,5 мин». */
+    /** «21:00  Отжимания» | «15 повт. · +7,5 мин»; «21:00  Планка» | «1:20 · +6,7 мин». */
     fun setCells(s: SetEntry, zone: ZoneId = ZoneId.systemDefault()): Cells =
         Cells(
             "${clock(s.timeMs, zone)}  ${exerciseLabel(s.exerciseName, s.weightKg)}",
-            "${s.reps} повт. · +${formatEarned(s.earnedMs)}",
+            "${amount(s.measurement, s.reps, s.heldMs)} · +${formatEarned(s.earnedMs)}",
         )
 
     /** «Минотавр 16 кг» | «24:35»; незавершённый — «… · не завершён» в названии. */
@@ -203,11 +262,11 @@ internal object ProgressMath {
         return Cells(if (r.completed) label else "$label · не завершён", value)
     }
 
-    /** История упражнения: «12 ноя · 24 кг» | «2 подхода · 35 повт.». */
+    /** История упражнения: «12 ноя · 24 кг» | «2 подхода · 35 повт.»; у планки — «2 подхода · 2:40». */
     fun historyCells(day: Long, t: ExerciseTotal): Cells =
         Cells(
             shortDate(day) + (t.weightKg?.let { " · $it кг" } ?: ""),
-            "${t.sets} ${setsWord(t.sets)} · ${t.reps} повт.",
+            "${t.sets} ${setsWord(t.sets)} · ${amount(t.measurement, t.reps, t.heldMs)}",
         )
 
     // ---------- Карточка «Сегодня» на главной ----------
@@ -259,6 +318,7 @@ internal object ProgressMath {
      */
     data class DayDigest(
         val sets: Int,
+        /** Только повторения: секунды удержаний сюда не входят. */
         val reps: Int,
         val earnedMs: Long,
         val runs: List<ComplexRun>,
@@ -270,7 +330,12 @@ internal object ProgressMath {
         val activityRuns: List<ActivityRun> = emptyList(),
         /** Ночной перерыв перед этим днём (день пробуждения); null — расчёта нет. */
         val night: SleepNight? = null,
+        /** Засчитанное время удержаний (планка) за день. */
+        val heldMs: Long = 0L,
     ) {
+        /** Итог тренировки дня одной строкой: «3 подхода · 35 повторений · 2:40 планки · +20 мин». */
+        val summary: String get() = summaryLine(sets, reps, earnedMs, heldMs)
+
         /** Были подходы или комплексы. */
         val hasWorkout: Boolean get() = sets > 0 || runs.isNotEmpty()
 
@@ -299,9 +364,11 @@ internal object ProgressMath {
         val sorted = sets.sortedWith(compareBy({ it.timeMs }, { it.id }))
         val runIdsWithSets = sorted.mapNotNullTo(HashSet()) { it.runId }
         val orphanRuns = runs.filter { it.id !in runIdsWithSets }
+        val (holdSets, repSets) = sorted.partition { it.measurement == Measurement.HOLD }
         return DayDigest(
             sets = sorted.size,
-            reps = sorted.sumOf { it.reps } + orphanRuns.sumOf { it.totalReps },
+            reps = repSets.sumOf { it.reps } + orphanRuns.sumOf { it.totalReps },
+            heldMs = holdSets.sumOf { it.heldMs },
             earnedMs = sorted.sumOf { it.earnedMs } + orphanRuns.sumOf { it.earnedMs },
             runs = runs.sortedWith(compareBy({ it.timeMs }, { it.id })),
             totals = DiaryMath.totals(sorted),

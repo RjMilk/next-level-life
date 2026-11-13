@@ -81,7 +81,7 @@ internal const val HINT_LOST = "Не вижу тебя"
 /** С этой глубины амплитуда считается полной (индикатор зеленеет). */
 private const val FULL_DEPTH = 0.98f
 
-private val Warn = Color(0xFFFFD166)
+internal val Warn = Color(0xFFFFD166)
 private val PanelShape = RoundedCornerShape(24.dp)
 
 private enum class Phase {
@@ -140,7 +140,7 @@ private const val DIAG_UPDATE_MS = 250L
  * и главный сигнал упражнения (сырой, тот же выбор стороны тела, что у счётчика).
  * Текст меняется не чаще [DIAG_UPDATE_MS] и читается только в [DiagLine].
  */
-private class FrameDiag(exerciseId: String) {
+internal class FrameDiag(exerciseId: String) {
     var text by mutableStateOf("")
 
     private val config = ExerciseConfigs.byId[exerciseId]
@@ -487,7 +487,7 @@ private fun StatusPlate(tracker: RepTracker, count: Int, target: Int?, modifier:
  * До первого кадра — заглушка той же высоты, чтобы счётчик под ней не менял размер.
  */
 @Composable
-private fun DiagLine(diag: FrameDiag, modifier: Modifier) {
+internal fun DiagLine(diag: FrameDiag, modifier: Modifier) {
     val text = diag.text.ifEmpty { "— к/с" }
     Text(
         text,
@@ -521,7 +521,7 @@ private fun DepthBar(tracker: RepTracker, modifier: Modifier) {
 }
 
 @Composable
-private fun CameraSwitch(onClick: () -> Unit) {
+internal fun CameraSwitch(onClick: () -> Unit) {
     Box(
         Modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
@@ -535,12 +535,13 @@ private fun CameraSwitch(onClick: () -> Unit) {
     }
 }
 
-private fun setupLine(exerciseId: String): String = when (exerciseId) {
+internal fun setupLine(exerciseId: String): String = when (exerciseId) {
     "pushups" -> "Поставь телефон сбоку, в 2 метрах: видно всё тело от головы до стоп"
     "squats" -> "Встань боком или в пол-оборота, видно всё тело"
     "abs" -> "Ляг боком к телефону: видно плечи, таз и колени"
     "pullups" -> "Отодвинь телефон: в кадре турник и всё тело"
     "thruster", "sumo_pull", "row" -> "Встань в пол-оборота к телефону, видно всё тело"
     "swings", "deadlift" -> "Встань боком к телефону, видно всё тело"
+    "plank" -> "Поставь телефон на пол сбоку, в 2 метрах. Встань на колени в кадре, потом прими планку"
     else -> "Поставь телефон в 2 метрах: видно всё тело"
 }

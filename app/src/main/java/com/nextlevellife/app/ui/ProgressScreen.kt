@@ -407,7 +407,7 @@ private fun DayCard(selected: Long, today: Long, data: DayData?, modifier: Modif
             if (activity != null || night != null) SectionLabel("Тренировка")
             Text(
                 // Неразрывный пробел перед единицами: на узком экране «мин» не остаётся одно на строке.
-                ProgressMath.summaryLine(digest.sets, digest.reps, digest.earnedMs)
+                digest.summary
                     .replace(" мин", " мин").replace(" ч", " ч"),
                 style = MaterialTheme.typography.titleSmall.merge(Tabular),
                 color = Accent,

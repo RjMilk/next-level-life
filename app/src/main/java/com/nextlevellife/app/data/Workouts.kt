@@ -58,16 +58,50 @@ object Workouts {
             )
         }
         if (newSets.isEmpty()) return NOTHING
+        return persistSets(newSets, sessionId, "подходы")
+    }
+
+    /**
+     * Записать подход-удержание (планку): [heldMs] — засчитанное время (отрезки не короче 10 с),
+     * [durationMs] — полное время подхода. Награда — [Exercises.holdRewardMs] за целые секунды;
+     * засчитанное не больше полного времени. В дневник — reps = 0, held_ms, measurement_type = HOLD.
+     * Одна транзакция с журналом баланса, идемпотентно по [sessionId] (тот же ключ `set:<sessionId>`,
+     * что у подходов). Нечего засчитывать — ничего не пишется (saved = true, награда 0);
+     * сбой — saved = false, ничего не начислено.
+     */
+    @Synchronized
+    fun recordHold(exercise: Exercise, heldMs: Long, durationMs: Long, sessionId: String? = null): WorkoutResult {
+        val held = WorkoutMath.creditedHoldMs(heldMs, durationMs)
+        if (held <= 0L) return NOTHING
+        val earned = Exercises.holdRewardMs(exercise, held)
+        val set = NewSet(
+            exerciseId = exercise.id,
+            exerciseName = exercise.name,
+            weightKg = null,
+            reps = 0,
+            durationMs = durationMs.coerceAtLeast(0L),
+            earnedMs = earned,
+            xp = Exercises.xp(earned),
+            measurement = Measurement.HOLD,
+            heldMs = held,
+        )
+        return persistSets(listOf(set), sessionId, "удержание", mapOf("held_ms" to held))
+    }
+
+    /** Подходы и одно начисление SET_REWARD — одной транзакцией [persist]. */
+    private fun persistSets(
+        newSets: List<NewSet>, sessionId: String?, what: String, extra: Map<String, Any?> = emptyMap(),
+    ): WorkoutResult {
         val earnedMs = newSets.sumOf { it.earnedMs }
         val xp = newSets.sumOf { it.xp }
         val result = WorkoutResult(earnedMs, xp)
         val key = LedgerMath.setKey(sessionId ?: UUID.randomUUID().toString())
-        return persist(key, "подходы") {
+        return persist(key, what) {
             val now = TrustedClock.nowMs() // доверенное время: перевод часов не меняет сутки начисления
             val ids = newSets.map { Diary.addSet(now, it) }
             credit(
                 OpKind.SET_REWARD, key, result, sourceType = "sets", sourceId = ids.joinToString(","), now = now,
-                details = mapOf("set_ids" to ids, "exercises" to newSets.map { it.exerciseId }),
+                details = mapOf("set_ids" to ids, "exercises" to newSets.map { it.exerciseId }) + extra,
             )
             result
         }
@@ -209,6 +243,15 @@ internal object WorkoutMath {
     const val CINDY_TOLERANCE_MS = 5_000L
 
     fun cindyCompleted(durationMs: Long): Boolean = durationMs >= Cindy.DURATION_MS - CINDY_TOLERANCE_MS
+
+    /**
+     * Сколько удержания засчитать в дневник и награду: целые секунды, не больше полного времени
+     * подхода [durationMs] (если оно известно, то есть > 0), не меньше нуля.
+     */
+    fun creditedHoldMs(heldMs: Long, durationMs: Long): Long {
+        val capped = if (durationMs > 0L) minOf(heldMs, durationMs) else heldMs
+        return (capped.coerceAtLeast(0L) / 1000) * 1000
+    }
 
     /** Серия дней после тренировки сегодня; [lastDay] — день прошлой тренировки. */
     fun nextStreak(lastDay: Long, today: Long, current: Int): Int = when (lastDay) {

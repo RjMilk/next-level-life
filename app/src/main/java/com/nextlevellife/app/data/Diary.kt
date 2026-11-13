@@ -13,11 +13,30 @@ import com.nextlevellife.app.sleep.SleepNight
 import java.time.Instant
 import java.time.ZoneId
 
-/** Один подход одного упражнения. [runId] — прохождение комплекса, в которое входит подход. */
+/**
+ * Единицы подхода (столбец `sets.measurement_type`): повторения или удержание позы.
+ * Неизвестное значение (из более новой версии) читается как [REPS].
+ */
+enum class Measurement {
+    REPS,
+    HOLD;
+
+    companion object {
+        fun parse(value: String?): Measurement = entries.firstOrNull { it.name == value } ?: REPS
+    }
+}
+
+/**
+ * Один подход одного упражнения. [runId] — прохождение комплекса, в которое входит подход.
+ * [measurement] — единицы: у [Measurement.HOLD] (планка) [reps] = 0, [heldMs] — засчитанное
+ * время удержания, [durationMs] — полное время подхода. У повторений [heldMs] = 0.
+ */
 data class SetEntry(
     val id: Long, val timeMs: Long, val day: Long,
     val exerciseId: String, val exerciseName: String, val weightKg: Int?,
     val reps: Int, val durationMs: Long, val earnedMs: Long, val xp: Long, val runId: Long?,
+    val measurement: Measurement = Measurement.REPS,
+    val heldMs: Long = 0L,
 )
 
 /** Одно прохождение комплекса (Минотавр, Синди). */
@@ -27,20 +46,38 @@ data class ComplexRun(
     val earnedMs: Long, val xp: Long, val completed: Boolean,
 )
 
-/** Итог дня для календаря и списка дней. */
-data class DaySummary(val day: Long, val sets: Int, val reps: Int, val earnedMs: Long, val xp: Long)
+/**
+ * Итог дня для календаря и списка дней. [reps] — только повторения; [heldMs] — засчитанное время
+ * удержаний (планка) за день: секунды с повторениями не складываются.
+ */
+data class DaySummary(
+    val day: Long, val sets: Int, val reps: Int, val earnedMs: Long, val xp: Long,
+    val heldMs: Long = 0L,
+)
 
-/** Сколько сделано по одному упражнению (и весу) за день. */
-data class ExerciseTotal(val exerciseId: String, val exerciseName: String, val weightKg: Int?, val sets: Int, val reps: Int)
+/**
+ * Сколько сделано по одному упражнению (и весу) за день. У удержания ([measurement] = HOLD)
+ * [reps] = 0, а [heldMs] — сумма засчитанного времени.
+ */
+data class ExerciseTotal(
+    val exerciseId: String, val exerciseName: String, val weightKg: Int?, val sets: Int, val reps: Int,
+    val heldMs: Long = 0L,
+    val measurement: Measurement = Measurement.REPS,
+)
 
 /**
  * Рекорды упражнения за всё время. [bestReps] и [bestWeightKg] — лучший отдельный подход
  * (null — упражнение делалось только в комплексах), [totalReps] и [sets] — всё вместе с комплексами.
+ * Для удержания ([measurement] = HOLD): [bestHeldMs] — самый длинный засчитанный подход,
+ * [totalHeldMs] — всё засчитанное время; [bestReps] и [bestWeightKg] — null, [totalReps] — 0.
  */
 data class ExerciseRecord(
     val exerciseId: String, val exerciseName: String,
     val bestReps: Int?, val bestWeightKg: Int?,
     val totalReps: Long, val sets: Int, val lastDay: Long,
+    val measurement: Measurement = Measurement.REPS,
+    val bestHeldMs: Long? = null,
+    val totalHeldMs: Long = 0L,
 )
 
 /**
@@ -92,10 +129,15 @@ data class BlockEvent(
     val trigger: String,
 )
 
-/** Подход, который ещё не записан: время, день и прохождение проставляет [Diary]. */
+/**
+ * Подход, который ещё не записан: время, день и прохождение проставляет [Diary].
+ * Удержание — [measurement] = HOLD, [reps] = 0, [heldMs] — засчитанное время.
+ */
 data class NewSet(
     val exerciseId: String, val exerciseName: String, val weightKg: Int?,
     val reps: Int, val durationMs: Long, val earnedMs: Long, val xp: Long,
+    val measurement: Measurement = Measurement.REPS,
+    val heldMs: Long = 0L,
 )
 
 /**
@@ -340,12 +382,34 @@ object Diary {
     @Synchronized
     fun exerciseTotalsForDay(day: Long): List<ExerciseTotal> = DiaryMath.totals(setsForDay(day))
 
+    /** Итоги дней: повторения — только у подходов-повторений, время удержаний — отдельно ([DaySummary.heldMs]). */
     @Synchronized
     fun daySummaries(fromDay: Long, toDay: Long): List<DaySummary> = query(
-        "SELECT day, COUNT(*), SUM(reps), SUM(earned_ms), SUM(xp) FROM sets " +
+        "SELECT day, COUNT(*), " +
+            "SUM(CASE WHEN measurement_type = 'HOLD' THEN 0 ELSE reps END), SUM(earned_ms), SUM(xp), " +
+            "SUM(CASE WHEN measurement_type = 'HOLD' THEN held_ms ELSE 0 END) FROM sets " +
             "WHERE day BETWEEN ? AND ? GROUP BY day ORDER BY day",
         fromDay.toString(), toDay.toString(),
-    ) { DaySummary(it.getLong(0), it.getInt(1), it.getInt(2), it.getLong(3), it.getLong(4)) }
+    ) { DaySummary(it.getLong(0), it.getInt(1), it.getInt(2), it.getLong(3), it.getLong(4), it.getLong(5)) }
+
+    /**
+     * Засчитанное время удержаний упражнения [exerciseId] (по умолчанию — планки) по учётным дням
+     * [fromDay]..[toDay]: день → сумма `held_ms` (включая подходы комплексов, если они появятся).
+     * В карте только дни, в которые упражнение делалось.
+     */
+    @Synchronized
+    fun holdMsByDay(fromDay: Long, toDay: Long, exerciseId: String = Exercises.plank.id): Map<Long, Long> = query(
+        "SELECT day, SUM(held_ms) FROM sets " +
+            "WHERE measurement_type = 'HOLD' AND exercise_id = ? AND day BETWEEN ? AND ? GROUP BY day ORDER BY day",
+        exerciseId, fromDay.toString(), toDay.toString(),
+    ) { it.getLong(0) to it.getLong(1) }.toMap()
+
+    /** Засчитанное время удержаний упражнения [exerciseId] за всё время (мс). */
+    @Synchronized
+    fun totalHoldMs(exerciseId: String = Exercises.plank.id): Long = query(
+        "SELECT COALESCE(SUM(held_ms), 0) FROM sets WHERE measurement_type = 'HOLD' AND exercise_id = ?",
+        exerciseId,
+    ) { it.getLong(0) }.firstOrNull() ?: 0L
 
     @Synchronized
     fun trainedDays(fromDay: Long, toDay: Long): Set<Long> = query(
@@ -515,27 +579,12 @@ object Diary {
     }
 
     /**
-     * Рекорды по всем упражнениям, которые встречались в дневнике, одним запросом.
-     * Лучший подход ищется только среди отдельных подходов: подходы комплексов — это сумма
-     * за весь комплекс, а не один подход. Всего повторений — с комплексами.
+     * Рекорды по всем упражнениям, которые встречались в дневнике (правила — [DiaryMath.records]).
+     * Читаются все подходы: даже за годы ежедневных тренировок это тысячи коротких строк.
      */
     @Synchronized
-    fun exerciseRecords(): List<ExerciseRecord> = query(
-        "SELECT s.exercise_id, " +
-            "(SELECT n.exercise_name FROM sets n WHERE n.exercise_id = s.exercise_id " +
-            "ORDER BY n.time_ms DESC, n.id DESC LIMIT 1), " +
-            "MAX(CASE WHEN s.run_id IS NULL THEN s.reps END), " +
-            "(SELECT b.weight_kg FROM sets b WHERE b.exercise_id = s.exercise_id AND b.run_id IS NULL " +
-            "ORDER BY b.reps DESC, COALESCE(b.weight_kg, 0) DESC, b.time_ms, b.id LIMIT 1), " +
-            "SUM(s.reps), COUNT(*), MAX(s.day) " +
-            "FROM sets s GROUP BY s.exercise_id",
-    ) {
-        ExerciseRecord(
-            exerciseId = it.getString(0), exerciseName = it.getString(1),
-            bestReps = it.intOrNull(2), bestWeightKg = it.intOrNull(3),
-            totalReps = it.getLong(4), sets = it.getInt(5), lastDay = it.getLong(6),
-        )
-    }
+    fun exerciseRecords(): List<ExerciseRecord> =
+        DiaryMath.records(query("SELECT $SET_COLS FROM sets ORDER BY time_ms, id") { it.toSetEntry() })
 
     // ---------- Запись (только для Workouts и переноса старой истории) ----------
 
@@ -634,6 +683,8 @@ object Diary {
             put("earned_ms", set.earnedMs)
             put("xp", set.xp)
             put("run_id", runId)
+            put("measurement_type", set.measurement.name)
+            put("held_ms", set.heldMs)
         }
         return db.insertOrThrow("sets", null, values)
     }
@@ -649,7 +700,8 @@ object Diary {
     private fun Cursor.longOrNull(i: Int): Long? = if (isNull(i)) null else getLong(i)
 
     private const val SET_COLS =
-        "id, time_ms, day, exercise_id, exercise_name, weight_kg, reps, duration_ms, earned_ms, xp, run_id"
+        "id, time_ms, day, exercise_id, exercise_name, weight_kg, reps, duration_ms, earned_ms, xp, run_id, " +
+            "measurement_type, held_ms"
     private const val RUN_COLS =
         "id, time_ms, day, complex_id, weight_kg, duration_ms, rounds, extra_reps, total_reps, earned_ms, xp, completed"
 
@@ -658,6 +710,8 @@ object Diary {
         exerciseId = getString(3), exerciseName = getString(4), weightKg = intOrNull(5),
         reps = getInt(6), durationMs = getLong(7), earnedMs = getLong(8), xp = getLong(9),
         runId = longOrNull(10),
+        measurement = Measurement.parse(getString(11)),
+        heldMs = getLong(12),
     )
 
     private const val ACTIVITY_COLS =
@@ -895,6 +949,12 @@ object Diary {
                 PRIMARY KEY (device_id, wake_day)
             )""",
         ),
+        // 5 → 6: подходы-удержания (планка). measurement_type — REPS / HOLD; у HOLD reps = 0,
+        // held_ms — засчитанное время, duration_ms — полное время подхода. Старые подходы — REPS с held_ms = 0.
+        listOf(
+            "ALTER TABLE sets ADD COLUMN measurement_type TEXT NOT NULL DEFAULT 'REPS'",
+            "ALTER TABLE sets ADD COLUMN held_ms INTEGER NOT NULL DEFAULT 0",
+        ),
     )
 }
 
@@ -909,12 +969,50 @@ internal object DiaryMath {
      */
     fun totals(sets: List<SetEntry>): List<ExerciseTotal> =
         sets.groupBy { it.exerciseId to it.weightKg }.map { (key, group) ->
+            val hold = group.any { it.measurement == Measurement.HOLD }
             ExerciseTotal(
                 exerciseId = key.first,
                 exerciseName = group.last().exerciseName,
                 weightKg = key.second,
                 sets = group.size,
-                reps = group.sumOf { it.reps },
+                // Секунды удержания с повторениями не складываются: у удержания повторений нет.
+                reps = group.filter { it.measurement != Measurement.HOLD }.sumOf { it.reps },
+                heldMs = group.filter { it.measurement == Measurement.HOLD }.sumOf { it.heldMs },
+                measurement = if (hold) Measurement.HOLD else Measurement.REPS,
+            )
+        }
+
+    /**
+     * Рекорды по упражнениям в порядке первого появления.
+     * Лучший подход ищется только среди отдельных подходов: подходы комплексов — это сумма
+     * за весь комплекс, а не один подход. Всего — вместе с комплексами. Название — из самого
+     * позднего подхода. Повторения: лучший — больше повторений, при равенстве тяжелее гиря,
+     * при равенстве — более ранний. Удержание: лучший — самое длинное засчитанное время.
+     */
+    fun records(sets: List<SetEntry>): List<ExerciseRecord> =
+        sets.groupBy { it.exerciseId }.map { (id, group) ->
+            val latest = group.maxWith(compareBy<SetEntry>({ it.timeMs }, { it.id }))
+            val loose = group.filter { it.runId == null }
+            val hold = group.any { it.measurement == Measurement.HOLD }
+            val repSets = group.filter { it.measurement != Measurement.HOLD }
+            val holdSets = group.filter { it.measurement == Measurement.HOLD }
+            val bestRepSet = loose.filter { it.measurement != Measurement.HOLD }.minWithOrNull(
+                compareByDescending<SetEntry> { it.reps }
+                    .thenByDescending { it.weightKg ?: 0 }
+                    .thenBy { it.timeMs }
+                    .thenBy { it.id },
+            )
+            ExerciseRecord(
+                exerciseId = id,
+                exerciseName = latest.exerciseName,
+                bestReps = bestRepSet?.reps,
+                bestWeightKg = bestRepSet?.weightKg,
+                totalReps = repSets.sumOf { it.reps.toLong() },
+                sets = group.size,
+                lastDay = group.maxOf { it.day },
+                measurement = if (hold) Measurement.HOLD else Measurement.REPS,
+                bestHeldMs = loose.filter { it.measurement == Measurement.HOLD }.maxOfOrNull { it.heldMs },
+                totalHeldMs = holdSets.sumOf { it.heldMs },
             )
         }
 
@@ -940,7 +1038,8 @@ internal object DiaryMath {
             return LegacyMinotaur(weight, (min * 60 + sec) * 1000)
         }
         setTitle.matchEntire(t)?.let { m ->
-            val exercise = Exercises.all.firstOrNull { it.name == m.groupValues[1] } ?: return null
+            // Удержаний (планки) в старой истории не было: «×N» — всегда повторения.
+            val exercise = Exercises.all.firstOrNull { it.name == m.groupValues[1] && !it.hold } ?: return null
             val reps = m.groupValues[3].toIntOrNull()?.takeIf { it > 0 } ?: return null
             val weight = when {
                 !exercise.kettlebell -> null
