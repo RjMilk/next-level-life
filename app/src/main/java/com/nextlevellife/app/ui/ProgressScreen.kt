@@ -43,6 +43,7 @@ import com.nextlevellife.app.data.ExerciseTotal
 import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.SetEntry
 import com.nextlevellife.app.data.Store
+import com.nextlevellife.app.data.TrustedClock
 import com.nextlevellife.app.data.Weights
 import com.nextlevellife.app.health.ActivityMath
 import com.nextlevellife.app.health.ActivitySync
@@ -59,7 +60,6 @@ import com.nextlevellife.app.stats.StatsText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.time.LocalDate
 
 /** Сколько дней показывает диаграмма. */
 private const val CHART_DAYS = 14
@@ -84,6 +84,7 @@ private data class Overview(
     val longestRun: ActivityRun? = null,
     /** Ночной перерыв по дням диаграммы (мс; null — нет подтверждённых данных) и есть ли хоть какие-то ночи. */
     val chartBreakMs: List<Long?> = emptyList(),
+    val chartBreakProvisional: Boolean = false,
     val hasNightData: Boolean = false,
 )
 
@@ -106,7 +107,8 @@ private object ProgressCache {
 @Composable
 fun ProgressScreen(modifier: Modifier = Modifier) {
     val version by Store.version.collectAsState()
-    val today = LocalDate.now().toEpochDay()
+    // Учётные сутки (доверенное время и учётный пояс) — как на главной и у ночей.
+    val today = TrustedClock.today()
     val currentMonth = ProgressMath.monthIndexOfDay(today)
 
     // null — «текущий месяц» и «сегодня»: после полуночи они сдвигаются сами.
@@ -206,6 +208,7 @@ fun ProgressScreen(modifier: Modifier = Modifier) {
                     steps = o.chartSteps,
                     runMeters = o.chartRunMeters,
                     breakMs = o.chartBreakMs,
+                    breakProvisional = o.chartBreakProvisional,
                     earnedMs = o.chartEarnedMs,
                     metric = chartMetric,
                     metrics = buildList {
@@ -324,6 +327,7 @@ private fun loadOverview(today: Long): Overview {
         bestStepsDay = bestSteps,
         longestRun = longestRun,
         chartBreakMs = days.map { ProgressMath.breakChartValue(nights[it]) },
+        chartBreakProvisional = ProgressMath.breakChartProvisional(days.map { nights[it] }),
         hasNightData = hasNight,
     )
 }

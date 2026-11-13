@@ -6,6 +6,7 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import com.nextlevellife.app.sleep.NightStatus
+import com.nextlevellife.app.sleep.NightData
 import com.nextlevellife.app.sleep.ObservationGap
 import com.nextlevellife.app.sleep.PhoneEvent
 import com.nextlevellife.app.sleep.PhoneEventType
@@ -297,12 +298,71 @@ object Diary {
         deviceId, fromMs.toString(), toMs.toString(),
     ) { ObservationGap(it.getLong(0), it.getLong(1)) }
 
-    /** Чистка сырых данных: события и пропуски старше [beforeMs]. Итоги ночей не трогаются. */
+    /**
+     * Чистка сырых данных: события и пропуски старше [beforeMs]. Последнее событие состояния каждого
+     * устройства раньше [beforeMs] остаётся: это начальное состояние следующих ночей. Итоги ночей не трогаются.
+     */
     @Synchronized
     internal fun prunePhoneData(beforeMs: Long) {
-        db().delete("phone_events", "utc_ms < ?", arrayOf(beforeMs.toString()))
-        db().delete("observation_gaps", "end_ms < ?", arrayOf(beforeMs.toString()))
+        val db = db()
+        db.beginTransaction()
+        try {
+            val keep = query(
+                "SELECT (SELECT p.id FROM phone_events p WHERE p.device_id = d.device_id AND p.utc_ms < ? " +
+                    "AND p.type IN ($PHONE_STATE_TYPES) ORDER BY p.utc_ms DESC, p.id DESC LIMIT 1) " +
+                    "FROM (SELECT DISTINCT device_id FROM phone_events) d",
+                beforeMs.toString(),
+            ) { if (it.isNull(0)) null else it.getLong(0) }.filterNotNull()
+            val keepSql = if (keep.isEmpty()) "" else " AND id NOT IN (${keep.joinToString()})"
+            db.delete("phone_events", "utc_ms < ?$keepSql", arrayOf(beforeMs.toString()))
+            db.delete("observation_gaps", "end_ms < ?", arrayOf(beforeMs.toString()))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
+
+    /** Последние [limit] событий устройства [deviceId] (любых типов), по времени. */
+    @Synchronized
+    internal fun recentPhoneEvents(deviceId: String, limit: Int): List<PhoneEvent> = query(
+        "SELECT $PHONE_EVENT_COLS FROM phone_events WHERE device_id = ? ORDER BY utc_ms DESC, id DESC LIMIT ?",
+        deviceId, limit.toString(),
+    ) { it.toPhoneEvent() }.reversed()
+
+    /**
+     * Данные одной ночи одним согласованным чтением (одна транзакция): начальное состояние — последнее
+     * событие состояния раньше [fromMs], события [fromMs, toMs), пропуски, пересекающие диапазон,
+     * и время последнего события устройства.
+     */
+    @Synchronized
+    internal fun nightData(deviceId: String, fromMs: Long, toMs: Long): NightData {
+        val db = db()
+        db.beginTransactionNonExclusive()
+        try {
+            val seed = query(
+                "SELECT $PHONE_EVENT_COLS FROM phone_events WHERE device_id = ? AND utc_ms < ? " +
+                    "AND type IN ($PHONE_STATE_TYPES) ORDER BY utc_ms DESC, id DESC LIMIT 1",
+                deviceId, fromMs.toString(),
+            ) { it.toPhoneEvent() }.firstOrNull()
+            val data = NightData(
+                seed = seed,
+                events = phoneEvents(deviceId, fromMs, toMs),
+                gaps = observationGaps(deviceId, fromMs, toMs),
+                lastEventMs = query("SELECT MAX(utc_ms) FROM phone_events WHERE device_id = ?", deviceId) {
+                    if (it.isNull(0)) null else it.getLong(0)
+                }.firstOrNull(),
+            )
+            db.setTransactionSuccessful()
+            return data
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** Удаляет итоги ночей устройства [deviceId] с днём пробуждения от [fromDay]: они пересчитаются. */
+    @Synchronized
+    internal fun deleteSleepNightsFrom(deviceId: String, fromDay: Long): Int =
+        db().delete("sleep_nights", "device_id = ? AND wake_day >= ?", arrayOf(deviceId, fromDay.toString()))
 
     /** Записывает итог ночи устройства [deviceId] (вставка или замена). */
     @Synchronized
@@ -764,6 +824,9 @@ object Diary {
     )
 
     private const val PHONE_EVENT_COLS = "utc_ms, type, interactive, locked, boot_count, source"
+
+    /** Типы событий, задающих состояние экрана (без пульса и остановки службы), для `type IN (...)`. */
+    private val PHONE_STATE_TYPES = PhoneEventType.STATE_NAMES.joinToString { "'$it'" }
 
     private fun Cursor.boolOrNull(i: Int): Boolean? = if (isNull(i)) null else getInt(i) != 0
 

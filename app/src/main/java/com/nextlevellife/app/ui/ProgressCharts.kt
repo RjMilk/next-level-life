@@ -214,6 +214,7 @@ internal fun ChartCard(
     today: Long,
     selected: Long,
     onSelect: (Long) -> Unit,
+    breakProvisional: Boolean = false,
 ) {
     val shown = if (metric in metrics) metric else ProgressMath.ChartMetric.REPS
     val values = ProgressMath.chartValues(shown, reps, steps, runMeters, breakMs)
@@ -223,7 +224,7 @@ internal fun ChartCard(
             Text("Последние ${days.size} дней", style = MaterialTheme.typography.titleMedium)
             if (metrics.size > 1) MetricPicker(metrics, shown, onMetric)
             Text(
-                ProgressMath.chartSummary(shown, days.size, values, earnedMs),
+                ProgressMath.chartSummary(shown, days.size, values, earnedMs, breakProvisional),
                 style = MaterialTheme.typography.bodySmall.merge(Tabular),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -111,6 +111,24 @@ class BlockerService : AccessibilityService() {
         }
     }
 
+    /**
+     * Тик наблюдения для ночного перерыва: раз в 5 минут — пульс (служба жива, наблюдение подтверждено),
+     * раз в час — финализация ночей и после неё чистка сырых данных (на потоке записи [PhoneEvents]).
+     * Тик идёт по Handler: в глубоком сне телефона он реже, пульс тогда просто записывается позже.
+     */
+    private var lastMaintenanceAt = 0L
+    private val observeTick = object : Runnable {
+        override fun run() {
+            PhoneEvents.heartbeat(this@BlockerService, interactive(), keyguardLocked())
+            val now = SystemClock.elapsedRealtime()
+            if (lastMaintenanceAt == 0L || now - lastMaintenanceAt >= MAINTENANCE_MS) {
+                lastMaintenanceAt = now
+                PhoneEvents.maintain()
+            }
+            handler.postDelayed(this, PhoneEvents.HEARTBEAT_MS)
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         Store.init(this)
@@ -119,6 +137,8 @@ class BlockerService : AccessibilityService() {
         registerScreenReceiver()
         // Состояние экрана на момент подключения — без выдумывания прошлого; пропуск, если служба не работала.
         PhoneEvents.onServiceConnected(this, interactive(), keyguardLocked())
+        handler.removeCallbacks(observeTick)
+        handler.postDelayed(observeTick, PhoneEvents.HEARTBEAT_MS)
     }
 
     private fun registerScreenReceiver() {
@@ -282,20 +302,25 @@ class BlockerService : AccessibilityService() {
         }
     }
 
-    override fun onInterrupt() = Unit
+    /** Прерывание отклика: служба продолжает работать, момент только отмечается (SERVICE_STOP, source = interrupt). */
+    override fun onInterrupt() {
+        PhoneEvents.onServiceInterrupted()
+    }
 
     override fun onDestroy() {
         settle()
         stopSpending()
+        handler.removeCallbacks(observeTick)
         if (timeReceiverRegistered) {
             runCatching { unregisterReceiver(timeReceiver) }
             timeReceiverRegistered = false
         }
-        PhoneEvents.onServiceDisconnected()
         if (screenReceiverRegistered) {
             runCatching { unregisterReceiver(screenReceiver) }
             screenReceiverRegistered = false
         }
+        // После отписки от экрана: момент остановки — последнее подтверждённое наблюдение.
+        PhoneEvents.onServiceStopped()
         super.onDestroy()
     }
 
@@ -304,6 +329,8 @@ class BlockerService : AccessibilityService() {
         private const val TICK_MS = 2_000L
         /** После стольких неудачных списаний подряд заблокированное приложение закрывается. */
         private const val MAX_FAILED_CHARGES = 2
+        /** Финализация ночей и чистка сырых данных — раз в час. */
+        private const val MAINTENANCE_MS = 60 * 60_000L
 
         /** Значения block_events.trigger. */
         const val TRIGGER_OPEN = "open"

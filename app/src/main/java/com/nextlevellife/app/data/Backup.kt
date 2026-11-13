@@ -147,9 +147,18 @@ object Backup {
 
             // 5. Подмена.
             val carried = LongArray(1)
-            return swap(context, dbTmp, newPrefs, newPrefsJson) { carried[0] = it }.let { error ->
-                if (error != null) RestoreResult.Error(error)
-                else RestoreResult.Ok(manifest.optLong("created_at_ms", 0L), manifest.optString("device_id").ifEmpty { null }, carried[0])
+            // Очередь записи событий экрана — на паузу до подмены: граница восстановленной истории —
+            // последнее событие восстановленной базы, и пропуск от неё пишется первым, до новых событий.
+            val pause = com.nextlevellife.app.sleep.PhoneEvents.pauseForRestore()
+            var replaced = false
+            try {
+                return swap(context, dbTmp, newPrefs, newPrefsJson) { carried[0] = it }.let { error ->
+                    replaced = error == null
+                    if (error != null) RestoreResult.Error(error)
+                    else RestoreResult.Ok(manifest.optLong("created_at_ms", 0L), manifest.optString("device_id").ifEmpty { null }, carried[0])
+                }
+            } finally {
+                pause.resume(databaseReplaced = replaced)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Восстановление не удалось", e)
@@ -332,8 +341,7 @@ object Backup {
             // Основной .restore-bak удаляется первым: без него запуск считает подмену завершённой.
             moved.forEach { (_, bak) -> bak.delete() }
             marker.delete()
-            // События экрана после снимка копии потеряны — это пропуск наблюдения для ночного перерыва.
-            runCatching { com.nextlevellife.app.sleep.PhoneEvents.onDatabaseReplaced() }
+            // События экрана после снимка копии потеряны: пропуск запишет очередь PhoneEvents при снятии паузы (restore).
             Store.notifyChanged()
             onCarried(carriedMs)
             null

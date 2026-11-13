@@ -5,57 +5,75 @@ import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.TrustedClock
+import java.time.ZoneId
 
 /**
  * Расчёт ночных перерывов по записанным событиям экрана ([PhoneEvents]) и чтение итогов.
  * Ночь с днём пробуждения D окончательна после 12:00 дня D: тогда она один раз считается и пишется
- * в sleep_nights. До этого она считается на лету при каждом открытии и в базу не попадает.
- * Учитывается только этот телефон (device_id). Все функции — с фонового потока.
+ * в sleep_nights. До этого она считается на лету и в базу не попадает.
+ *
+ * Расчёт и запись итогов идут только на потоке записи [PhoneEvents] (барьер: всё, что поставлено
+ * в очередь раньше, уже записано), а данные каждой ночи читаются одной транзакцией ([Diary.nightData]).
+ * Окончательные ночи дописывает и сырые данные чистит служба раз в час ([maintainOnWriter]); интерфейс
+ * только досчитывает при открытии ([nights]). Учитывается только этот телефон (device_id).
  */
 object SleepRepository {
     private const val TAG = "SleepRepository"
-    private const val DAY_MS = 24 * 60 * 60_000L
 
-    /** Сырые данные чистятся раз в учётные сутки (за процесс). */
-    private var lastPruneDay: Long? = null
+    /** Сколько интерфейс ждёт очередь записи (она может стоять на паузе восстановления копии). */
+    private const val WAIT_MS = 20_000L
+
+    private class Update(val provisional: Map<Long, SleepNight>, val firstUnsavedDay: Long?, val nowMs: Long, val zone: ZoneId)
 
     /**
      * Досчитывает и записывает окончательные ночи, которых ещё нет (или они посчитаны старым правилом),
-     * чистит сырые события старше 90 дней и возвращает предварительные ночи (ещё не окончательные):
-     * день пробуждения → ночь. Пока служба не наблюдает ([PhoneEvents.observing]), окончательные ночи
-     * не пишутся — служба может подключиться через секунду и записать настоящий пропуск.
+     * и возвращает предварительные ночи (ещё не окончательные): день пробуждения → ночь. Пока служба
+     * не наблюдает ([PhoneEvents.observing]), окончательные ночи не пишутся — служба может подключиться
+     * через секунду и записать настоящий пропуск. С фонового потока (не главного).
      */
-    @Synchronized
-    fun refresh(): Map<Long, SleepNight> {
+    fun refresh(): Map<Long, SleepNight> = PhoneEvents.onWriter(WAIT_MS) { update().provisional }
+
+    /**
+     * Часовое обслуживание (поток записи): сначала финализация ночей, потом чистка сырых данных старше
+     * 90 дней — но никогда не раньше первой ночи, итог которой ещё не записан.
+     */
+    internal fun maintainOnWriter() {
+        val u = update()
+        val firstUnsaved = u.firstUnsavedDay ?: return // событий нет — чистить нечего
+        Diary.prunePhoneData(SleepMath.pruneCutoffMs(u.nowMs, u.zone, firstUnsaved))
+    }
+
+    /** Поток записи. */
+    private fun update(): Update {
         val snap = TrustedClock.snapshot()
         val now = snap.utcMs
         val zone = snap.zone
+        val today = snap.day
         val device = Ledger.deviceId()
-        if (lastPruneDay != snap.day) {
-            Diary.prunePhoneData(now - SleepMath.RAW_RETENTION_DAYS * DAY_MS)
-            lastPruneDay = snap.day
-        }
-        val first = Diary.firstPhoneEventMs(device) ?: return emptyMap()
+        val first = Diary.firstPhoneEventMs(device) ?: return Update(emptyMap(), null, now, zone)
         val observing = PhoneEvents.observing
         val mode = nightMode()
 
-        val today = snap.day
         val lastFinal = SleepMath.lastFinalWakeDay(now, zone)
-        // Сырые события живут 90 дней: ночи раньше этого не пересчитать.
-        val from = maxOf(SleepMath.firstWakeDay(first, zone), today - SleepMath.RAW_RETENTION_DAYS + 2)
+        val from = SleepMath.firstWakeDay(first, zone)
         val provisional = HashMap<Long, SleepNight>()
+        var firstUnsaved: Long? = null
         if (from <= lastFinal) {
-            val stored = Diary.sleepNightsOf(device, from, lastFinal).associateBy { it.wakeDay }
-            for (day in from..lastFinal) {
-                if (stored[day]?.ruleVersion == SleepMath.RULE_VERSION) continue
+            val stored = Diary.sleepNightsOf(device, from, lastFinal).associate { it.wakeDay to it.ruleVersion }
+            for (day in SleepMath.nightsToFinalize(from, lastFinal, stored, today)) {
                 val night = compute(device, day, zone, now, mode, observing)
-                if (observing) Diary.upsertSleepNight(device, night) else provisional[day] = night.copy(final = false)
+                if (observing) {
+                    Diary.upsertSleepNight(device, night)
+                } else {
+                    provisional[day] = night.copy(final = false)
+                    if (firstUnsaved == null) firstUnsaved = day
+                }
             }
         }
         for (day in maxOf(from, lastFinal + 1)..today) {
             provisional[day] = compute(device, day, zone, now, mode, observing)
         }
-        return provisional
+        return Update(provisional, firstUnsaved ?: maxOf(from, lastFinal + 1), now, zone)
     }
 
     /**
@@ -75,21 +93,10 @@ object SleepRepository {
     /** Ночь с днём пробуждения [day] или null. */
     fun night(day: Long): SleepNight? = nights(day, day)[day]
 
-    private fun compute(device: String, day: Long, zone: java.time.ZoneId, now: Long, mode: NightMode?, observing: Boolean): SleepNight {
-        val windowStart = SleepMath.windowStartMs(day, zone)
-        val windowEnd = SleepMath.windowEndMs(day, zone)
-        val modeInterval = mode?.let { SleepMath.nightModeInterval(day, zone, it) }
-        val from = minOf(windowStart, modeInterval?.first ?: windowStart)
-        val to = maxOf(windowEnd, modeInterval?.second ?: windowEnd)
-        val seed = Diary.lastPhoneEvent(device, beforeMs = from)
-        val events = Diary.phoneEvents(device, from, to)
-        val gaps = Diary.observationGaps(device, from, to).toMutableList()
-        if (!observing) {
-            // Служба сейчас не работает: после последнего события ничего не известно.
-            val last = Diary.lastPhoneEvent(device)?.utcMs ?: from
-            if (now > last) gaps += ObservationGap(last, now)
-        }
-        return SleepMath.computeNight(day, zone, seed, events, gaps, now, mode)
+    private fun compute(device: String, day: Long, zone: ZoneId, now: Long, mode: NightMode?, observing: Boolean): SleepNight {
+        val (from, to) = SleepMath.dataRange(day, zone, mode)
+        val data = Diary.nightData(device, from, to)
+        return SleepMath.computeFromData(day, zone, data, now, mode, observing)
     }
 
     /** Окно ночного режима сейчас; выключен или начало == конец — null. */

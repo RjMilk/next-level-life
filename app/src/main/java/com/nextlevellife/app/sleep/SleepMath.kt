@@ -4,8 +4,23 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 
-/** Тип события экрана (phone_events.type). STATE — состояние, снятое при подключении службы. */
-enum class PhoneEventType { SCREEN_ON, SCREEN_OFF, USER_PRESENT, STATE }
+/**
+ * Тип события (phone_events.type). STATE — состояние, снятое при подключении службы.
+ * HEARTBEAT — «пульс»: служба жива и наблюдает (раз в 5 минут); SERVICE_STOP — служба остановлена
+ * (onDestroy) или прервана (onInterrupt). Эти два состояние экрана не меняют: они лишь отмечают,
+ * до какого момента наблюдение подтверждено.
+ */
+enum class PhoneEventType {
+    SCREEN_ON, SCREEN_OFF, USER_PRESENT, STATE, HEARTBEAT, SERVICE_STOP;
+
+    /** Событие задаёт состояние экрана (а не только подтверждает наблюдение). */
+    val isState: Boolean get() = this != HEARTBEAT && this != SERVICE_STOP
+
+    companion object {
+        /** Имена типов, задающих состояние экрана, — для SQL `type IN (...)`. */
+        val STATE_NAMES: List<String> get() = entries.filter { it.isState }.map { it.name }
+    }
+}
 
 /**
  * Событие экрана телефона. [utcMs] — доверенное время. [interactive] — экран включён
@@ -23,6 +38,18 @@ data class PhoneEvent(
 
 /** Пропуск наблюдения: служба не работала, события не записывались. */
 data class ObservationGap(val startMs: Long, val endMs: Long)
+
+/**
+ * Данные для расчёта одной ночи, прочитанные одним согласованным чтением (одна транзакция):
+ * [seed] — последнее событие состояния раньше диапазона, [events] — события диапазона (включая пульс),
+ * [gaps] — пропуски, пересекающие диапазон, [lastEventMs] — время самого последнего события устройства.
+ */
+data class NightData(
+    val seed: PhoneEvent?,
+    val events: List<PhoneEvent>,
+    val gaps: List<ObservationGap>,
+    val lastEventMs: Long?,
+)
 
 /** Окно ночного режима из настроек, минуты от полуночи: с [startMin] (включительно) до [endMin] (исключительно). */
 data class NightMode(val startMin: Int, val endMin: Int)
@@ -69,7 +96,7 @@ data class SleepNight(
  * (телефон без экрана блокировки или ещё не успел заблокироваться). Экран, включённый уведомлением
  * поверх экрана блокировки, — не использование. Конец использования — SCREEN_OFF.
  *
- * Алгоритм v1 для дня пробуждения D:
+ * Алгоритм v2 для дня пробуждения D (v2 — выбор среди всех вариантов склейки, а не только самой длинной):
  * 1. Окно поиска — с 20:00 дня D−1 до 12:00 дня D в учётном поясе (не дальше «сейчас»).
  * 2. Время окна делится на использование, отсутствие использования и «неизвестно» (пропуск наблюдения,
  *    нет начального состояния).
@@ -83,7 +110,8 @@ data class SleepNight(
  *    в окне ночного режима этой ночи.
  */
 object SleepMath {
-    const val RULE_VERSION = 1
+    /** 2 — кандидат сохраняется до каждой склейки (окончательные ночи v1 пересчитываются). */
+    const val RULE_VERSION = 2
 
     const val MINUTE_MS = 60_000L
     const val HOUR_MS = 60 * MINUTE_MS
@@ -107,6 +135,11 @@ object SleepMath {
 
     /** Сырые события и пропуски хранятся столько дней; итоги ночей — всегда. */
     const val RAW_RETENTION_DAYS = 90
+
+    const val DAY_MS = 24 * HOUR_MS
+
+    /** phone_events.source события выключения телефона (ACTION_SHUTDOWN). */
+    const val SOURCE_SHUTDOWN = "shutdown"
 
     // ---------- Окна ----------
 
@@ -165,6 +198,8 @@ object SleepMath {
             e.interactive == true && e.locked == true -> Phase.IDLE
             else -> Phase.UNKNOWN
         }
+        // Пульс и остановка службы состояние экрана не меняют.
+        PhoneEventType.HEARTBEAT, PhoneEventType.SERVICE_STOP -> prev
     }
 
     /**
@@ -253,7 +288,8 @@ object SleepMath {
     /**
      * Кандидаты по шкале [segments]. [unknownIsFree] = false — «неизвестно» рвёт кандидатов (то, что точно
      * известно); true — считается свободным (верхняя оценка: насколько длинным мог быть перерыв).
-     * Для каждого свободного отрезка — самый длинный кандидат, который с него начинается.
+     * Для каждого свободного отрезка — все кандидаты, которые с него начинаются: без склейки, с одним
+     * обращением, с двумя и так далее, пока склейка допустима. Выбор среди них делает [computeNight].
      */
     fun candidates(segments: List<Segment>, unknownIsFree: Boolean): List<Candidate> {
         if (segments.isEmpty()) return emptyList()
@@ -281,7 +317,21 @@ object SleepMath {
             var total = 0L
             var count = 0
             var unknown = first.hasUnknown
-            while (j + 2 < blocks.size) {
+            while (true) {
+                // Кандидат сохраняется до каждого расширения: склейка может вывести его за 14 ч,
+                // и тогда годным остаётся более короткий вариант.
+                val last = blocks[j] as FreeBlock
+                out += Candidate(
+                    startMs = first.startMs,
+                    endMs = last.endMs,
+                    interruptionMs = total,
+                    interruptionCount = count,
+                    startBounded = blocks.getOrNull(i - 1) is UseBlock,
+                    endBounded = blocks.getOrNull(j + 1) is UseBlock,
+                    touchesEdge = first.startMs == windowStart || last.endMs == windowEnd,
+                    hasUnknown = unknown,
+                )
+                if (j + 2 >= blocks.size) break
                 val use = blocks[j + 1] as? UseBlock ?: break
                 val next = blocks[j + 2] as? FreeBlock ?: break
                 val d = use.endMs - use.startMs
@@ -291,17 +341,6 @@ object SleepMath {
                 unknown = unknown || next.hasUnknown
                 j += 2
             }
-            val last = blocks[j] as FreeBlock
-            out += Candidate(
-                startMs = first.startMs,
-                endMs = last.endMs,
-                interruptionMs = total,
-                interruptionCount = count,
-                startBounded = blocks.getOrNull(i - 1) is UseBlock,
-                endBounded = blocks.getOrNull(j + 1) is UseBlock,
-                touchesEdge = first.startMs == windowStart || last.endMs == windowEnd,
-                hasUnknown = unknown,
-            )
         }
         return out
     }
@@ -312,7 +351,7 @@ object SleepMath {
 
     /**
      * Ночной перерыв для дня пробуждения [wakeDay] в учётном поясе [zone] на момент [nowMs].
-     * [seed] — последнее событие раньше всех [events]; [events] — события начиная с начала окна
+     * [seed] — последнее событие состояния ([PhoneEventType.isState]) раньше всех [events]; [events] — события начиная с начала окна
      * (или раньше — с начала окна ночного режима, если оно раньше). [gaps] — пропуски наблюдения.
      * [nightMode] = null — ночной режим выключен, значка не бывает.
      */
@@ -344,7 +383,8 @@ object SleepMath {
         )
 
         // Границы подтверждаются только событиями внутри окна: без них — «нет данных», а не ноль.
-        if (effectiveEnd <= windowStart || events.none { it.utcMs in windowStart until effectiveEnd }) {
+        // Пульс службы — не событие экрана: он подтверждает наблюдение, но не состояние.
+        if (effectiveEnd <= windowStart || events.none { it.type.isState && it.utcMs in windowStart until effectiveEnd }) {
             return result(NightStatus.UNKNOWN, null)
         }
         val segments = timeline(seed, events, gaps, windowStart, effectiveEnd)
@@ -380,19 +420,103 @@ object SleepMath {
 
     // ---------- Пропуск наблюдения при подключении службы ----------
 
+    /** Сколько последних событий читать для [connectGap]: выключение и всё после него в той же загрузке. */
+    const val CONNECT_RECENT_EVENTS = 20
+
     /**
-     * Пропуск наблюдения при подключении службы в момент [connectMs] (загрузка [connectBoot]):
-     * от последнего известного события [last] до подключения, если прошло больше [GAP_THRESHOLD_MS].
-     * Исключение — телефон перезагружался, а перед этим экран был выключен: до первой разблокировки
-     * после загрузки пользоваться телефоном нельзя, служба подключается сразу после неё.
+     * Пропуск наблюдения при подключении службы в момент [connectMs] (загрузка [connectBoot]).
+     * [recent] — последние события устройства по времени (любых типов, включая пульс и остановку службы).
+     * Пропуск — от последнего подтверждённого наблюдения (событие, пульс, остановка службы) до подключения,
+     * если прошло больше [GAP_THRESHOLD_MS].
+     *
+     * Исключение — ПОДТВЕРЖДЁННОЕ выключение телефона: загрузка сменилась, в прошлой загрузке записано
+     * выключение (ACTION_SHUTDOWN), и после него в той загрузке не было событий, кроме пульса и остановки
+     * службы в пределах [GAP_THRESHOLD_MS] (они могут успеть прийти, пока система гасит процессы).
+     * Тогда от выключения до загрузки телефон выключен, а до первой разблокировки после загрузки им нельзя
+     * пользоваться — служба подключается сразу после неё. Без подтверждения (сбой, вынули батарею, выключение
+     * не записалось) момент выключения неизвестен: пропуск — от последнего наблюдения до выключения
+     * (не позже загрузки) и от загрузки до подключения, то есть одним куском до подключения.
      * Первое подключение (событий ещё нет) — не пропуск: данные просто начинаются отсюда.
      */
-    fun connectGap(last: PhoneEvent?, connectMs: Long, connectBoot: Int?): ObservationGap? {
-        if (last == null) return null
+    fun connectGap(recent: List<PhoneEvent>, connectMs: Long, connectBoot: Int?): ObservationGap? {
+        val last = recent.maxByOrNull { it.utcMs } ?: return null
         if (connectMs - last.utcMs <= GAP_THRESHOLD_MS) return null
         val rebooted = last.bootCount != null && connectBoot != null && last.bootCount != connectBoot
-        if (rebooted && phaseAfter(Phase.UNKNOWN, last) == Phase.IDLE) return null
+        if (rebooted && confirmedShutdown(recent, last.bootCount!!)) return null
         return ObservationGap(last.utcMs, connectMs)
+    }
+
+    /** В загрузке [boot] записано выключение, и после него не было ничего, кроме пульса/остановки службы рядом. */
+    fun confirmedShutdown(recent: List<PhoneEvent>, boot: Int): Boolean {
+        val sameBoot = recent.filter { it.bootCount == boot }.sortedBy { it.utcMs }
+        val idx = sameBoot.indexOfLast { it.source == SOURCE_SHUTDOWN }
+        if (idx < 0) return false
+        val shutdown = sameBoot[idx]
+        if (phaseAfter(Phase.UNKNOWN, shutdown) != Phase.IDLE) return false
+        return sameBoot.drop(idx + 1).all {
+            !it.type.isState && it.utcMs - shutdown.utcMs <= GAP_THRESHOLD_MS
+        }
+    }
+
+    // ---------- Окончательные итоги: что пересчитать, что можно чистить ----------
+
+    /**
+     * Событие или начало пропуска в момент [eventMs] записано в момент [nowMs]. Если оно попадает в ночь,
+     * которая к [nowMs] уже окончательная (её итог мог быть записан раньше, без этого события), — первый день
+     * пробуждения, итоги начиная с которого надо удалить, чтобы они пересчитались; иначе null.
+     * Затрагиваются ночи с окном, кончающимся позже события (и все следующие: событие может стать их
+     * начальным состоянием). Ночи старше хранения сырых данных ([today] − 88) не трогаются: пересчитать их нечем.
+     */
+    fun invalidatedFromDay(eventMs: Long, nowMs: Long, zone: ZoneId, today: Long): Long? {
+        val first = maxOf(lastFinalWakeDay(eventMs, zone) + 1, oldestRecomputableDay(today))
+        return if (first <= lastFinalWakeDay(nowMs, zone)) first else null
+    }
+
+    /** Самый ранний день пробуждения, итог которого ещё можно пересчитать заново из сырых данных. */
+    fun oldestRecomputableDay(today: Long): Long = today - RAW_RETENTION_DAYS + 2
+
+    /**
+     * Какие окончательные ночи [fromDay]..[lastFinal] надо посчитать и записать: которых нет в базе
+     * ([storedRules] — день → rule_version записанного итога) или которые посчитаны старым правилом
+     * (только пока их сырые данные хранятся).
+     */
+    fun nightsToFinalize(fromDay: Long, lastFinal: Long, storedRules: Map<Long, Int>, today: Long): List<Long> {
+        if (fromDay > lastFinal) return emptyList()
+        return (fromDay..lastFinal).filter { d ->
+            val rule = storedRules[d]
+            rule == null || (rule != RULE_VERSION && d >= oldestRecomputableDay(today))
+        }
+    }
+
+    /**
+     * Граница чистки сырых данных: события и пропуски раньше неё можно удалять. Не позже, чем 90 дней назад,
+     * и не позже начала суток накануне [firstUnsavedDay] — первой ночи, итог которой ещё не записан
+     * (её окно и окно ночного режима начинаются не раньше этих суток).
+     */
+    fun pruneCutoffMs(nowMs: Long, zone: ZoneId, firstUnsavedDay: Long): Long =
+        minOf(nowMs - RAW_RETENTION_DAYS * DAY_MS, atMinute(firstUnsavedDay - 1, 0, zone))
+
+    /** Диапазон данных ночи [wakeDay]: окно поиска, расширенное окном ночного режима. */
+    fun dataRange(wakeDay: Long, zone: ZoneId, mode: NightMode?): Pair<Long, Long> {
+        val windowStart = windowStartMs(wakeDay, zone)
+        val windowEnd = windowEndMs(wakeDay, zone)
+        val modeInterval = mode?.let { nightModeInterval(wakeDay, zone, it) }
+        return minOf(windowStart, modeInterval?.first ?: windowStart) to maxOf(windowEnd, modeInterval?.second ?: windowEnd)
+    }
+
+    /**
+     * Ночь [wakeDay] по данным [data] на момент [nowMs]. [observing] = false — служба сейчас не наблюдает:
+     * всё после последнего события неизвестно.
+     */
+    fun computeFromData(
+        wakeDay: Long, zone: ZoneId, data: NightData, nowMs: Long, nightMode: NightMode?, observing: Boolean,
+    ): SleepNight {
+        val gaps = data.gaps.toMutableList()
+        if (!observing) {
+            val last = data.lastEventMs ?: dataRange(wakeDay, zone, nightMode).first
+            if (nowMs > last) gaps += ObservationGap(last, nowMs)
+        }
+        return computeNight(wakeDay, zone, data.seed, data.events, gaps, nowMs, nightMode)
     }
 
     // ---------- Мелочи ----------

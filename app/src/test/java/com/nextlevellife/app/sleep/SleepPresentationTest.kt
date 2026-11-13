@@ -79,6 +79,21 @@ class SleepPresentationTest {
     }
 
     @Test
+    fun provisionalNightIsMarkedOnHomeAndInChart() {
+        val provisional = night(final = false)
+        assertEquals("Ночь: 7 ч 35 мин · предварительно", ProgressMath.nightTodayLine(provisional))
+        assertEquals("Ночь: 7 ч 35 мин 🌙 · предварительно", ProgressMath.nightTodayLine(provisional.copy(phoneFree = true)))
+        assertTrue(ProgressMath.breakChartProvisional(listOf(night(), provisional)))
+        assertFalse(ProgressMath.breakChartProvisional(listOf(night(), null)))
+        // Предварительная ночь без столбика (нет данных) подпись не меняет.
+        assertFalse(ProgressMath.breakChartProvisional(listOf(night(status = NightStatus.UNKNOWN, final = false, start = null, end = null))))
+        assertEquals(
+            "Ночной перерыв в среднем 7 ч · 1 ночь · предварительно · по этому телефону",
+            ProgressMath.chartSummary(ProgressMath.ChartMetric.BREAK_H, 3, listOf(7 * 3_600_000L, null, null), 0, breakProvisional = true),
+        )
+    }
+
+    @Test
     fun interruptionsWording() {
         assertNull(ProgressMath.interruptionsLine(0))
         assertEquals("1 короткое обращение", ProgressMath.interruptionsLine(1))

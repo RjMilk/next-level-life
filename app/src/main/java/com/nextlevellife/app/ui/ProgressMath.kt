@@ -433,11 +433,14 @@ internal object ProgressMath {
         }
     }
 
-    /** Строка карточки «Сегодня» на главной: «Ночь: 7 ч 35 мин 🌙»; без подтверждённого перерыва — null. */
+    /**
+     * Строка карточки «Сегодня» на главной: «Ночь: 7 ч 35 мин 🌙»; до 12:00 (ночь ещё не окончательная) —
+     * с пометкой «· предварительно». Без подтверждённого перерыва — null.
+     */
     fun nightTodayLine(n: SleepNight?): String? {
         if (n == null || n.status != NightStatus.OK) return null
         val d = n.durationMs ?: return null
-        return "Ночь: ${breakDuration(d)}" + if (n.phoneFree) " 🌙" else ""
+        return "Ночь: ${breakDuration(d)}" + (if (n.phoneFree) " 🌙" else "") + (if (!n.final) " · предварительно" else "")
     }
 
     /** Столбик «Перерыв, ч»: только подтверждённые ночи; неполные и без данных — разрыв (null). */
@@ -500,8 +503,12 @@ internal object ProgressMath {
         }
     }
 
-    /** Подпись под заголовком диаграммы: итог за [days] дней по выбранному показателю. */
-    fun chartSummary(metric: ChartMetric, days: Int, values: List<Long?>, earnedMs: Long): String {
+    /**
+     * Подпись под заголовком диаграммы: итог за [days] дней по выбранному показателю.
+     * [breakProvisional] — среди столбиков ночного перерыва есть предварительная ночь (сегодня до 12:00):
+     * подпись помечается «предварительно».
+     */
+    fun chartSummary(metric: ChartMetric, days: Int, values: List<Long?>, earnedMs: Long, breakProvisional: Boolean = false): String {
         val known = values.filterNotNull()
         val total = known.sum()
         return when (metric) {
@@ -510,9 +517,14 @@ internal object ProgressMath {
             ChartMetric.RUN_KM -> "За $days ${daysWord(days)}: ${ActivityMath.formatKm(total)} бега"
             ChartMetric.BREAK_H ->
                 if (known.isEmpty()) "Ночной перерыв: нет данных · $THIS_PHONE"
-                else "Ночной перерыв в среднем ${breakDuration(total / known.size)} · ${known.size} ${nightsWord(known.size)} · $THIS_PHONE"
+                else "Ночной перерыв в среднем ${breakDuration(total / known.size)} · ${known.size} ${nightsWord(known.size)} · " +
+                    (if (breakProvisional) "предварительно · " else "") + THIS_PHONE
         }
     }
+
+    /** Есть ли среди ночей диаграммы предварительная (не окончательная), у которой есть столбик. */
+    fun breakChartProvisional(nights: List<SleepNight?>): Boolean =
+        nights.any { it != null && !it.final && breakChartValue(it) != null }
 
     /** Описание столбика для TalkBack: «12 ноя: 8 420 шагов», «12 ноя: перерыв 7 ч 35 мин». */
     fun barDescription(metric: ChartMetric, day: Long, value: Long?): String = "${shortDate(day)}: " + when (metric) {

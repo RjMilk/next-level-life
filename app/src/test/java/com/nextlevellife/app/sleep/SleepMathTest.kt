@@ -383,22 +383,174 @@ class SleepMathTest {
     fun connectGapRules() {
         val connect = morn(7)
         // Первое подключение — не пропуск.
-        assertNull(SleepMath.connectGap(null, connect, 5))
+        assertNull(SleepMath.connectGap(emptyList(), connect, 5))
         // Короткий перезапуск — не пропуск.
-        assertNull(SleepMath.connectGap(present(morn(6, 59)).copy(bootCount = 5), connect, 5))
+        assertNull(SleepMath.connectGap(listOf(present(morn(6, 59)).copy(bootCount = 5)), connect, 5))
         // Экран был включён и разблокирован — пропуск.
-        val gapOn = SleepMath.connectGap(present(morn(3)).copy(bootCount = 5), connect, 5)
+        val gapOn = SleepMath.connectGap(listOf(present(morn(3)).copy(bootCount = 5)), connect, 5)
         assertNotNull(gapOn)
         assertEquals(morn(3), gapOn!!.startMs)
         assertEquals(connect, gapOn.endMs)
         // Состояние неизвестно — пропуск.
-        assertNotNull(SleepMath.connectGap(PhoneEvent(morn(3), STATE, bootCount = 5), connect, 5))
+        assertNotNull(SleepMath.connectGap(listOf(PhoneEvent(morn(3), STATE, bootCount = 5)), connect, 5))
         // Экран выключен, та же загрузка: служба не работала, что было — неизвестно.
-        assertNotNull(SleepMath.connectGap(off(morn(3)).copy(bootCount = 5), connect, 5))
-        // Экран выключен, телефон перезагружался: до разблокировки пользоваться им нельзя.
-        assertNull(SleepMath.connectGap(off(morn(3)).copy(bootCount = 5), connect, 6))
+        assertNotNull(SleepMath.connectGap(listOf(off(morn(3)).copy(bootCount = 5)), connect, 5))
         // Выключили посреди использования — пропуск.
-        assertNotNull(SleepMath.connectGap(present(morn(3)).copy(bootCount = 5), connect, 6))
+        assertNotNull(SleepMath.connectGap(listOf(present(morn(3)).copy(bootCount = 5)), connect, 6))
+    }
+
+    // ---------- Пульс и остановка службы ----------
+
+    private fun beat(t: Long, boot: Int? = 5) = PhoneEvent(t, PhoneEventType.HEARTBEAT, bootCount = boot, source = "service")
+    private fun stop(t: Long, boot: Int? = 5) = PhoneEvent(t, PhoneEventType.SERVICE_STOP, bootCount = boot, source = "service")
+    private fun shutdown(t: Long, boot: Int = 5) = PhoneEvent(t, SCREEN_OFF, interactive = false, bootCount = boot, source = SleepMath.SOURCE_SHUTDOWN)
+
+    @Test
+    fun gapCountsFromLastHeartbeatNotFromLastScreenEvent() {
+        // Экран выключен в 23:20, дальше только пульс; служба убита без onDestroy после пульса 02:55.
+        val recent = listOf(off(eve(23, 20)).copy(bootCount = 5), beat(morn(2, 50)), beat(morn(2, 55)))
+        val gap = SleepMath.connectGap(recent, morn(3), 5)
+        assertNotNull(gap)
+        assertEquals("пропуск — от последнего пульса", morn(2, 55), gap!!.startMs)
+        // Подключение через минуту после пульса — не пропуск.
+        assertNull(SleepMath.connectGap(recent, morn(2, 56), 5))
+    }
+
+    @Test
+    fun oneSecondServiceStopAtThreeDoesNotSpoilTheNight() {
+        // Служба остановлена в 03:00:00 при выключенном экране и подключилась через секунду.
+        val beforeStop = evening() + listOf(beat(eve(23, 25)), beat(morn(2, 55)), stop(morn(3)))
+        val recent = beforeStop.map { it.copy(bootCount = 5) }
+        assertNull("пропуска нет: остановка записана", SleepMath.connectGap(recent, morn(3, 0, 1), 5))
+        val connectState = PhoneEvent(morn(3, 0, 1), STATE, interactive = false, locked = true, bootCount = 5, source = "connect")
+        val n = compute(beforeStop + connectState + morning())
+        assertEquals(NightStatus.OK, n.status)
+        assertEquals(eve(23, 20), n.startMs)
+        assertEquals(morn(7), n.endMs)
+        assertTrue(n.phoneFree)
+    }
+
+    @Test
+    fun heartbeatsKeepPhaseAndAreNotScreenEvents() {
+        // Пульс внутри перерыва состояние не меняет: ночь та же, что и без него.
+        val beats = (0 until 8).map { beat(morn(it)) }
+        assertEquals(compute(evening() + morning()), compute(evening() + beats + morning()))
+        // Только пульс в окне, ни одного события экрана — «нет данных», как и без пульса.
+        assertEquals(NightStatus.UNKNOWN, compute(beats).status)
+        assertEquals(SleepMath.Phase.USE, SleepMath.phaseAfter(SleepMath.Phase.USE, beat(0)))
+        assertEquals(SleepMath.Phase.IDLE, SleepMath.phaseAfter(SleepMath.Phase.IDLE, stop(0)))
+    }
+
+    // ---------- Перезагрузка ----------
+
+    @Test
+    fun confirmedShutdownHidesTheRebootGap() {
+        val recent = listOf(off(eve(23, 20)).copy(bootCount = 5), beat(morn(2, 55)), shutdown(morn(3)))
+        assertNull(SleepMath.connectGap(recent, morn(6), 6))
+        // Остановка службы и пульс сразу после выключения (система гасит процессы) подтверждения не снимают.
+        assertNull(SleepMath.connectGap(recent + stop(morn(3, 0, 5)) + beat(morn(3, 0, 10)), morn(6), 6))
+    }
+
+    @Test
+    fun rebootWithoutConfirmedShutdownIsAGap() {
+        // Выключение не записано (сбой, села батарея): от последнего наблюдения до подключения неизвестно.
+        val noShutdown = listOf(off(eve(23, 20)).copy(bootCount = 5), beat(morn(2, 55)))
+        val gap = SleepMath.connectGap(noShutdown, morn(6), 6)
+        assertNotNull(gap)
+        assertEquals(morn(2, 55), gap!!.startMs)
+        assertEquals(morn(6), gap.endMs)
+        // Выключение записано, но после него в той же загрузке были события экрана — не подтверждено.
+        val shutdownThenUse = listOf(shutdown(morn(3)), present(morn(3, 1)).copy(bootCount = 5), off(morn(3, 2)).copy(bootCount = 5))
+        val gap2 = SleepMath.connectGap(shutdownThenUse, morn(6), 6)
+        assertNotNull(gap2)
+        assertEquals(morn(3, 2), gap2!!.startMs)
+        // Пульс через 10 минут после «выключения» — телефон работал дальше: не подтверждено.
+        assertNotNull(SleepMath.connectGap(listOf(shutdown(morn(3)), beat(morn(3, 10))), morn(6), 6))
+        // Выключение было в прошлой загрузке, а не в последней — не подтверждено.
+        val oldShutdown = listOf(shutdown(eve(22), boot = 4), off(eve(23, 20)).copy(bootCount = 5))
+        assertNotNull(SleepMath.connectGap(oldShutdown, morn(6), 6))
+        // Номер загрузки неизвестен — перезагрузку не видно: пропуск.
+        assertNotNull(SleepMath.connectGap(listOf(shutdown(morn(3)).copy(bootCount = null)), morn(6), null))
+    }
+
+    // ---------- Склейка через короткие обращения ----------
+
+    @Test
+    fun keepsShorterCandidateWhenMergeExceedsFourteenHours() {
+        // Перерыв 20:30–10:30 (ровно 14 ч), обращение 10:30–10:31, перерыв до 11:30:
+        // склейка дала бы 14 ч 59 мин (больше предела), но исходные 14 ч — годный кандидат.
+        val events = listOf(
+            present(eve(20)), off(eve(20, 30)),
+            present(morn(10, 30)), off(morn(10, 31)),
+            present(morn(11, 30)), off(morn(11, 45)),
+        )
+        val n = compute(events, mode = null)
+        assertEquals(NightStatus.OK, n.status)
+        assertEquals(eve(20, 30), n.startMs)
+        assertEquals(morn(10, 30), n.endMs)
+        assertEquals(14 * HOUR_MS, n.durationMs)
+        assertEquals(0, n.interruptionCount)
+    }
+
+    @Test
+    fun candidatesIncludeEveryMergePrefix() {
+        val segs = SleepMath.timeline(
+            off(eve(18)),
+            listOf(present(eve(20)), off(eve(20, 30)), present(morn(3)), off(morn(3, 1)), present(morn(7)), off(morn(7, 30))),
+            emptyList(), eve(20), morn(12),
+        )
+        val fromEvening = SleepMath.candidates(segs, unknownIsFree = false).filter { it.startMs == eve(20, 30) }
+        assertEquals(listOf(morn(3), morn(7)), fromEvening.map { it.endMs })
+        assertEquals(listOf(0, 1), fromEvening.map { it.interruptionCount })
+    }
+
+    // ---------- Окончательные итоги ----------
+
+    @Test
+    fun lateEventInvalidatesClosedNights() {
+        val today = wake
+        // Событие «сейчас» ничего не трогает.
+        assertNull(SleepMath.invalidatedFromDay(morn(13), morn(13), moscow, today))
+        // Событие 11:59 записано в 12:00:30 — ночь уже окончательная: её итог надо пересчитать.
+        assertEquals(wake, SleepMath.invalidatedFromDay(morn(11, 59), morn(12, 0, 30), moscow, today))
+        // Пропуск, начавшийся вчера в 03:00 и записанный сегодня в 13:00, — пересчёт со вчерашней ночи.
+        assertEquals(wake - 1, SleepMath.invalidatedFromDay(at(-1, 3), morn(13), moscow, today))
+        // Событие до 12:00 записано до 12:00 — ночь ещё предварительная, удалять нечего.
+        assertNull(SleepMath.invalidatedFromDay(morn(11), morn(11, 30), moscow, today))
+        // Совсем старые ночи (сырых данных уже нет) не трогаются.
+        assertEquals(
+            SleepMath.oldestRecomputableDay(today),
+            SleepMath.invalidatedFromDay(at(-200, 3), morn(13), moscow, today),
+        )
+    }
+
+    @Test
+    fun nightsToFinalizeAndPruneCutoff() {
+        val today = wake
+        val stored = mapOf(wake - 3 to SleepMath.RULE_VERSION, wake - 2 to 1, wake - 200 to 1)
+        assertEquals(listOf(wake - 2, wake - 1), SleepMath.nightsToFinalize(wake - 3, wake - 1, stored, today))
+        // Старое правило, но сырых данных уже нет — не пересчитывается.
+        assertEquals(emptyList<Long>(), SleepMath.nightsToFinalize(wake - 200, wake - 200, stored, today))
+        // Ночи нет в базе — считается, даже старая (её события чистка не удаляет).
+        assertEquals(listOf(wake - 150), SleepMath.nightsToFinalize(wake - 150, wake - 150, stored, today))
+
+        val now = morn(13)
+        // Все ночи записаны — граница 90 дней.
+        assertEquals(now - 90 * SleepMath.DAY_MS, SleepMath.pruneCutoffMs(now, moscow, wake + 1))
+        // Ночь 100 дней назад не записана — её события не чистятся.
+        val cutoff = SleepMath.pruneCutoffMs(now, moscow, wake - 100)
+        assertTrue(cutoff <= SleepMath.dataRange(wake - 100, moscow, night).first)
+        assertTrue(cutoff <= SleepMath.windowStartMs(wake - 100, moscow))
+    }
+
+    @Test
+    fun computeFromDataAddsGapWhenNotObserving() {
+        val events = evening() + morning()
+        val data = NightData(off(eve(18)), events, emptyList(), lastEventMs = morn(10, 15))
+        assertEquals(NightStatus.OK, SleepMath.computeFromData(wake, moscow, data, morn(13), night, observing = true).status)
+        // Утром служба не работает, последнее событие 05:00: что дальше — неизвестно.
+        val early = NightData(off(eve(18)), evening(), emptyList(), lastEventMs = morn(5))
+        assertEquals(NightStatus.UNKNOWN, SleepMath.computeFromData(wake, moscow, early, morn(11), night, observing = false).status)
     }
 
     @Test
