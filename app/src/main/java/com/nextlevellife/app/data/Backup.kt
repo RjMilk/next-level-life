@@ -149,7 +149,9 @@ object Backup {
             val carried = LongArray(1)
             // Очередь записи событий экрана — на паузу до подмены: граница восстановленной истории —
             // последнее событие восстановленной базы, и пропуск от неё пишется первым, до новых событий.
+            // Пауза не подтверждена — подмены нет: текущие данные не трогаются.
             val pause = com.nextlevellife.app.sleep.PhoneEvents.pauseForRestore()
+                ?: return RestoreResult.Error("Запись событий экрана занята, восстановление не начато. Текущие данные сохранены, попробуйте ещё раз.")
             var replaced = false
             try {
                 return swap(context, dbTmp, newPrefs, newPrefsJson) { carried[0] = it }.let { error ->
@@ -318,6 +320,8 @@ object Backup {
             return@synchronized "Не удалось заменить данные: ${e.message ?: e.javaClass.simpleName}. Текущие данные сохранены."
         }
 
+        // Расчёты, начатые по прежней базе, не должны записать свой результат в новую.
+        Diary.bumpGeneration()
         Diary.close()
         try {
             // Старые файлы — в сторону (не удаляем, пока новая база не открылась). Основной — первым.

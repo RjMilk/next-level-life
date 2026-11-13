@@ -337,4 +337,26 @@ object StatsMath {
         }
         DayPoints(day, parts[1].toInt(), parts[2].toInt(), parts[3].toInt(), sources)
     }.getOrNull()
+
+    // ---------- Заморозка ----------
+
+    /**
+     * Какие дни из свежего расчёта [fresh] заморозить в кеше: не моложе [settledThrough] и ещё не в кеше
+     * ([cached]). Если источники прочитаны не полностью ([sourcesComplete] = false: ошибка или тайм-аут
+     * чтения ночей) — ни одного: потерянные очки не должны застыть навсегда.
+     */
+    fun daysToFreeze(
+        fresh: Map<Long, DayPoints>, cached: Set<Long>, settledThrough: Long, sourcesComplete: Boolean,
+    ): Map<Long, DayPoints> =
+        if (!sourcesComplete) emptyMap() else fresh.filterKeys { it <= settledThrough && it !in cached }
+
+    /**
+     * Первый день [first]..[today], очки которого ещё не заморожены ([frozen]); всё заморожено — [today] + 1.
+     * Раньше этого дня сырые события экрана для характеристик уже не нужны.
+     */
+    fun firstUnfrozenDay(first: Long, today: Long, frozen: Set<Long>): Long {
+        var day = first
+        while (day <= today && day in frozen) day++
+        return day
+    }
 }

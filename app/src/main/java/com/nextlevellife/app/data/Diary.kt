@@ -414,6 +414,20 @@ object Diary {
 
     internal fun dbFile(context: Context): java.io.File = context.applicationContext.getDatabasePath(NAME)
 
+    /**
+     * Поколение базы: растёт при каждой подмене файла восстановлением копии ([Backup.restore]).
+     * Меняется только под блокировкой Diary. Расчёт из нескольких отдельных чтений (характеристики)
+     * запоминает поколение в начале и перед записью результата проверяет, что база та же.
+     */
+    @Volatile var generation: Long = 0L
+        private set
+
+    /** Подмена базы начинается: следующее чтение может прийти уже из другой базы. */
+    @Synchronized
+    internal fun bumpGeneration() {
+        generation++
+    }
+
     /** Закрывает базу; следующий доступ — только после [reopen]. Вызывать под блокировкой Diary. */
     @Synchronized
     internal fun close() {
@@ -680,18 +694,25 @@ object Diary {
 
     // ---------- Запись (только для Workouts и переноса старой истории) ----------
 
+    /**
+     * Подход в момент [timeMs] с учётными сутками [day] — из того же снимка доверенного времени
+     * ([TrustedClock.snapshot]), что и операция журнала: сутки дневника и баланса не расходятся.
+     */
     @Synchronized
-    internal fun addSet(timeMs: Long, set: NewSet): Long =
-        insertSet(db(), timeMs, DiaryMath.dayOf(timeMs), set, runId = null)
+    internal fun addSet(timeMs: Long, day: Long, set: NewSet): Long =
+        insertSet(db(), timeMs, day, set, runId = null)
 
-    /** Прохождение и его подходы пишутся одной транзакцией: либо всё, либо ничего. */
+    /**
+     * Прохождение и его подходы пишутся одной транзакцией: либо всё, либо ничего.
+     * [day] — учётные сутки из того же снимка доверенного времени, что и [timeMs].
+     */
     @Synchronized
     internal fun addRun(
-        timeMs: Long, complexId: String, weightKg: Int?, durationMs: Long,
+        timeMs: Long, day: Long, complexId: String, weightKg: Int?, durationMs: Long,
         rounds: Int?, extraReps: Int?, totalReps: Int, earnedMs: Long, xp: Long,
         completed: Boolean, sets: List<NewSet>,
     ): Long = write { db ->
-        insertRun(db, timeMs, complexId, weightKg, durationMs, rounds, extraReps, totalReps, earnedMs, xp, completed, sets)
+        insertRun(db, timeMs, day, complexId, weightKg, durationMs, rounds, extraReps, totalReps, earnedMs, xp, completed, sets)
     }
 
     /**
@@ -726,8 +747,9 @@ object Diary {
                     )
                     insertSet(db, e.timeMs, DiaryMath.dayOf(e.timeMs), set, runId = null)
                 }
+                // Старая история — по системному поясу, как и раньше.
                 is DiaryMath.LegacyMinotaur -> insertRun(
-                    db, e.timeMs, Minotaur.ID, item.weightKg, item.durationMs,
+                    db, e.timeMs, DiaryMath.dayOf(e.timeMs), Minotaur.ID, item.weightKg, item.durationMs,
                     rounds = null, extraReps = null, totalReps = Minotaur.totalReps,
                     earnedMs = e.earnedMs, xp = e.xp, completed = true,
                     sets = WorkoutMath.minotaurSets(item.weightKg, e.earnedMs, e.xp),
@@ -740,11 +762,10 @@ object Diary {
     }
 
     private fun insertRun(
-        db: SQLiteDatabase, timeMs: Long, complexId: String, weightKg: Int?, durationMs: Long,
+        db: SQLiteDatabase, timeMs: Long, day: Long, complexId: String, weightKg: Int?, durationMs: Long,
         rounds: Int?, extraReps: Int?, totalReps: Int, earnedMs: Long, xp: Long,
         completed: Boolean, sets: List<NewSet>,
     ): Long {
-        val day = DiaryMath.dayOf(timeMs)
         val values = ContentValues().apply {
             put("time_ms", timeMs)
             put("day", day)

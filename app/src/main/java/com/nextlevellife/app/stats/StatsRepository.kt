@@ -10,6 +10,7 @@ import com.nextlevellife.app.sleep.ObservationGap
 import com.nextlevellife.app.sleep.PhoneEvents
 import com.nextlevellife.app.sleep.SleepMath
 import com.nextlevellife.app.sleep.SleepRepository
+import java.time.ZoneId
 
 /**
  * Характеристики за всю историю. [strength], [endurance], [discipline] — очки за всё время,
@@ -47,15 +48,26 @@ data class StatsSummary(
  *
  * Очки считаются из источников на лету. Дни старше [SETTLE_DAYS] суток замораживаются в кеше
  * (meta базы, ключ `stats_day:<день>`, строка с версией правил): к этому времени шаги из Health Connect
- * уже не пересинхронизируются, а сырые события экрана (нужные для проверки наблюдения) ещё не почищены
- * (они живут 90 дней). Так очки прошлых дней не «уплывают», когда сырые данные удаляются или меняются
- * настройки (лимит). Смена [StatsMath.RULE_VERSION] — кеш дня не читается и пересчитывается.
+ * уже не пересинхронизируются. Сырые события экрана (нужные для проверки наблюдения) чистятся не раньше
+ * первого незамороженного дня ([firstUnfrozenDay], [SleepRepository.maintainOnWriter]). Так очки прошлых
+ * дней не «уплывают», когда сырые данные удаляются или меняются настройки (лимит). Смена
+ * [StatsMath.RULE_VERSION] — кеш дня не читается и пересчитывается.
+ *
+ * Расчёт — много отдельных чтений, и между ними базу может подменить восстановление копии. Поэтому
+ * поколение базы ([Diary.generation]) запоминается в начале и проверяется перед записью кеша (под
+ * блокировкой Diary) и перед публикацией; изменилось — расчёт повторяется. Под блокировкой Diary
+ * расчёт не держится: чтение ночей ждёт очередь [PhoneEvents], которой самой нужна эта блокировка.
+ * Ошибка или тайм-аут чтения ночей — в этом проходе ничего не замораживается, а дни показываются
+ * предварительными.
  */
 object StatsRepository {
     private const val TAG = "StatsRepository"
 
     /** Дни не моложе этого (today − день ≥ SETTLE_DAYS) замораживаются в кеше. */
     const val SETTLE_DAYS = 16
+
+    /** Сколько раз пересчитать, если базу подменили во время расчёта. */
+    private const val MAX_ATTEMPTS = 3
 
     internal const val CACHE_PREFIX = "stats_day:"
 
@@ -69,54 +81,92 @@ object StatsRepository {
      */
     @Synchronized
     fun load(): StatsSummary {
-        val snap = TrustedClock.snapshot()
-        val legacy = runCatching { Ledger.xp() }.getOrDefault(0L)
-        return try {
-            compute(snap.utcMs, snap.day, snap.zone, legacy).also { last = it }
+        var snap = TrustedClock.snapshot()
+        var legacy = 0L
+        try {
+            repeat(MAX_ATTEMPTS) {
+                val gen = Diary.generation
+                snap = TrustedClock.snapshot()
+                legacy = runCatching { Ledger.xp() }.getOrDefault(0L)
+                val summary = compute(snap.utcMs, snap.day, snap.zone, legacy, gen)
+                // Публикуется только итог по той базе, что сейчас на месте.
+                if (summary != null && Diary.generation == gen) {
+                    last = summary
+                    return summary
+                }
+                Log.w(TAG, "База подменена во время расчёта характеристик: пересчёт")
+            }
+            Log.w(TAG, "База подменялась во время каждого расчёта: показан прежний итог")
         } catch (e: Exception) {
             Log.e(TAG, "Не удалось посчитать характеристики", e)
-            last ?: StatsSummary.empty(snap.day, legacy)
         }
+        return last ?: StatsSummary.empty(snap.day, legacy)
     }
 
     /** Сила за день [day] по записям дневника (для экрана результата). Вызывать можно внутри транзакции записи. */
     fun strengthOfDay(day: Long): Int =
         StatsMath.strength(StatsMath.strengthInput(Diary.setsForDay(day), Diary.runsForDay(day))).points
 
-    private fun compute(now: Long, today: Long, zone: java.time.ZoneId, legacyXp: Long): StatsSummary {
+    /**
+     * Первый день характеристик, очки которого ещё не заморожены в кеше по действующим правилам
+     * (сегодня — всегда незаморожен); null — данных нет. Только чтения Diary, очередь [PhoneEvents]
+     * не ждёт: можно звать с потока записи (обслуживание перед чисткой сырых данных).
+     */
+    internal fun firstUnfrozenDay(today: Long, zone: ZoneId): Long? {
+        val device = Ledger.deviceId()
+        val first = firstDay(device, today, zone) ?: return null
+        return StatsMath.firstUnfrozenDay(first, today, frozenDays(first, today - SETTLE_DAYS).keys)
+    }
+
+    /** Первый день с данными (дневник, ночи или события экрана), не позже [today]; null — данных нет. */
+    private fun firstDay(device: String, today: Long, zone: ZoneId): Long? {
+        val firstEventDay = Diary.firstPhoneEventMs(device)?.let { SleepMath.dayOf(it, zone) }
+        return listOfNotNull(Diary.firstDataDay(), firstEventDay).minOrNull()?.coerceAtMost(today)
+    }
+
+    /** Замороженные дни [first]..[settledThrough] из кеша (только читаемые по действующим правилам). */
+    private fun frozenDays(first: Long, settledThrough: Long): Map<Long, DayPoints> {
+        val cached = HashMap<Long, DayPoints>()
+        if (first > settledThrough) return cached
+        for ((key, value) in Diary.metaWithPrefix(CACHE_PREFIX)) {
+            val day = key.removePrefix(CACHE_PREFIX).toLongOrNull() ?: continue
+            if (day < first || day > settledThrough) continue
+            StatsMath.decode(day, value)?.let { cached[day] = it }
+        }
+        return cached
+    }
+
+    /** Итог по базе поколения [gen]; null — базу подменили до записи кеша (расчёт надо повторить). */
+    private fun compute(now: Long, today: Long, zone: ZoneId, legacyXp: Long, gen: Long): StatsSummary? {
         val device = Ledger.deviceId()
         val firstEventMs = Diary.firstPhoneEventMs(device)
-        val firstEventDay = firstEventMs?.let { SleepMath.dayOf(it, zone) }
-        val first = listOfNotNull(Diary.firstDataDay(), firstEventDay).minOrNull()?.coerceAtMost(today)
-            ?: return StatsSummary.empty(today, legacyXp)
+        val first = firstDay(device, today, zone) ?: return StatsSummary.empty(today, legacyXp)
 
         val settledThrough = today - SETTLE_DAYS
-        val cached = HashMap<Long, DayPoints>()
-        if (first <= settledThrough) {
-            for ((key, value) in Diary.metaWithPrefix(CACHE_PREFIX)) {
-                val day = key.removePrefix(CACHE_PREFIX).toLongOrNull() ?: continue
-                if (day < first || day > settledThrough) continue
-                StatsMath.decode(day, value)?.let { cached[day] = it }
-            }
-        }
+        val cached = frozenDays(first, settledThrough)
         // Пересчитываются все дни без кеша и все незамороженные; диапазон — от самого раннего из них.
-        val from = (first..today).firstOrNull { it !in cached } ?: today
-        val fresh = computeRange(from, today, now, zone, device, firstEventMs)
+        val from = StatsMath.firstUnfrozenDay(first, today, cached.keys).coerceAtMost(today)
+        val range = computeRange(from, today, now, zone, device, firstEventMs)
 
-        val toFreeze = fresh.filterKeys { it <= settledThrough && it !in cached }
+        val toFreeze = StatsMath.daysToFreeze(range.days, cached.keys, settledThrough, range.complete)
         if (toFreeze.isNotEmpty()) {
-            try {
+            val sameDb = try {
                 Diary.write {
+                    // Поколение меняется только под блокировкой Diary: проверка и запись — атомарно.
+                    if (Diary.generation != gen) return@write false
                     for ((day, p) in toFreeze) Diary.metaPut(CACHE_PREFIX + day, StatsMath.encode(p))
+                    true
                 }
             } catch (e: Exception) {
                 // Без кеша очки всё равно посчитаны; заморозка повторится при следующем расчёте.
                 Log.e(TAG, "Не удалось записать кеш характеристик", e)
+                true
             }
+            if (!sameDb) return null
         }
 
         val days = HashMap<Long, DayPoints>(cached)
-        days.putAll(fresh.filterKeys { it !in cached })
+        days.putAll(range.days.filterKeys { it !in cached })
         var s = 0L
         var e = 0L
         var d = 0L
@@ -128,17 +178,23 @@ object StatsRepository {
         return StatsSummary(today, s, e, d, days, legacyXp)
     }
 
+    /** Очки дней; [complete] = false — ночи прочитать не удалось, дни предварительные. */
+    private class Range(val days: Map<Long, DayPoints>, val complete: Boolean)
+
     /** Очки дней [from]..[to], данные читаются диапазонами (а не по дню). */
     private fun computeRange(
-        from: Long, to: Long, now: Long, zone: java.time.ZoneId, device: String, firstEventMs: Long?,
-    ): Map<Long, DayPoints> {
+        from: Long, to: Long, now: Long, zone: ZoneId, device: String, firstEventMs: Long?,
+    ): Range {
         val sets = Diary.setsInRange(from, to).groupBy { it.day }
         val runs = Diary.runsInRange(from, to).groupBy { it.day }
         val activity = Diary.activityDays(from, to).associateBy { it.day }
         val spent = Ledger.spendByDay(from, to)
         // Ночь дня D начинается вечером D−1: события блокировки берутся с запасом в сутки.
         val blocks = Diary.blockEvents(from - 1, to)
-        val nights = SleepRepository.nights(from, to)
+        // null — ошибка или тайм-аут (а не «ночей нет»): считаем без ночей, но ничего не замораживаем.
+        val nightsOrNull = SleepRepository.nightsOrNull(from, to)
+        val nights = nightsOrNull.orEmpty()
+        val complete = nightsOrNull != null
         val rangeStart = TrustedClockMath.dayStartMs(from - 1, zone)
         val gaps = Diary.observationGaps(device, rangeStart, Long.MAX_VALUE).toMutableList()
         if (!PhoneEvents.observing) {
@@ -169,9 +225,9 @@ object StatsRepository {
                 StatsMath.strengthInput(daySets, dayRuns),
                 StatsMath.enduranceInput(activity[day], dayRuns),
                 discipline,
-                provisional = day == to && !discipline.dayEnded,
+                provisional = !complete || (day == to && !discipline.dayEnded),
             )
         }
-        return out
+        return Range(out, complete)
     }
 }

@@ -169,7 +169,8 @@ object Ledger {
      * Можно вызывать внутри уже открытой [Diary.write] — тогда операция войдёт в ту же транзакцию
      * и откатится вместе с ней. Ошибки базы пробрасываются.
      * [metadata] сохраняется как JSON (значения — строки, числа, булевы, null, вложенные Map/List).
-     * Учётные сутки — по [occurredAtMs] (по умолчанию доверенное «сейчас») в учётном поясе [TrustedClock.zone].
+     * Учётные сутки — по [occurredAtMs] (по умолчанию доверенное «сейчас») в учётном поясе [zone]
+     * (по умолчанию [TrustedClock.zone]; запись тренировки передаёт пояс своего снимка [TimeSnapshot]).
      */
     fun reward(
         kind: OpKind,
@@ -180,6 +181,7 @@ object Ledger {
         sourceId: String,
         occurredAtMs: Long = TrustedClock.nowMs(),
         metadata: Map<String, Any?> = emptyMap(),
+        zone: ZoneId = TrustedClock.zone(),
     ): Boolean {
         require(kind != OpKind.USAGE) { "Расход пишется через Ledger.spend" }
         require(kind != OpKind.OPENING) { "OPENING создаётся только при переносе" }
@@ -187,7 +189,7 @@ object Ledger {
         return synchronized(Diary) {
             Diary.write { db ->
                 if (opByKey(idempotencyKey) != null) return@write false
-                insertOp(db, kind, idempotencyKey, deltaMs, deltaXp, sourceType, sourceId, occurredAtMs, JSONObject(metadata).toString())
+                insertOp(db, kind, idempotencyKey, deltaMs, deltaXp, sourceType, sourceId, occurredAtMs, JSONObject(metadata).toString(), zone = zone)
                 true
             }
         }

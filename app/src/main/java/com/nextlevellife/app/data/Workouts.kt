@@ -104,13 +104,15 @@ object Workouts {
         val xp = newSets.sumOf { it.xp }
         val key = LedgerMath.setKey(sessionId ?: UUID.randomUUID().toString())
         return persist(key, what) {
-            val now = TrustedClock.nowMs() // доверенное время: перевод часов не меняет сутки начисления
-            val day = DiaryMath.dayOf(now)
+            // Один снимок доверенного времени и учётного пояса: сутки подхода, силы и операции журнала совпадают.
+            val time = TrustedClock.snapshot()
+            val now = time.utcMs
+            val day = time.day
             val before = strengthOf(day)
-            val ids = newSets.map { Diary.addSet(now, it) }
+            val ids = newSets.map { Diary.addSet(now, day, it) }
             val result = withStrength(WorkoutResult(earnedMs, xp), before, strengthOf(day))
             credit(
-                OpKind.SET_REWARD, key, result, sourceType = "sets", sourceId = ids.joinToString(","), now = now,
+                OpKind.SET_REWARD, key, result, sourceType = "sets", sourceId = ids.joinToString(","), time = time,
                 details = mapOf("set_ids" to ids, "exercises" to newSets.map { it.exerciseId }) + extra,
             )
             result
@@ -133,11 +135,13 @@ object Workouts {
                 safely("рекорд Минотавра") { Diary.bestComplexTimeMs(Minotaur.ID, weightKg) },
                 Store.minotaurBestMs(weightKg),
             )
-            val now = TrustedClock.nowMs() // доверенное время: перевод часов не меняет сутки начисления
-            val day = DiaryMath.dayOf(now)
+            // Один снимок доверенного времени и учётного пояса: сутки прохождения, силы и операции журнала совпадают.
+            val time = TrustedClock.snapshot()
+            val now = time.utcMs
+            val day = time.day
             val before = strengthOf(day)
             val runId = Diary.addRun(
-                timeMs = now, complexId = Minotaur.ID, weightKg = weightKg,
+                timeMs = now, day = day, complexId = Minotaur.ID, weightKg = weightKg,
                 durationMs = durationMs, rounds = null, extraReps = null, totalReps = Minotaur.totalReps,
                 earnedMs = earnedMs, xp = xp, completed = true,
                 sets = WorkoutMath.minotaurSets(weightKg, earnedMs, xp),
@@ -147,7 +151,7 @@ object Workouts {
                 before, strengthOf(day),
             )
             credit(
-                OpKind.COMPLEX_REWARD, key, result, sourceType = "complex_run", sourceId = runId.toString(), now = now,
+                OpKind.COMPLEX_REWARD, key, result, sourceType = "complex_run", sourceId = runId.toString(), time = time,
                 details = mapOf("complex_id" to Minotaur.ID, "weight_kg" to weightKg, "duration_ms" to durationMs),
             )
             result
@@ -173,11 +177,13 @@ object Workouts {
             val previousBest = safely("рекорд Синди") { Diary.bestComplexRounds(Cindy.ID) }
             // Прерванная раньше времени Синди не сравнивается с полными.
             val isRecord = completed && DiaryMath.isBetterRounds(rounds to extraReps, previousBest)
-            val now = TrustedClock.nowMs() // доверенное время: перевод часов не меняет сутки начисления
-            val day = DiaryMath.dayOf(now)
+            // Один снимок доверенного времени и учётного пояса: сутки прохождения, силы и операции журнала совпадают.
+            val time = TrustedClock.snapshot()
+            val now = time.utcMs
+            val day = time.day
             val before = strengthOf(day)
             val runId = Diary.addRun(
-                timeMs = now, complexId = Cindy.ID, weightKg = null,
+                timeMs = now, day = day, complexId = Cindy.ID, weightKg = null,
                 durationMs = durationMs.coerceAtLeast(0L), rounds = rounds, extraReps = extraReps,
                 totalReps = totalReps, earnedMs = earnedMs, xp = xp, completed = completed,
                 sets = WorkoutMath.cindySets(counted, xp),
@@ -187,7 +193,7 @@ object Workouts {
                 before, strengthOf(day),
             )
             credit(
-                OpKind.COMPLEX_REWARD, key, result, sourceType = "complex_run", sourceId = runId.toString(), now = now,
+                OpKind.COMPLEX_REWARD, key, result, sourceType = "complex_run", sourceId = runId.toString(), time = time,
                 details = mapOf("complex_id" to Cindy.ID, "rounds" to rounds, "extra_reps" to extraReps, "duration_ms" to durationMs),
             )
             result
@@ -217,7 +223,7 @@ object Workouts {
 
     /** Начисление внутри транзакции [persist]; в metadata — итог для повторного вызова с тем же ключом. */
     private fun credit(
-        kind: OpKind, key: String, result: WorkoutResult, sourceType: String, sourceId: String, now: Long,
+        kind: OpKind, key: String, result: WorkoutResult, sourceType: String, sourceId: String, time: TimeSnapshot,
         details: Map<String, Any?>,
     ) {
         val meta = LinkedHashMap<String, Any?>(details)
@@ -229,7 +235,7 @@ object Workouts {
         }
         result.strengthGain?.let { meta["strength_gain"] = it }
         result.strengthToday?.let { meta["strength_today"] = it }
-        val inserted = Ledger.reward(kind, key, result.earnedMs, result.xp, sourceType, sourceId, now, meta)
+        val inserted = Ledger.reward(kind, key, result.earnedMs, result.xp, sourceType, sourceId, time.utcMs, meta, zone = time.zone)
         // Ключ проверен в той же транзакции; если всё же занят — откатываем, чтобы не записать дневник без оплаты.
         check(inserted) { "Операция $key уже существует" }
     }

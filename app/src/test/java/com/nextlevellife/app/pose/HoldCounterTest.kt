@@ -542,7 +542,7 @@ class HoldCounterTest {
     @Test
     fun hintsWhenNotSeen() {
         val c = plank()
-        assertEquals("Ляг в планку боком к телефону", c.onFrame(PoseFrame(1, 1080, 1920, emptyMap())).hint)
+        assertEquals("Ляг боком к телефону", c.onFrame(PoseFrame(1, 1080, 1920, emptyMap())).hint)
         val noLegs = StickFigure.points(PLANK).filterKeys {
             it != Joint.LEFT_ANKLE && it != Joint.RIGHT_ANKLE && it != Joint.LEFT_KNEE && it != Joint.RIGHT_KNEE
         }
@@ -553,7 +553,7 @@ class HoldCounterTest {
         assertEquals("Не вижу руки", plank().onFrame(PoseFrame(1, 1080, 1920, noArms)).hint)
         val elbowsForward = run(live().hold(Key(78f, 258f, 258f, 135f, 90f), 3_000)).last()
         assertEquals("Локти под плечи", elbowsForward.hint)
-        assertEquals("Ляг в планку боком к телефону", run(Timeline().hold(STAND, 2_000)).last().hint)
+        assertEquals("Ляг боком к телефону", run(Timeline().hold(STAND, 2_000)).last().hint)
     }
 
     @Test

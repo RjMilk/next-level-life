@@ -45,7 +45,11 @@ class BlockerService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private var currentPkg: String? = null
     private var spending = false
-    private var lastTickAt = 0L
+    /**
+     * Отсчёт просмотра и состояние экрана. Состояние хранится здесь и меняется приёмником экрана
+     * (интервал до смены закрывается по прежнему состоянию), а не читается на тике.
+     */
+    private val meter = SpendMeter()
     /** Сессия списания: одна на непрерывный просмотр одного заблокированного приложения. */
     private var sessionId: String? = null
     private var sessionPkg: String? = null
@@ -53,11 +57,18 @@ class BlockerService : AccessibilityService() {
     /**
      * Просмотры, которые журнал не принял (ошибка базы): интервалы доверенного времени с приложением
      * и сессией. Списываются со следующим тиком строками текущей сессии, но каждый — по своим суткам
-     * ([Ledger.spend] с долгами).
+     * ([Ledger.spend] с долгами). Каждый новый долг сразу сохраняется в meta ([KEY_USAGE_DEBTS]), чтобы
+     * не пропасть с процессом; при подключении службы сохранённые долги читаются и гасятся первыми.
      */
     private val unpaid = ArrayList<UsageDebt>()
     /** Сколько попыток списания подряд закончились ошибкой. */
     private var failedCharges = 0
+    /** Долги прошлого запуска прочитаны из meta (до этого meta перезаписывать нельзя — они бы пропали). */
+    private var debtsLoaded = false
+    /** В meta, возможно, лежат долги: при погашении ключ удаляется той же транзакцией, что и списание. */
+    private var debtsInMeta = false
+    /** В [unpaid] есть долги, ещё не сохранённые в meta. */
+    private var debtsDirty = false
 
     /** Перевод системных часов и смена пояса — только для лога: доверенное время от них не зависит. */
     private val timeReceiver = object : BroadcastReceiver() {
@@ -75,24 +86,39 @@ class BlockerService : AccessibilityService() {
     private var timeReceiverRegistered = false
 
     /**
-     * Включение, выключение и разблокировка экрана — для ночного перерыва ([PhoneEvents]).
+     * Включение, выключение и разблокировка экрана — для ночного перерыва ([PhoneEvents]) и списания.
      * Использование — экран включён и разблокирован; экран, включённый уведомлением поверх экрана
      * блокировки, использованием не считается — поэтому при включении записывается, показан ли экран блокировки.
+     * Для списания каждая смена сначала закрывает текущий интервал по прежнему состоянию экрана ([onScreen]).
      */
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
-                Intent.ACTION_SCREEN_ON ->
+                Intent.ACTION_SCREEN_ON -> {
+                    onScreen(true)
                     PhoneEvents.record(PhoneEventType.SCREEN_ON, PhoneEvents.SOURCE_RECEIVER, interactive = true, locked = keyguardLocked())
-                Intent.ACTION_SCREEN_OFF ->
+                }
+                Intent.ACTION_SCREEN_OFF -> {
+                    onScreen(false)
                     PhoneEvents.record(PhoneEventType.SCREEN_OFF, PhoneEvents.SOURCE_RECEIVER, interactive = false, locked = null)
-                Intent.ACTION_USER_PRESENT ->
+                }
+                Intent.ACTION_USER_PRESENT -> {
+                    onScreen(true)
                     PhoneEvents.record(PhoneEventType.USER_PRESENT, PhoneEvents.SOURCE_RECEIVER, interactive = true, locked = false)
+                }
                 // Выключение телефона — конец использования: после перезагрузки это не пропуск наблюдения.
-                Intent.ACTION_SHUTDOWN ->
+                Intent.ACTION_SHUTDOWN -> {
+                    onScreen(false)
                     PhoneEvents.record(PhoneEventType.SCREEN_OFF, PhoneEvents.SOURCE_SHUTDOWN, interactive = false, locked = null)
+                }
             }
         }
+    }
+
+    /** Экран сменил состояние: интервал до этого момента списывается по прежнему состоянию, потом — новое. */
+    private fun onScreen(on: Boolean) {
+        settle()
+        meter.setScreen(on)
     }
     private var screenReceiverRegistered = false
 
@@ -134,7 +160,10 @@ class BlockerService : AccessibilityService() {
         Store.init(this)
         refreshIgnored()
         registerTimeReceiver()
+        meter.setScreen(interactive() != false)
         registerScreenReceiver()
+        // Долги прошлого запуска — первым делом: не погашены — заблокированные приложения не открываются.
+        loadStoredDebts()
         // Состояние экрана на момент подключения — без выдумывания прошлого; пропуск, если служба не работала.
         PhoneEvents.onServiceConnected(this, interactive(), keyguardLocked())
         handler.removeCallbacks(observeTick)
@@ -195,6 +224,8 @@ class BlockerService : AccessibilityService() {
     }
 
     private fun onForeground(pkg: String) {
+        // Долги прошлого запуска не прочитались при подключении — пробуем снова (до этого failedCharges держит блок).
+        if (!debtsLoaded) loadStoredDebts()
         settle()
         val wasBlocked = currentPkg?.let { Store.isBlocked(it) } == true
         currentPkg = pkg
@@ -240,7 +271,7 @@ class BlockerService : AccessibilityService() {
         spending = true
         sessionId = UUID.randomUUID().toString()
         sessionPkg = pkg
-        lastTickAt = SystemClock.elapsedRealtime()
+        meter.restart(SystemClock.elapsedRealtime())
         handler.postDelayed(tick, TICK_MS)
     }
 
@@ -253,29 +284,119 @@ class BlockerService : AccessibilityService() {
 
     /**
      * Списывает время, прошедшее с прошлой проверки, но не больше, чем сейчас разрешают правила,
-     * плюс долги [unpaid] от прошлых неудачных списаний. При ошибке журнала время не теряется,
-     * а копится в долг (интервалом); счётчик [failedCharges] решает, когда блокировать.
+     * плюс долги [unpaid] от прошлых неудачных списаний. Интервал считается по состоянию экрана,
+     * хранящемуся в [meter] (его меняет приёмник экрана, закрыв интервал по прежнему состоянию).
+     * При ошибке журнала время не теряется, а копится в долг (интервалом) и сразу сохраняется в meta;
+     * счётчик [failedCharges] решает, когда блокировать. Сохранить долг тоже не вышло — блок сразу.
      * Правила и журнал получают один и тот же снимок доверенного времени.
      */
     private fun settle() {
         if (!spending) return
-        val now = SystemClock.elapsedRealtime()
-        val elapsed = now - lastTickAt
-        lastTickAt = now
-        val screenOn = getSystemService(PowerManager::class.java)?.isInteractive != false
+        // Без приёмника экрана состояние узнать не от кого — тогда, как раньше, на момент проверки.
+        if (!screenReceiverRegistered) meter.setScreen(interactive() != false)
+        val elapsed = meter.take(SystemClock.elapsedRealtime())
         val sid = sessionId ?: return
         val pkg = sessionPkg ?: return
         val time = TrustedClock.snapshot()
-        val viewed = if (screenOn && elapsed > 0) minOf(elapsed, decide(time).availableMs).coerceAtLeast(0L) else 0L
+        val viewed = if (elapsed > 0) minOf(elapsed, decide(time).availableMs).coerceAtLeast(0L) else 0L
         if (viewed <= 0L && unpaid.isEmpty()) return
-        try {
-            Ledger.spend(sid, pkg, viewed, time, unpaid.toList())
+        if (charge(sid, pkg, viewed, time)) return
+        if (viewed > 0L) {
+            unpaid += UsageDebt(time.utcMs - viewed, time.utcMs, pkg, sid)
+            debtsDirty = true
+            if (!persistDebts()) {
+                // Долг не сохранить даже в meta: смотреть дальше нельзя — следующая проверка блокирует.
+                Log.e(TAG, "Долг ${unpaid.sumOf { it.durationMs }} мс не сохранён: блок")
+                failedCharges = maxOf(failedCharges + 1, MAX_FAILED_CHARGES)
+                return
+            }
+        }
+        failedCharges++
+        Log.e(TAG, "Не удалось списать время (долг ${unpaid.sumOf { it.durationMs }} мс, ошибок подряд $failedCharges)")
+    }
+
+    /**
+     * Одно списание: [viewed] текущего просмотра и все долги [unpaid]. Если долги лежат в meta, ключ
+     * удаляется той же транзакцией, что и списание: долг не спишется дважды и не пропадёт. true — списано.
+     */
+    private fun charge(sid: String, pkg: String, viewed: Long, time: TimeSnapshot): Boolean {
+        val debts = unpaid.toList()
+        return try {
+            if (debtsInMeta) {
+                Diary.write {
+                    Ledger.spend(sid, pkg, viewed, time, debts)
+                    Diary.metaDelete(KEY_USAGE_DEBTS)
+                }
+            } else {
+                Ledger.spend(sid, pkg, viewed, time, debts)
+            }
             unpaid.clear()
+            debtsInMeta = false
+            debtsDirty = false
             failedCharges = 0
+            true
         } catch (e: Exception) {
-            if (viewed > 0L) unpaid += UsageDebt(time.utcMs - viewed, time.utcMs, pkg, sid)
-            Log.e(TAG, "Не удалось списать время (долг ${unpaid.sumOf { it.durationMs }} мс, ошибок подряд ${failedCharges + 1})", e)
-            failedCharges++
+            Log.e(TAG, "Журнал не принял списание", e)
+            false
+        }
+    }
+
+    /**
+     * Сохраняет [unpaid] в meta ([KEY_USAGE_DEBTS]). Пока долги прошлого запуска не прочитаны, писать нельзя
+     * (их бы затёрли) — сначала читаются они. false — сохранить не удалось.
+     */
+    private fun persistDebts(): Boolean {
+        if (!debtsLoaded) loadStoredDebts()
+        if (!debtsLoaded) return false
+        return try {
+            if (unpaid.isEmpty()) Diary.metaDelete(KEY_USAGE_DEBTS) else Diary.metaPut(KEY_USAGE_DEBTS, UsageDebtCodec.encode(unpaid))
+            debtsInMeta = unpaid.isNotEmpty()
+            debtsDirty = false
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось сохранить долг в meta", e)
+            false
+        }
+    }
+
+    /**
+     * Читает долги прошлого запуска из meta и сразу пытается их погасить. Не погашены (или не прочитаны) —
+     * [failedCharges] не меньше [MAX_FAILED_CHARGES]: заблокированное приложение откроется, только если
+     * при открытии списание пройдёт ([onForeground]).
+     */
+    private fun loadStoredDebts() {
+        if (debtsLoaded) return
+        val raw = try {
+            Diary.metaGet(KEY_USAGE_DEBTS)
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось прочитать сохранённые долги: блок до повторного чтения", e)
+            failedCharges = maxOf(failedCharges, MAX_FAILED_CHARGES)
+            return
+        }
+        debtsLoaded = true
+        val stored = raw?.let { UsageDebtCodec.decode(it) }
+        if (raw != null && stored == null) {
+            // Неизвестно, сколько и когда смотрели: списать нечего, вечный блок был бы хуже.
+            Log.e(TAG, "Сохранённые долги повреждены и отброшены (${raw.length} символов)")
+        }
+        // Ключ (повреждённый или пустой) удалится вместе со следующим удачным списанием или сохранением.
+        if (raw != null) debtsInMeta = true
+        if (stored.isNullOrEmpty()) {
+            // Долгов прошлого запуска нет: блок, поставленный из-за неудачного чтения, больше не нужен
+            // (неудачные списания этого запуска всегда оставляют долг в памяти).
+            if (unpaid.isEmpty()) failedCharges = 0
+            return
+        }
+        // Старые долги — первыми; если в памяти уже были новые, их ещё надо сохранить.
+        debtsDirty = unpaid.isNotEmpty()
+        unpaid.addAll(0, stored)
+        debtsInMeta = true
+        if (!charge(UUID.randomUUID().toString(), stored.last().packageName, 0L, TrustedClock.snapshot())) {
+            Log.e(TAG, "Долг прошлого запуска (${stored.sumOf { it.durationMs }} мс) не погашен: блок")
+            failedCharges = maxOf(failedCharges, MAX_FAILED_CHARGES)
+            if (debtsDirty) persistDebts()
+        } else {
+            Log.i(TAG, "Погашен долг прошлого запуска: ${stored.sumOf { it.durationMs }} мс")
         }
     }
 
@@ -304,11 +425,14 @@ class BlockerService : AccessibilityService() {
 
     /** Прерывание отклика: служба продолжает работать, момент только отмечается (SERVICE_STOP, source = interrupt). */
     override fun onInterrupt() {
+        if (debtsDirty) persistDebts()
         PhoneEvents.onServiceInterrupted()
     }
 
     override fun onDestroy() {
         settle()
+        // Долг, который не удалось сохранить сразу, — последняя попытка: иначе он пропадёт с процессом.
+        if (debtsDirty) persistDebts()
         stopSpending()
         handler.removeCallbacks(observeTick)
         if (timeReceiverRegistered) {
@@ -331,6 +455,8 @@ class BlockerService : AccessibilityService() {
         private const val MAX_FAILED_CHARGES = 2
         /** Финализация ночей и чистка сырых данных — раз в час. */
         private const val MAINTENANCE_MS = 60 * 60_000L
+        /** Ключ meta: неоплаченные просмотры ([UsageDebt]) JSON-массивом ([UsageDebtCodec]). */
+        internal const val KEY_USAGE_DEBTS = "usage_debts"
 
         /** Значения block_events.trigger. */
         const val TRIGGER_OPEN = "open"

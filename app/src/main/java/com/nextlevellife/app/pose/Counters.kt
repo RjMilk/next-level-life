@@ -307,7 +307,8 @@ internal object CounterThresholds {
 }
 
 internal object HoldConfigs {
-    private const val LIE_DOWN = "Ляг в планку боком к телефону"
+    // Коротко: на 360 dp плашка состояния вмещает это крупным шрифтом в 2 строки.
+    private const val LIE_DOWN = "Ляг боком к телефону"
     private const val HIP_UP = "Таз выше"
     private const val HIP_DOWN = "Таз ниже"
     private const val STRAIGHTEN_LEGS = "Выпрями ноги"

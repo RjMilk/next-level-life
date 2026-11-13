@@ -5,6 +5,7 @@ import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.TrustedClock
+import com.nextlevellife.app.stats.StatsRepository
 import java.time.ZoneId
 
 /**
@@ -35,12 +36,18 @@ object SleepRepository {
 
     /**
      * Часовое обслуживание (поток записи): сначала финализация ночей, потом чистка сырых данных старше
-     * 90 дней — но никогда не раньше первой ночи, итог которой ещё не записан.
+     * 90 дней — но никогда не раньше первой ночи, итог которой ещё не записан, и не раньше первого дня
+     * характеристик, очки которого ещё не заморожены ([StatsRepository.firstUnfrozenDay]): дисциплина
+     * незамороженных дней ещё считается по пропускам наблюдения. Заморозку делает расчёт характеристик
+     * (каждое открытие приложения); пока он не прошёл, сырые данные просто хранятся дольше.
+     * Не удалось узнать границу характеристик — в этот раз не чистится ничего.
      */
     internal fun maintainOnWriter() {
         val u = update()
         val firstUnsaved = u.firstUnsavedDay ?: return // событий нет — чистить нечего
-        Diary.prunePhoneData(SleepMath.pruneCutoffMs(u.nowMs, u.zone, firstUnsaved))
+        val today = SleepMath.dayOf(u.nowMs, u.zone)
+        val firstUnfrozenStats = StatsRepository.firstUnfrozenDay(today, u.zone)
+        Diary.prunePhoneData(SleepMath.pruneCutoffMs(u.nowMs, u.zone, firstUnsaved, firstUnfrozenStats))
     }
 
     /** Поток записи. */
@@ -78,16 +85,23 @@ object SleepRepository {
 
     /**
      * Ночи с днями пробуждения [fromDay]..[toDay]: окончательные из базы и предварительные поверх.
-     * Ошибка базы — пустой ответ (в интерфейсе — «нет данных»).
+     * Ошибка базы — пустой ответ (в интерфейсе — «нет данных»). Чтобы отличить ошибку от «ночей нет» —
+     * [nightsOrNull].
      */
-    fun nights(fromDay: Long, toDay: Long): Map<Long, SleepNight> = try {
+    fun nights(fromDay: Long, toDay: Long): Map<Long, SleepNight> = nightsOrNull(fromDay, toDay).orEmpty()
+
+    /**
+     * То же, что [nights], но ошибка базы или тайм-аут очереди записи — null, а не пустая карта:
+     * пустая карта значит «ночей нет». Характеристики при null ничего не замораживают.
+     */
+    fun nightsOrNull(fromDay: Long, toDay: Long): Map<Long, SleepNight>? = try {
         val provisional = refresh()
         val out = Diary.sleepNights(fromDay, toDay).associateBy { it.wakeDay }.toMutableMap()
         for ((day, n) in provisional) if (day in fromDay..toDay) out[day] = n
         out
     } catch (e: Exception) {
         Log.e(TAG, "Не удалось посчитать ночные перерывы", e)
-        emptyMap()
+        null
     }
 
     /** Ночь с днём пробуждения [day] или null. */

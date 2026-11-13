@@ -42,9 +42,7 @@ object PhoneEvents {
     /** Пульс службы: одна строка HEARTBEAT раз в 5 минут, пока служба жива. */
     const val HEARTBEAT_MS = 5 * 60_000L
 
-    /** Как долго очередь может стоять на паузе восстановления, если её забыли снять. */
-    private const val PAUSE_MAX_MS = 2 * 60_000L
-    /** Сколько ждать, пока очередь дойдёт до паузы (допишет начатое). */
+    /** Сколько ждать, пока очередь дойдёт до паузы (допишет начатое); не дошла — восстановление отменяется. */
     private const val PAUSE_WAIT_MS = 10_000L
 
     @Volatile private var writerThread: Thread? = null
@@ -244,19 +242,27 @@ object PhoneEvents {
      * начатое. Вызывать НЕ под блокировкой [Diary] (очередь может ждать её) и обязательно снять паузу
      * ([WritePause.resume]) в finally. Событие, пришедшее во время паузы, ждёт в очереди и попадёт уже
      * в новую базу — после пропуска.
+     *
+     * Подтверждённая пауза держится до явного [WritePause.resume]: сама очередь не возобновляется.
+     * Если очередь не дошла до паузы за [PAUSE_WAIT_MS] — null: восстановление должно завершиться ошибкой,
+     * не трогая данные (подмена без паузы смешала бы события двух баз). Поставленная задача паузы тогда
+     * снимается сразу и, когда очередь до неё дойдёт, ничего не ждёт и не пишет.
      */
-    fun pauseForRestore(): WritePause {
+    fun pauseForRestore(): WritePause? {
         val pause = WritePause()
         executor.execute {
             pause.pausedUtc = TrustedClock.nowMs()
             pause.pausedZone = TrustedClock.zone().id
             pause.pausedElapsed = SystemClock.elapsedRealtime()
             pause.started.countDown()
-            if (!pause.released.await(PAUSE_MAX_MS, TimeUnit.MILLISECONDS)) Log.w(TAG, "Пауза восстановления не снята вовремя")
+            // Без тайм-аута: восстановление снимает паузу в finally.
+            pause.released.await()
             if (pause.replaced) writeRestoreGap(pause.pausedUtc, pause.pausedZone, pause.pausedElapsed)
         }
         if (!pause.started.await(PAUSE_WAIT_MS, TimeUnit.MILLISECONDS)) {
-            Log.w(TAG, "Очередь записи не дошла до паузы: восстановление идёт без неё")
+            Log.w(TAG, "Очередь записи не дошла до паузы: восстановление отменено")
+            pause.resume(databaseReplaced = false)
+            return null
         }
         return pause
     }

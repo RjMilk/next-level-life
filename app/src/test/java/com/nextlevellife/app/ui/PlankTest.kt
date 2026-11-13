@@ -275,7 +275,7 @@ class PlankTest {
 
     @Test
     fun statusLine() {
-        assertEquals("Ляг в планку боком к телефону" to false, HoldMath.status(RepState()))
+        assertEquals("Ляг боком к телефону" to false, HoldMath.status(RepState()))
         assertEquals(
             "Опустись на колени и снова прими планку" to false,
             HoldMath.status(RepState(tracking = true, hint = "Опустись на колени и снова прими планку")),

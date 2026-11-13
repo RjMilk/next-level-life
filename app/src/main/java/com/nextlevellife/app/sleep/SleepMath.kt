@@ -491,10 +491,14 @@ object SleepMath {
     /**
      * Граница чистки сырых данных: события и пропуски раньше неё можно удалять. Не позже, чем 90 дней назад,
      * и не позже начала суток накануне [firstUnsavedDay] — первой ночи, итог которой ещё не записан
-     * (её окно и окно ночного режима начинаются не раньше этих суток).
+     * (её окно и окно ночного режима начинаются не раньше этих суток), и не позже начала суток накануне
+     * [firstUnfrozenStatsDay] — первого дня характеристик, очки которого ещё не заморожены (его дисциплина
+     * смотрит пропуски наблюдения с вечера накануне). null — данных характеристик нет, ограничения нет.
      */
-    fun pruneCutoffMs(nowMs: Long, zone: ZoneId, firstUnsavedDay: Long): Long =
-        minOf(nowMs - RAW_RETENTION_DAYS * DAY_MS, atMinute(firstUnsavedDay - 1, 0, zone))
+    fun pruneCutoffMs(nowMs: Long, zone: ZoneId, firstUnsavedDay: Long, firstUnfrozenStatsDay: Long? = null): Long {
+        val cutoff = minOf(nowMs - RAW_RETENTION_DAYS * DAY_MS, atMinute(firstUnsavedDay - 1, 0, zone))
+        return if (firstUnfrozenStatsDay == null) cutoff else minOf(cutoff, atMinute(firstUnfrozenStatsDay - 1, 0, zone))
+    }
 
     /** Диапазон данных ночи [wakeDay]: окно поиска, расширенное окном ночного режима. */
     fun dataRange(wakeDay: Long, zone: ZoneId, mode: NightMode?): Pair<Long, Long> {

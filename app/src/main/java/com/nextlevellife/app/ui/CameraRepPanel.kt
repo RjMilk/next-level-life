@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -37,8 +38,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.pose.BodyLocator
@@ -472,15 +475,50 @@ private fun StatusPlate(tracker: RepTracker, count: Int, target: Int?, modifier:
             .padding(horizontal = 16.dp, vertical = 10.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
+        StatusText(text, color)
+    }
+}
+
+/**
+ * Текст плашки состояния над камерой — целиком, без многоточия: крупный шрифт, а если текст не помещается
+ * в 2 строки по ширине плашки, шрифт уменьшается по шагам (24 → 22 → 18 → 16 sp). Размер выбирается
+ * измерением до отрисовки — без мигания. На самом мелком шаге — до 3 строк (многоточие только как крайний случай).
+ */
+@Composable
+internal fun StatusText(text: String, color: Color) {
+    val t = MaterialTheme.typography
+    val styles = listOf(t.headlineSmall, t.titleLarge, t.titleMedium, t.titleSmall)
+    val measurer = rememberTextMeasurer()
+    BoxWithConstraints {
+        val maxWidth = constraints.maxWidth
+        val bounded = constraints.hasBoundedWidth
+        val style = remember(text, maxWidth, bounded, styles) {
+            if (!bounded) {
+                styles.first()
+            } else {
+                styles.firstOrNull { s ->
+                    !measurer.measure(
+                        text,
+                        style = s,
+                        maxLines = STATUS_MAX_LINES,
+                        constraints = Constraints(maxWidth = maxWidth),
+                    ).hasVisualOverflow
+                } ?: styles.last()
+            }
+        }
+        val smallest = style == styles.last()
         Text(
             text,
             color = color,
-            style = MaterialTheme.typography.headlineSmall,
-            maxLines = 2,
+            style = style,
+            maxLines = if (smallest) STATUS_MAX_LINES + 1 else STATUS_MAX_LINES,
             overflow = TextOverflow.Ellipsis,
         )
     }
 }
+
+/** Сколько строк плашка состояния занимает обычным шрифтом. */
+private const val STATUS_MAX_LINES = 2
 
 /**
  * Мелкая приглушённая строка диагностики; от новых кадров перекомпонуется только она сама.

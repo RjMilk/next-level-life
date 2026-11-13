@@ -62,7 +62,7 @@ internal object HoldMath {
     const val CAPTION_PENDING = "засчитается с 10 секунд"
     const val STATUS_HOLD = "Держи планку"
     const val STATUS_BACK = "Вернись в планку"
-    const val STATUS_LIE_DOWN = "Ляг в планку боком к телефону"
+    const val STATUS_LIE_DOWN = "Ляг боком к телефону"
 
     /**
      * Всего засчитано за подход: [baseMs] — засчитанное до пересоздания экрана (движок после
@@ -364,12 +364,7 @@ private fun HoldStatusPlate(tracker: HoldTracker, modifier: Modifier) {
             .padding(horizontal = 16.dp, vertical = 10.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
-        Text(
-            text,
-            color = if (good) Good else Warn,
-            style = MaterialTheme.typography.headlineSmall,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
+        // Подсказка целиком: не помещается крупно — шрифт меньше, без многоточия.
+        StatusText(text, if (good) Good else Warn)
     }
 }

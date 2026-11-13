@@ -424,7 +424,9 @@ private fun CharacterCard(stats: StatsSummary?, streak: Int, legacyXp: Long) {
  */
 @Composable
 private fun DayStatsSection(points: DayPoints) {
-    if (points.total == 0 && points.sources.isEmpty() && !points.provisional) return
+    // Прошлый день может быть «предварительным» только из-за сбоя чтения ночей — пустым его не показываем.
+    val isToday = points.day == TrustedClock.today()
+    if (points.total == 0 && points.sources.isEmpty() && !(points.provisional && isToday)) return
     var open by rememberSaveable(points.day) { mutableStateOf(false) }
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val canOpen = points.sources.isNotEmpty()
@@ -443,7 +445,8 @@ private fun DayStatsSection(points: DayPoints) {
         Text(StatsText.dayLine(points), style = MaterialTheme.typography.titleSmall.merge(Tabular), color = Accent)
         if (points.provisional) {
             Text(
-                "предварительно · дисциплина за сутки — после их окончания",
+                if (isToday) "предварительно · дисциплина за сутки — после их окончания"
+                else "предварительно · данные о ночи ещё не прочитаны",
                 style = MaterialTheme.typography.bodySmall,
                 color = muted,
             )
