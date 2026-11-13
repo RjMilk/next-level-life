@@ -133,12 +133,23 @@ object StatsGuide {
         )
     }
 
-    /** «Каждые 3 дня подряд без очков силы — −1 очко: через 3 дня, через 6, через 9… <сброс> Ниже нуля…» */
+    /**
+     * Сила: «2 дня отдыха и 3-й день на тренировку — без штрафа. Если и 4-й день без очков силы — −1 очко,
+     * дальше −1 на 7-й, 10-й день и так далее. …». Остальные: «Каждые 3 дня подряд без очков … — −1 очко: на 3-й…».
+     */
     private fun penaltyText(stat: Stat, reset: String): String {
         val n = StatsMath.IDLE_PERIOD_DAYS
-        return "Каждые ${StatsText.daysLabel(n.toLong())} подряд ${StatsText.idleWhat(stat)} — " +
-            "${StatsText.signed(-StatsMath.IDLE_PENALTY)}$NBSP${StatsText.pointsWord(StatsMath.IDLE_PENALTY.toLong())}: " +
-            "на ${n}-й день, на ${2 * n}-й, на ${3 * n}-й и так далее. $reset Ниже нуля очки не опускаются."
+        val first = StatsMath.firstIdlePenaltyDay(stat)
+        val minus = "${StatsText.signed(-StatsMath.IDLE_PENALTY)}$NBSP${StatsText.pointsWord(StatsMath.IDLE_PENALTY.toLong())}"
+        val head = if (stat == Stat.STRENGTH) {
+            "${StatsText.daysLabel(StatsMath.STRENGTH_REST_DAYS.toLong())} отдыха и ${StatsMath.STRENGTH_REST_DAYS + 1}-й день " +
+                "на тренировку — без штрафа. Если и ${first}-й день подряд прошёл ${StatsText.idleWhat(stat)} — $minus, " +
+                "дальше $minus на ${first + n}-й, ${first + 2 * n}-й день и так далее."
+        } else {
+            "Каждые ${StatsText.daysLabel(n.toLong())} подряд ${StatsText.idleWhat(stat)} — $minus: " +
+                "на ${first}-й день, на ${first + n}-й, на ${first + 2 * n}-й и так далее."
+        }
+        return "$head $reset Ниже нуля очки не опускаются."
     }
 
     /** Что входит в уровень — абзацы экрана уровня. */
@@ -146,8 +157,9 @@ object StatsGuide {
         "Общий уровень — это сумма очков силы, выносливости и дисциплины за всё время.",
         "Каждая характеристика даёт до ${points(StatsMath.DAY_CAP)} в день, всего до " +
             "${points(StatsMath.DAY_CAP * Stat.entries.size)} в день.",
-        "Если забросить характеристику, каждые ${StatsMath.IDLE_PERIOD_DAYS} дня простоя подряд снимают " +
-            "по ${StatsMath.IDLE_PENALTY} очку — медленно, с запасом на отдых, но уровень может опуститься.",
+        "Если забросить характеристику, простой медленно снимает очки — по ${points(StatsMath.IDLE_PENALTY)} " +
+            "раз в ${StatsMath.IDLE_PERIOD_DAYS} дня; у силы — только после 2 дней отдыха и дня на тренировку. " +
+            "Уровень может опуститься.",
         "Минуты экранного времени в уровень не входят: минуты ты тратишь, а очки копятся.",
         "У каждой характеристики свой уровень по той же лестнице.",
     )

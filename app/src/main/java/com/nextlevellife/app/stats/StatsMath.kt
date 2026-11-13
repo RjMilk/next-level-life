@@ -285,15 +285,32 @@ object StatsMath {
 
     // ---------- Штрафы за простой ----------
 
-    /** Штраф приходит за каждые столько дней простоя подряд: сила за пару дней не пропадает, нужно время на отдых. */
+    /** После первого штрафа следующий — через столько дней простоя подряд: медленно, с запасом на отдых. */
     const val IDLE_PERIOD_DAYS = 3
 
     /** Сколько очков снимает один штраф. */
     const val IDLE_PENALTY = 1
 
-    /** Штраф за [idleDay]-й день простоя подряд: −1 на 3-й, 6-й, 9-й… день, в остальные — 0. */
-    fun idlePenalty(idleDay: Int): Int =
-        if (idleDay > 0 && idleDay % IDLE_PERIOD_DAYS == 0) -IDLE_PENALTY else 0
+    /** Сила: 2 дня отдыха без штрафа, 3-й — день, когда нужно успеть потренироваться. */
+    const val STRENGTH_REST_DAYS = 2
+
+    /**
+     * На какой день простоя подряд приходит первый штраф. Сила — на 4-й (2 дня отдыха, 3-й — на тренировку),
+     * выносливость и дисциплина — на 3-й.
+     */
+    fun firstIdlePenaltyDay(stat: Stat): Int = when (stat) {
+        Stat.STRENGTH -> STRENGTH_REST_DAYS + 2
+        Stat.ENDURANCE, Stat.DISCIPLINE -> IDLE_PERIOD_DAYS
+    }
+
+    /**
+     * Штраф за [idleDay]-й день простоя подряд: −1 в день первого штрафа ([firstIdlePenaltyDay]) и дальше
+     * каждые 3 дня (сила — 4-й, 7-й, 10-й…; остальные — 3-й, 6-й, 9-й…), в остальные дни — 0.
+     */
+    fun idlePenalty(idleDay: Int, stat: Stat): Int {
+        val first = firstIdlePenaltyDay(stat)
+        return if (idleDay >= first && (idleDay - first) % IDLE_PERIOD_DAYS == 0) -IDLE_PENALTY else 0
+    }
 
     /**
      * Простаивала ли характеристика в день [p]: true — день простоя, false — очки были, null — неизвестно
@@ -320,8 +337,8 @@ object StatsMath {
 
     /**
      * Штрафы за простой поверх очков дней [days]. Действуют с дня [since] (раньше этих правил не было) и только
-     * на завершённые дни до [today]: сегодня штрафа нет, пока день идёт. Простой — [idle]; каждый 3-й день
-     * простоя подряд снимает 1 очко. Предварительный день (данные о ночи не прочитаны) обрывает подсчёт:
+     * на завершённые дни до [today]: сегодня штрафа нет, пока день идёт. Простой — [idle]; штраф — [idlePenalty]
+     * (1 очко: сила с 4-го дня простоя подряд, остальные с 3-го, дальше каждые 3 дня). Предварительный день (данные о ночи не прочитаны) обрывает подсчёт:
      * его результат ещё неизвестен, и за него и после него штрафов в этом расчёте нет.
      */
     fun withPenalties(days: Map<Long, DayPoints>, since: Long, today: Long): Penalized {
@@ -338,7 +355,7 @@ object StatsMath {
             for (stat in Stat.entries) {
                 val run = if (idle(p, stat) == true) (idleRun[stat] ?: 0) + 1 else 0
                 idleRun[stat] = run
-                val penalty = idlePenalty(run)
+                val penalty = idlePenalty(run, stat)
                 if (penalty == 0) continue
                 q = q.copy(
                     strength = q.strength + if (stat == Stat.STRENGTH) penalty else 0,
@@ -355,7 +372,7 @@ object StatsMath {
             for (stat in Stat.entries) {
                 // Сегодня ещё может набраться: риск — если день так и закончится без очков. День без данных
                 // о шагах счёт сбросит, поэтому риска для выносливости нет, пока шаги не пришли.
-                risk[stat] = if (idle(t, stat) == true) idlePenalty((idleRun[stat] ?: 0) + 1) else 0
+                risk[stat] = if (idle(t, stat) == true) idlePenalty((idleRun[stat] ?: 0) + 1, stat) else 0
             }
         }
         return Penalized(out, risk)

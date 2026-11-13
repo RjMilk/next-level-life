@@ -42,9 +42,14 @@ class StatsPenaltyTest {
     }
 
     @Test
-    fun penaltyEveryThirdIdleDay() {
-        assertEquals(listOf(0, 0, -1, 0, 0, -1, 0, 0, -1), (1..9).map { StatsMath.idlePenalty(it) })
-        assertEquals(0, StatsMath.idlePenalty(0))
+    fun penaltySchedule() {
+        // Сила: 2 дня отдыха, 3-й — на тренировку, штраф с 4-го и дальше каждые 3 дня.
+        assertEquals(listOf(0, 0, 0, -1, 0, 0, -1, 0, 0, -1), (1..10).map { StatsMath.idlePenalty(it, Stat.STRENGTH) })
+        // Выносливость и дисциплина: каждый 3-й день.
+        for (stat in listOf(Stat.ENDURANCE, Stat.DISCIPLINE)) {
+            assertEquals(listOf(0, 0, -1, 0, 0, -1, 0, 0, -1), (1..9).map { StatsMath.idlePenalty(it, stat) })
+        }
+        assertEquals(0, StatsMath.idlePenalty(0, Stat.STRENGTH))
     }
 
     @Test
@@ -59,11 +64,11 @@ class StatsPenaltyTest {
         )
         val n = input.size
         val p = StatsMath.withPenalties(input, start, start + n).days
-        // Простой: дни 1–7 → штраф на 3-й и 6-й; после тренировки счёт заново — 2 дня без штрафа.
-        assertEquals(listOf(5, 0, 0, -1, 0, 0, -1, 0, 4, 0, 0), p.column(Stat.STRENGTH, n))
-        val src = p.getValue(start + 3).sources.last()
+        // Простой: дни 1–7 → штраф на 4-й и 7-й; после тренировки счёт заново — 2 дня без штрафа.
+        assertEquals(listOf(5, 0, 0, 0, -1, 0, 0, -1, 4, 0, 0), p.column(Stat.STRENGTH, n))
+        val src = p.getValue(start + 4).sources.last()
         assertEquals(SourceKind.STRENGTH_IDLE, src.kind)
-        assertEquals(3L, src.amount)
+        assertEquals(4L, src.amount)
         assertEquals(-1, src.points)
         assertTrue(p.values.all { it.endurance == 2 && it.discipline == 3 })
     }
@@ -142,17 +147,18 @@ class StatsPenaltyTest {
 
     @Test
     fun riskShowsPenaltyForToday() {
-        // 2 дня простоя завершены, сегодня — 3-й и пока пустой.
+        // 2 дня простоя завершены, сегодня — 3-й и пока пустой: выносливость и дисциплина под штрафом,
+        // а для силы 3-й день — ещё день на тренировку.
         val input = days(*idle(3))
         val r = StatsMath.withPenalties(input, start, start + 2)
-        assertEquals(-1, r.risk[Stat.STRENGTH])
+        assertEquals(0, r.risk[Stat.STRENGTH])
         assertEquals(-1, r.risk[Stat.ENDURANCE])
         assertEquals(-1, r.risk[Stat.DISCIPLINE])
-        // Сегодня уже есть очки силы — риска нет.
-        val trained = input + ((start + 2) to DayPoints(start + 2, 2, 0, 0, emptyList()))
-        assertEquals(0, StatsMath.withPenalties(trained, start, start + 2).risk[Stat.STRENGTH])
-        // Сегодня 2-й день простоя — штрафа сегодня не будет.
-        assertEquals(0, StatsMath.withPenalties(days(*idle(2)), start, start + 1).risk[Stat.STRENGTH])
+        // Сегодня 4-й день без силы — риск есть; с очками силы — нет.
+        val four = days(*idle(4))
+        assertEquals(-1, StatsMath.withPenalties(four, start, start + 3).risk[Stat.STRENGTH])
+        val trained = four + ((start + 3) to DayPoints(start + 3, 2, 0, 0, emptyList()))
+        assertEquals(0, StatsMath.withPenalties(trained, start, start + 3).risk[Stat.STRENGTH])
     }
 
     @Test
@@ -211,7 +217,8 @@ class StatsPenaltyTest {
     @Test
     fun guideTextsMatchRules() {
         assertEquals(
-            "Каждые 3 дня подряд без очков силы — −1 очко: на 3-й день, на 6-й, на 9-й и так далее. " +
+            "2 дня отдыха и 3-й день на тренировку — без штрафа. Если и 4-й день подряд прошёл без очков силы — " +
+                "−1 очко, дальше −1 очко на 7-й, 10-й день и так далее. " +
                 "День хотя бы с одним очком силы обнуляет счёт. Ниже нуля очки не опускаются.",
             plain(StatsGuide.forStat(Stat.STRENGTH, 120).penalty),
         )
