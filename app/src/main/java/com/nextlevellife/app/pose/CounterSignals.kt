@@ -165,11 +165,30 @@ internal object JointTuning {
 
     /** Кратко пропавший сустав берётся из последнего достоверного положения (с пометкой «устарел»). */
     const val STALE_MS = 250L
+
+    /**
+     * Допуск выхода сустава за край кадра, доля ширины (по x) и высоты (по y). ML Kit достраивает
+     * суставы за кадром, иногда с высокой уверенностью; дальше допуска такой сустав — «не виден».
+     */
+    const val FRAME_MARGIN = 0.05f
+
+    /**
+     * Точку можно использовать: координаты и уверенность — конечные числа, точка в кадре
+     * с допуском [FRAME_MARGIN]. Если размер кадра неизвестен (≤ 0), проверяется только конечность.
+     */
+    fun usable(p: PosePoint, frame: PoseFrame): Boolean {
+        if (!p.x.isFinite() || !p.y.isFinite() || !p.confidence.isFinite()) return false
+        if (frame.width <= 0 || frame.height <= 0) return true
+        val mx = frame.width * FRAME_MARGIN
+        val my = frame.height * FRAME_MARGIN
+        return p.x >= -mx && p.x <= frame.width + mx && p.y >= -my && p.y <= frame.height + my
+    }
 }
 
 /**
  * Суставы одной стороны тела во времени: последнее достоверное положение каждого сустава
  * и признак «свежий» (достоверен в этом кадре) или «устарел» (взят из прошлого, не старше [JointTuning.STALE_MS]).
+ * Точка с нечисловыми координатами или за краем кадра ([JointTuning.usable]) считается отсутствующей.
  */
 internal class JointTracker(val side: Side) {
     private val n = Limb.entries.size
@@ -181,7 +200,7 @@ internal class JointTracker(val side: Side) {
     fun update(frame: PoseFrame) {
         for (limb in Limb.entries) {
             val i = limb.ordinal
-            val p = frame.points[side.joint(limb)]
+            val p = frame.points[side.joint(limb)]?.takeIf { JointTuning.usable(it, frame) }
             confNow[i] = p?.confidence ?: 0f
             if (p != null && p.confidence >= JointTuning.MIN_CONFIDENCE) {
                 pos[i] = p
@@ -209,11 +228,22 @@ internal class JointTracker(val side: Side) {
     }
 }
 
-/** Признаки одной стороны тела в один момент: значение и «свежесть» (все главные суставы свежие). */
-internal class Sample(val timeMs: Long, private val values: FloatArray, private val fresh: BooleanArray) {
+/**
+ * Признаки одной стороны тела в один момент: значение и «свежесть» (все главные суставы свежие).
+ * [freshLimbs] — какие суставы были свежими в этот момент (по [Limb.ordinal]).
+ */
+internal class Sample(
+    val timeMs: Long,
+    private val values: FloatArray,
+    private val fresh: BooleanArray,
+    private val freshLimbs: BooleanArray = BooleanArray(Limb.entries.size),
+) {
     operator fun get(f: Feature): Float = values[f.ordinal]
 
     fun isFresh(f: Feature): Boolean = fresh[f.ordinal]
+
+    /** Все [limbs] были свежими в момент замера. */
+    fun allFresh(limbs: Set<Limb>): Boolean = limbs.all { freshLimbs[it.ordinal] }
 
     companion object {
         fun measure(timeMs: Long, joints: JointTracker): Sample {
@@ -221,7 +251,8 @@ internal class Sample(val timeMs: Long, private val values: FloatArray, private 
             val fresh = BooleanArray(Feature.entries.size) { i ->
                 !values[i].isNaN() && Feature.entries[i].joints.all { joints.isFresh(it) }
             }
-            return Sample(timeMs, values, fresh)
+            val freshLimbs = BooleanArray(Limb.entries.size) { i -> joints.isFresh(Limb.entries[i]) }
+            return Sample(timeMs, values, fresh, freshLimbs)
         }
     }
 }
@@ -261,10 +292,15 @@ internal class SideTrack(val side: Side) {
 /**
  * Обе стороны тела и выбор «липкой» стороны: меняется, только если другая сторона заметно
  * увереннее непрерывно [EngineTuning.SIDE_SWITCH_MS] или текущая потеряна дольше
- * [EngineTuning.SIDE_LOST_MS]. [need] — главные суставы упражнения; [onSwitch] — после смены стороны
- * (счётчик сбрасывает фильтры, чтобы не смешивать стороны).
+ * [lostSwitchMs] (по умолчанию [EngineTuning.SIDE_LOST_MS]; 0 — сразу же, как только текущая сторона
+ * не свежая, а другая свежая целиком). [need] — главные суставы упражнения; [onSwitch] — после смены
+ * стороны (счётчик сбрасывает фильтры, чтобы не смешивать стороны).
  */
-internal class SideSelector(private val need: Set<Limb>, private val onSwitch: () -> Unit = {}) {
+internal class SideSelector(
+    private val need: Set<Limb>,
+    private val lostSwitchMs: Long = EngineTuning.SIDE_LOST_MS,
+    private val onSwitch: () -> Unit = {},
+) {
     val tracks = Side.entries.map { SideTrack(it) }
 
     var active: SideTrack? = null
@@ -288,7 +324,8 @@ internal class SideSelector(private val need: Set<Limb>, private val onSwitch: (
             }
             val staleSince = activeStaleSince
             val otherOk = other.allFresh(need)
-            if (staleSince != null && t - staleSince > EngineTuning.SIDE_LOST_MS && otherOk) {
+            val lostLongEnough = staleSince != null && (lostSwitchMs <= 0L || t - staleSince > lostSwitchMs)
+            if (lostLongEnough && otherOk) {
                 switchTo(other)
             } else if (otherOk && other.score(need) > cur.score(need) + EngineTuning.SIDE_SWITCH_MARGIN * need.size) {
                 val since = challengerSince ?: t.also { challengerSince = it }
@@ -363,7 +400,7 @@ internal object BodyLocator {
             var score = 0f
             val missing = ArrayList<Limb>()
             for (limb in required) {
-                val c = frame.points[side.joint(limb)]?.confidence ?: 0f
+                val c = frame.points[side.joint(limb)]?.takeIf { JointTuning.usable(it, frame) }?.confidence ?: 0f
                 score += c
                 if (c < MIN_CONFIDENCE) missing += limb
             }
@@ -376,7 +413,7 @@ internal object BodyLocator {
         }
         val points = HashMap<Limb, PosePoint>()
         for (limb in required + optional) {
-            val p = frame.points[best.side.joint(limb)] ?: continue
+            val p = frame.points[best.side.joint(limb)]?.takeIf { JointTuning.usable(it, frame) } ?: continue
             if (p.confidence >= MIN_CONFIDENCE) points[limb] = p
         }
         return Located.Found(Body(best.side, points))

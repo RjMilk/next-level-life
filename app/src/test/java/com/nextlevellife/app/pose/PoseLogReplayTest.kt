@@ -146,6 +146,10 @@ internal object PoseLogReplay {
         val phoneCount: Int,
         val repTimes: List<Long>,
         val report: String,
+        /** Удержание: засчитанное время при проигрывании (сумма по подходам между сбросами); null — не удержание. */
+        val replayHeldMs: Long? = null,
+        /** Удержание: засчитанное время на телефоне (сумма по подходам между сбросами). */
+        val phoneHeldMs: Long? = null,
     )
 
     fun read(file: File): PoseLogData =
@@ -174,7 +178,9 @@ internal object PoseLogReplay {
                 phases += sim.phase.name
             }
         } else if (holdCounter != null) {
+            // Сброс в записи (пауза, новый подход) — счётчик начинает заново, как на телефоне.
             for ((i, f) in frames.withIndex()) {
+                if (i in data.resets) holdCounter.reset()
                 states += holdCounter.onFrame(f)
                 phases += rec[i].phase
             }
@@ -234,10 +240,21 @@ internal object PoseLogReplay {
 
         val phoneCount = phoneCount(rec)
         val phoneRepTimes = phoneRepTimes(frames, rec)
+        var replayHeldMs: Long? = null
+        var phoneHeldMs: Long? = null
         if (holdCounter != null) {
-            val replayHeld = states.lastOrNull()?.heldMs ?: 0L
-            line("УДЕРЖАНИЕ (засчитано): телефон ${fmt(rec.maxOf { it.heldMs } / 1000.0, 1)} с, " +
-                "проигрывание ${fmt(replayHeld / 1000.0, 1)} с" +
+            val replayHeld = heldBySets(states.map { it.heldMs }, data.resets)
+            val phoneHeld = heldBySets(rec.map { it.heldMs }, data.resets)
+            replayHeldMs = replayHeld.sum()
+            phoneHeldMs = phoneHeld.sum()
+            line("УДЕРЖАНИЕ (засчитано, сумма по подходам): телефон ${fmt(phoneHeldMs / 1000.0, 1)} с, " +
+                "проигрывание ${fmt(replayHeldMs / 1000.0, 1)} с" +
+                (if (replayHeld.size > 1) {
+                    "   по подходам: телефон " + phoneHeld.joinToString(" + ") { fmt(it / 1000.0, 1) } +
+                        ", проигрывание " + replayHeld.joinToString(" + ") { fmt(it / 1000.0, 1) }
+                } else {
+                    ""
+                }) +
                 (if (data.version != PoseLogFormat.VERSION) "   (запись ${data.version}: heldMs не писался)" else ""))
             line("в позе при проигрывании: ${pct(states.count { it.inPosition }, states.size)} кадров, " +
                 "время шло: ${pct(states.count { it.holding }, states.size)}")
@@ -307,7 +324,28 @@ internal object PoseLogReplay {
         }
         line()
 
-        return Result(data, states, phases, sim?.announced, phoneCount, phoneRepTimes, out.toString())
+        return Result(
+            data, states, phases, sim?.announced, phoneCount, phoneRepTimes, out.toString(),
+            replayHeldMs = replayHeldMs, phoneHeldMs = phoneHeldMs,
+        )
+    }
+
+    /**
+     * Засчитанное время каждого подхода: подходы разделены сбросами [resets] (индексы кадров, перед
+     * которыми счётчик начинал заново); итог подхода — максимум heldMs внутри него.
+     */
+    fun heldBySets(held: List<Long>, resets: Set<Int>): List<Long> {
+        val out = ArrayList<Long>()
+        var best = 0L
+        for ((i, h) in held.withIndex()) {
+            if (i in resets && i > 0) {
+                out += best
+                best = 0L
+            }
+            best = max(best, h)
+        }
+        out += best
+        return out
     }
 
     /** Счёт телефона: сумма по непрерывным отрезкам COUNT (без учёта цели подхода). */
@@ -411,10 +449,17 @@ class PoseLogReplayTest {
                 }
                 val r = PoseLogReplay.analyze(name, data)
                 report.append(r.report)
-                summary += String.format(
-                    Locale.US, "%-40s %-10s телефон %3d   проигрывание %s",
-                    name, data.exerciseId, r.phoneCount, r.replayCount?.toString() ?: "—",
-                )
+                summary += if (r.replayHeldMs != null) {
+                    String.format(
+                        Locale.US, "%-40s %-10s телефон %5.1f с   проигрывание %5.1f с",
+                        name, data.exerciseId, (r.phoneHeldMs ?: 0L) / 1000.0, r.replayHeldMs / 1000.0,
+                    )
+                } else {
+                    String.format(
+                        Locale.US, "%-40s %-10s телефон %3d   проигрывание %s",
+                        name, data.exerciseId, r.phoneCount, r.replayCount?.toString() ?: "—",
+                    )
+                }
             }
             report.append("=== ИТОГО (${files.size} записей)\n")
             summary.forEach { report.append(it).append('\n') }

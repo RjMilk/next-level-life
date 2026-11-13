@@ -244,7 +244,7 @@ internal object CounterThresholds {
      * локоть под плечом, линия плечо–лодыжка поднята над горизонталью на ~10°.
      */
     object Plank {
-        /** Угол в тазу плечо–таз–лодыжка не меньше. */
+        /** Угол в тазу плечо–таз–лодыжка не меньше. Главный критерий ровного корпуса. */
         const val ENTER_HIP_ANGLE = 165f
         const val HOLD_HIP_ANGLE = 160f
 
@@ -258,15 +258,24 @@ internal object CounterThresholds {
         const val HOLD_ELBOW_MIN = 65f
         const val HOLD_ELBOW_MAX = 115f
 
-        /** Таз отклонён от отрезка плечо–лодыжка не больше чем на столько торса (вверх или вниз). */
-        const val ENTER_HIP_OFF_LINE = 0.15f
-        const val HOLD_HIP_OFF_LINE = 0.20f
+        /**
+         * Грубая страховка: таз отклонён от отрезка плечо–лодыжка не больше чем на столько торса
+         * (вверх или вниз). Главное — угол в тазу; по знаку отклонения выбирается «Таз выше/ниже».
+         * Прямые ноги, угол ровно на пороге: отклонение ≈ 0,17 (165°) и ≈ 0,22 (160°) — страховка шире,
+         * чтобы не спорить с углом, и ловит только грубые случаи (например, согнутую ногу, которую угол не видит).
+         */
+        const val ENTER_HIP_OFF_LINE = 0.20f
+        const val HOLD_HIP_OFF_LINE = 0.28f
 
         /** Линия плечо–лодыжка наклонена от горизонтали не больше (и на входе, и в удержании). */
         const val BODY_TILT_MAX = 30f
 
-        /** Локоть ниже плеча: плечо выше локтя больше чем на столько торса. */
-        const val SHOULDER_OVER_ELBOW_MIN = 0f
+        /**
+         * Корпус поднят на предплечьях: плечо выше локтя хотя бы на столько торса
+         * (в планке ≈ 0,6 — длина плеча; лёжа на животе ≈ 0–0,1).
+         */
+        const val ENTER_SHOULDER_OVER_ELBOW = 0.25f
+        const val HOLD_SHOULDER_OVER_ELBOW = 0.20f
 
         /** Локоть под плечом: смещение по горизонтали не больше стольких торса. */
         const val ELBOW_SHOULDER_DX_MAX = 0.35f
@@ -282,6 +291,18 @@ internal object CounterThresholds {
 
         /** Отрезок короче не засчитывается. */
         const val MIN_SEGMENT_MS = 10_000L
+
+        /** Одна непрерывная серия оплачивается не больше (дальше поза держится, но время не растёт). */
+        const val MAX_SEGMENT_MS = 180_000L
+
+        /**
+         * Живой вход: удержание начинается, только если не раньше чем за столько до входа
+         * человек был виден НЕ в планке (а потом лёг в неё). Защита от фотографии планки.
+         */
+        const val LIVE_WINDOW_MS = 15_000L
+
+        /** «Не в планке» засчитывается, если такая поза видна непрерывно хотя бы столько (не дрожь порога). */
+        const val LIVE_OUT_MS = 300L
     }
 }
 
@@ -291,6 +312,9 @@ internal object HoldConfigs {
     private const val HIP_DOWN = "Таз ниже"
     private const val STRAIGHTEN_LEGS = "Выпрями ноги"
     private const val ELBOWS_UNDER = "Локти под плечи"
+    private const val RISE_ON_FOREARMS = "Поднимись на предплечья"
+    private const val START_OVER = "Опустись на колени и снова прими планку"
+    private const val MAX_REACHED = "Максимум за подход — 3 минуты"
 
     /** Пороги одного набора (вход или удержание). Сравнения записаны так, что NaN — нарушение. */
     private class PlankLimits(
@@ -299,24 +323,33 @@ internal object HoldConfigs {
         val elbowMin: Float,
         val elbowMax: Float,
         val hipOffLine: Float,
+        val shoulderOverElbow: Float,
     )
 
     private val plankEnter = with(CounterThresholds.Plank) {
-        PlankLimits(ENTER_HIP_ANGLE, ENTER_KNEE, ENTER_ELBOW_MIN, ENTER_ELBOW_MAX, ENTER_HIP_OFF_LINE)
+        PlankLimits(
+            ENTER_HIP_ANGLE, ENTER_KNEE, ENTER_ELBOW_MIN, ENTER_ELBOW_MAX, ENTER_HIP_OFF_LINE, ENTER_SHOULDER_OVER_ELBOW,
+        )
     }
     private val plankHold = with(CounterThresholds.Plank) {
-        PlankLimits(HOLD_HIP_ANGLE, HOLD_KNEE, HOLD_ELBOW_MIN, HOLD_ELBOW_MAX, HOLD_HIP_OFF_LINE)
+        PlankLimits(
+            HOLD_HIP_ANGLE, HOLD_KNEE, HOLD_ELBOW_MIN, HOLD_ELBOW_MAX, HOLD_HIP_OFF_LINE, HOLD_SHOULDER_OVER_ELBOW,
+        )
     }
 
-    /** Что не так с планкой (подсказка) или null. Порядок — от грубого к тонкому. */
+    /**
+     * Что не так с планкой (подсказка) или null. Порядок — от грубого к тонкому.
+     * Таз: главный критерий — угол плечо–таз–лодыжка; отклонение таза от линии — грубая страховка
+     * и направление подсказки (ниже линии — «Таз выше», выше — «Таз ниже»).
+     */
     private fun plankFault(s: Sample, strict: Boolean): String? = with(CounterThresholds.Plank) {
         val l = if (strict) plankEnter else plankHold
         val elbow = s[Feature.ELBOW]
         val off = s[Feature.HIP_OFF_LINE]
         when {
             !(s[Feature.BODY_FROM_HORIZONTAL] <= BODY_TILT_MAX) -> LIE_DOWN
+            !(s[Feature.SHOULDER_OVER_ELBOW] >= l.shoulderOverElbow) -> RISE_ON_FOREARMS
             !(elbow >= l.elbowMin && elbow <= l.elbowMax) ||
-                !(s[Feature.SHOULDER_OVER_ELBOW] > SHOULDER_OVER_ELBOW_MIN) ||
                 !(s[Feature.ELBOW_SHOULDER_DX] <= ELBOW_SHOULDER_DX_MAX) -> ELBOWS_UNDER
             !(s[Feature.KNEE] >= l.knee) -> STRAIGHTEN_LEGS
             off.isNaN() -> LIE_DOWN
@@ -335,6 +368,11 @@ internal object HoldConfigs {
             paidGapMs = PAID_GAP_MS,
             breakMs = BREAK_MS,
             minSegmentMs = MIN_SEGMENT_MS,
+            maxSegmentMs = MAX_SEGMENT_MS,
+            liveWindowMs = LIVE_WINDOW_MS,
+            liveOutMs = LIVE_OUT_MS,
+            startOverHint = START_OVER,
+            maxHint = MAX_REACHED,
         )
     }
 
