@@ -3,17 +3,16 @@ package com.nextlevellife.app.ui
 import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -33,14 +32,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.Weights
@@ -48,8 +44,6 @@ import com.nextlevellife.app.data.Workouts
 import com.nextlevellife.app.pose.rememberRepSound
 import kotlinx.coroutines.delay
 import java.util.UUID
-
-private val Tnum = TextStyle(fontFeatureSettings = "tnum")
 
 /** Одиночное упражнение: повторения считает только камера, ручного ввода нет. */
 @Composable
@@ -59,7 +53,8 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
     val sound = rememberRepSound()
     KeepScreenOn()
 
-    // Переживает поворот и раскрытие Fold.
+    // Переживает поворот и раскрытие Fold. Всё объявлено до выбора раскладки,
+    // поэтому позиционные ключи не зависят от ширины окна.
     var weight by rememberSaveable { mutableIntStateOf(Weights.DEFAULT) }
     var count by rememberSaveable { mutableIntStateOf(0) }
     val startedAt = rememberSaveable { SystemClock.elapsedRealtime() }
@@ -73,6 +68,9 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
     var recordedSaved by rememberSaveable { mutableStateOf(true) }
     // Один подход — один идентификатор: повторный вызов записи с ним ничего не начислит второй раз.
     val sessionId = rememberSaveable { UUID.randomUUID().toString() }
+    var frontCamera by rememberSaveable { mutableStateOf(true) }
+    // Идёт ли счёт (для цвета счётчика в панели на широком экране); после пересоздания придёт заново.
+    var counting by remember { mutableStateOf(false) }
 
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     LaunchedEffect(Unit) {
@@ -104,27 +102,16 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
 
     BackHandler(enabled = !recorded) { requestExit() }
 
-    val info: @Composable () -> Unit = {
-        Header(ex, elapsedMs)
+    val widthClass = currentWidthClass()
+    // На широком экране счётчик — в панели слева, на камере остаётся только человек.
+    val counterInPanel = widthClass == WidthClass.EXPANDED
+    val canFinish = count > 0 && !recorded
+
+    val weightChips: @Composable () -> Unit = {
         if (ex.kettlebell) {
             // Вес выбирается до первого повторения: камера его не видит, а цена от него зависит.
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Weights.all.forEach { w ->
-                    FilterChip(
-                        selected = weight == w,
-                        onClick = { weight = w },
-                        enabled = count == 0 && !recorded,
-                        label = { Text("$w кг", fontSize = 16.sp) },
-                    )
-                }
-            }
+            WeightChips(weight, enabled = count == 0 && !recorded) { weight = it }
         }
-        Text(
-            "1 повт = ${formatShort(Exercises.rewardMs(ex, 1, weight))} · " +
-                "заработано ${formatShort(Exercises.rewardMs(ex, count, weight))}",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.titleMedium.merge(Tnum),
-        )
     }
 
     val camera: @Composable (Modifier) -> Unit = { modifier ->
@@ -136,45 +123,71 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
             // На диалоге выхода счёт на паузе: человек смотрит в экран, а не делает повторения.
             active = !recorded && !showExit,
             sound = sound,
+            frontCamera = frontCamera,
+            onFrontCameraChange = { frontCamera = it },
             modifier = modifier,
+            showCount = !counterInPanel,
+            onCountingChange = { counting = it },
             onRep = { count++ },
         )
     }
 
-    val buttons: @Composable () -> Unit = {
-        BottomBar(
-            canFinish = count > 0 && !recorded,
-            onCancel = { requestExit() },
-            onFinish = { finish() },
-        )
-    }
-
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val wide = maxWidth >= 600.dp && maxWidth > maxHeight
-        if (wide) {
-            Row(
-                Modifier.fillMaxSize().padding(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Column(Modifier.width(360.dp).fillMaxHeight()) {
-                    Column(
-                        Modifier.weight(1f).verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) { info() }
-                    Spacer(Modifier.height(16.dp))
-                    buttons()
+    val panelWidth = widthClass.workoutPanelWidth
+    if (panelWidth == null) {
+        // Узкий экран: всё в одну колонку, камера забирает остаток высоты.
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(widthClass.outerPadding),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ExerciseTitle(ex, widthClass)
+            ExerciseTimer(elapsedMs, widthClass)
+            weightChips()
+            RewardInfo(ex, weight, count, stacked = false)
+            camera(
+                Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+            )
+            BottomBar(canFinish = canFinish, onCancel = { requestExit() }, onFinish = { finish() })
+        }
+    } else {
+        WorkoutSideLayout(widthClass, panelWidth, camera) {
+            if (counterInPanel) {
+                ExerciseTitle(ex, widthClass)
+                ExerciseTimer(elapsedMs, widthClass)
+                FittedRepCounter(
+                    count = count,
+                    target = null,
+                    counting = counting,
+                    onCamera = false,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    weightChips()
+                    RewardInfo(ex, weight, count, stacked = true)
                 }
-                camera(Modifier.weight(1f).fillMaxHeight())
+            } else {
+                // Средняя ширина: показания прокручиваются, кнопки закреплены внизу.
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    ExerciseTitle(ex, widthClass)
+                    ExerciseTimer(elapsedMs, widthClass)
+                    weightChips()
+                    RewardInfo(ex, weight, count, stacked = true)
+                }
             }
-        } else {
-            Column(
-                Modifier.fillMaxSize().padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                info()
-                camera(Modifier.fillMaxWidth().weight(1f))
-                buttons()
-            }
+            Spacer(Modifier.height(16.dp))
+            StackedButtons(canFinish = canFinish, onCancel = { requestExit() }, onFinish = { finish() })
         }
     }
 
@@ -203,50 +216,124 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
                 Text(
                     if (recordedSaved) "${repsText(recordedCount)}: +${formatShort(recordedEarnedMs)}, +$recordedXp опыта"
                     else "Подход не сохранился, время не начислено.",
-                    style = MaterialTheme.typography.bodyLarge.merge(Tnum),
+                    style = MaterialTheme.typography.bodyLarge.merge(Tabular),
                 )
             },
         )
     }
 }
 
+/** Название упражнения — отдельной строкой: длинное название не теснит таймер. */
 @Composable
-private fun Header(ex: Exercise, elapsedMs: Long) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            ex.name,
-            fontSize = 30.sp,
-            lineHeight = 34.sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-            formatDuration(elapsedMs),
-            style = MaterialTheme.typography.headlineMedium.merge(Tnum),
-            fontWeight = FontWeight.Bold,
-        )
-    }
+private fun ExerciseTitle(ex: Exercise, widthClass: WidthClass) {
+    Text(
+        ex.name,
+        style = if (widthClass == WidthClass.MEDIUM) {
+            MaterialTheme.typography.headlineSmall
+        } else {
+            MaterialTheme.typography.headlineMedium
+        },
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+    )
 }
 
 @Composable
+private fun ExerciseTimer(elapsedMs: Long, widthClass: WidthClass) {
+    ScoreText(
+        formatDuration(elapsedMs),
+        sizeSp = Scoreboard.exerciseTimerSp(widthClass),
+        color = MaterialTheme.colorScheme.onBackground,
+    )
+}
+
+@Composable
+private fun WeightChips(weight: Int, enabled: Boolean, onWeight: (Int) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Weights.all.forEach { w ->
+            FilterChip(
+                selected = weight == w,
+                onClick = { onWeight(w) },
+                enabled = enabled,
+                label = {
+                    Text(
+                        "$w кг",
+                        style = MaterialTheme.typography.titleSmall.merge(Tabular),
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+/** Цена повторения и заработанное; в узкой панели — двумя строками. */
+@Composable
+private fun RewardInfo(ex: Exercise, weight: Int, count: Int, stacked: Boolean) {
+    val one = "1 повт = ${formatShort(Exercises.rewardMs(ex, 1, weight))}"
+    val earned = formatShort(Exercises.rewardMs(ex, count, weight))
+    val style = MaterialTheme.typography.titleMedium.merge(Tabular)
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    if (stacked) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(one, color = muted, style = style)
+            Text("Заработано: $earned", color = muted, style = style)
+        }
+    } else {
+        Text("$one · заработано $earned", color = muted, style = style)
+    }
+}
+
+private val TightButtonPadding = PaddingValues(horizontal = 8.dp)
+
+/** Кнопки в ряд под камерой (узкий экран). */
+@Composable
 private fun BottomBar(canFinish: Boolean, onCancel: () -> Unit, onFinish: () -> Unit) {
-    val tight = PaddingValues(horizontal = 8.dp)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         OutlinedButton(
             onClick = onCancel,
-            contentPadding = tight,
-            modifier = Modifier.weight(1f).height(64.dp),
-        ) { Text("Отмена", fontSize = 18.sp, maxLines = 1) }
+            shape = ButtonShape,
+            contentPadding = TightButtonPadding,
+            modifier = Modifier
+                .weight(1f)
+                .height(64.dp),
+        ) { Text("Отмена", style = MaterialTheme.typography.titleMedium, maxLines = 1) }
         Button(
             onClick = onFinish,
             enabled = canFinish,
-            contentPadding = tight,
-            modifier = Modifier.weight(1.6f).height(64.dp),
-        ) { Text("Готово", fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1) }
+            shape = ButtonShape,
+            contentPadding = TightButtonPadding,
+            modifier = Modifier
+                .weight(1.6f)
+                .height(64.dp),
+        ) { Text("Готово", style = MaterialTheme.typography.titleLarge, maxLines = 1) }
     }
+}
+
+/** Кнопки столбиком внизу левой панели (широкий экран): «Готово» — нижняя и крупнее. */
+@Composable
+private fun ColumnScope.StackedButtons(canFinish: Boolean, onCancel: () -> Unit, onFinish: () -> Unit) {
+    OutlinedButton(
+        onClick = onCancel,
+        shape = ButtonShape,
+        contentPadding = TightButtonPadding,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = MainButtonHeight),
+    ) { Text("Отмена", style = MaterialTheme.typography.titleMedium, maxLines = 1) }
+    Spacer(Modifier.height(12.dp))
+    Button(
+        onClick = onFinish,
+        enabled = canFinish,
+        shape = ButtonShape,
+        contentPadding = TightButtonPadding,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(64.dp),
+    ) { Text("Готово", style = MaterialTheme.typography.titleLarge, maxLines = 1) }
 }
 
 /** «1 повторение», «3 повторения», «5 повторений». */

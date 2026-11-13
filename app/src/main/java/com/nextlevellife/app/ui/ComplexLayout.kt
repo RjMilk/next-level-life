@@ -16,7 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,20 +29,20 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.min
-import androidx.compose.ui.unit.sp
 import com.nextlevellife.app.data.Cindy
 import com.nextlevellife.app.data.Minotaur
 import com.nextlevellife.app.data.Weights
@@ -59,13 +59,14 @@ internal fun ComplexPrep(
     onStart: () -> Unit,
 ) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val widthClass = currentWidthClass()
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         Column(
             Modifier
                 .fillMaxHeight()
-                .widthIn(max = 600.dp)
+                .widthIn(max = ContentMaxWidth)
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(widthClass.outerPadding),
         ) {
             Column(
                 Modifier
@@ -89,29 +90,26 @@ internal fun ComplexPrep(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = onBack,
+                    shape = ButtonShape,
                     modifier = Modifier
                         .weight(1f)
                         .height(64.dp),
-                ) { Text("Назад") }
+                ) { Text("Назад", style = MaterialTheme.typography.titleMedium) }
                 Button(
                     onClick = onStart,
+                    shape = ButtonShape,
                     modifier = Modifier
                         .weight(2f)
                         .height(64.dp),
-                ) { Text("Старт", fontSize = 22.sp, fontWeight = FontWeight.Bold) }
+                ) { Text("Старт", style = MaterialTheme.typography.titleLarge) }
             }
         }
     }
 }
 
 @Composable
-private fun ColumnScope.PrepTitle(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.headlineMedium,
-        fontWeight = FontWeight.Black,
-        color = Accent,
-    )
+private fun PrepTitle(text: String) {
+    Text(text, style = MaterialTheme.typography.headlineMedium, color = Accent)
 }
 
 @Composable
@@ -133,7 +131,11 @@ private fun ColumnScope.MinotaurPrep(weight: Int, onWeight: (Int) -> Unit) {
     Text("Вес гири", style = MaterialTheme.typography.titleMedium)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Weights.all.forEach { w ->
-            FilterChip(selected = weight == w, onClick = { onWeight(w) }, label = { Text("$w кг") })
+            FilterChip(
+                selected = weight == w,
+                onClick = { onWeight(w) },
+                label = { Text("$w кг", style = MaterialTheme.typography.titleSmall.merge(Tabular)) },
+            )
         }
     }
     Text("Награда: +${formatShort(Minotaur.rewardMs(weight))}, +${Minotaur.xp(weight)} опыта")
@@ -163,16 +165,10 @@ private fun ColumnScope.CindyPrep() {
 
 // ---------- Выполнение ----------
 
-/** Размеры показаний: при нехватке высоты уменьшаются шрифты, а не камера. */
-private class RunSizes(val timer: TextUnit, val name: TextUnit, val gap: Dp, val compact: Boolean = false)
-
-private fun sizesFor(height: Dp): RunSizes = when {
-    height >= 760.dp -> RunSizes(timer = 72.sp, name = 32.sp, gap = 10.dp)
-    height >= 640.dp -> RunSizes(timer = 64.sp, name = 30.sp, gap = 8.dp)
-    height >= 540.dp -> RunSizes(timer = 56.sp, name = 28.sp, gap = 6.dp)
-    else -> RunSizes(timer = 44.sp, name = 22.sp, gap = 4.dp, compact = true)
-}
-
+/**
+ * Раскладка по классу ширины окна: узкий — показания, камера и кнопки в одну колонку;
+ * средний — панель 220 dp слева и камера справа; широкий — панель 300 dp с лесенкой/кругами.
+ */
 @Composable
 internal fun ComplexRunContent(
     state: ComplexRunState,
@@ -185,103 +181,132 @@ internal fun ComplexRunContent(
 ) {
     val kind = state.kind
     val step = kind.step(state.stepIndex)
+    val widthClass = currentWidthClass()
+    val pad = widthClass.outerPadding
+    // Выбор камеры — до ветвления раскладки: переживает и пересоздание, и смену класса ширины.
+    var frontCamera by rememberSaveable { mutableStateOf(true) }
 
-    BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-        val twoPane = maxWidth >= 600.dp && maxWidth > maxHeight
-        val camera: @Composable (Modifier) -> Unit = { mod ->
-            CameraRepPanel(
-                exercise = step.exercise,
-                count = state.stepCount,
-                target = step.reps,
-                sessionKey = state.stepIndex,
-                active = cameraActive,
-                sound = sound,
-                modifier = mod,
-                onRep = onRep,
-            )
-        }
-        if (twoPane) {
-            // Слева только показания с прокруткой: камеру они не теснят, шрифты можно крупнее.
-            val sizes = if (maxHeight >= 560.dp) sizesFor(760.dp) else sizesFor(540.dp)
-            val leftWidth = min(360.dp, maxWidth * 0.5f)
-            Row(
-                Modifier
-                    .fillMaxSize()
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Column(
-                    Modifier
-                        .width(leftWidth)
-                        .fillMaxHeight(),
-                ) {
-                    // Слева мало высоты (телефон лёжа): показания прокручиваются, кнопки закреплены.
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(sizes.gap),
-                    ) {
-                        Readings(state, elapsedMs, sizes)
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Controls(enabled = state.running, onSkip = onSkip, onQuit = onQuit)
-                }
-                camera(
-                    Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                )
-            }
-        } else {
-            val sizes = sizesFor(maxHeight)
+    val camera: @Composable (Modifier) -> Unit = { mod ->
+        CameraRepPanel(
+            exercise = step.exercise,
+            count = state.stepCount,
+            target = step.reps,
+            sessionKey = state.stepIndex,
+            active = cameraActive,
+            sound = sound,
+            frontCamera = frontCamera,
+            onFrontCameraChange = { frontCamera = it },
+            modifier = mod,
+            onRep = onRep,
+        )
+    }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val innerHeight = (maxHeight - pad * 2).value
+        val innerWidth = (maxWidth - pad * 2).value
+        val panelWidth = widthClass.workoutPanelWidth
+        if (panelWidth == null) {
             Column(
                 Modifier
-                    .fillMaxHeight()
-                    .widthIn(max = 600.dp)
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(sizes.gap),
+                    .fillMaxSize()
+                    .padding(pad),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Readings(state, elapsedMs, sizes)
+                Readings(
+                    state = state,
+                    elapsedMs = elapsedMs,
+                    widthClass = widthClass,
+                    widthDp = innerWidth,
+                    heightDp = innerHeight,
+                    inPanel = false,
+                )
                 camera(
                     Modifier
                         .weight(1f)
                         .fillMaxWidth(),
                 )
-                Controls(enabled = state.running, onSkip = onSkip, onQuit = onQuit)
+                Controls(enabled = state.running, stacked = false, onSkip = onSkip, onQuit = onQuit)
+            }
+        } else {
+            WorkoutSideLayout(widthClass, panelWidth, camera) {
+                // Показания прокручиваются, если не влезают по высоте (телефон лёжа); кнопки закреплены.
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Readings(
+                        state = state,
+                        elapsedMs = elapsedMs,
+                        widthClass = widthClass,
+                        widthDp = panelWidth.value,
+                        heightDp = innerHeight,
+                        inPanel = true,
+                    )
+                    if (widthClass == WidthClass.EXPANDED) {
+                        Spacer(Modifier.height(4.dp))
+                        when (kind) {
+                            ComplexKind.MINOTAUR -> MinotaurLadder(state)
+                            ComplexKind.CINDY -> CindyRounds(state)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Controls(enabled = state.running, stacked = true, onSkip = onSkip, onQuit = onQuit)
             }
         }
     }
 }
 
+/** Таймер Синди с округлением вверх: старт показывает 20:00, а 0:00 — только когда время вышло. */
+private fun complexTimerText(kind: ComplexKind, elapsedMs: Long): String = when (kind) {
+    ComplexKind.MINOTAUR -> formatDuration(elapsedMs)
+    ComplexKind.CINDY -> formatDuration((Cindy.DURATION_MS - elapsedMs).coerceAtLeast(0L) + 999L)
+}
+
+/** Все ступени Минотавра пройдены целиком. */
+private fun minotaurDone(state: ComplexRunState): Boolean {
+    val kind = state.kind
+    if (kind != ComplexKind.MINOTAUR) return false
+    val step = kind.step(state.stepIndex)
+    return state.finished && kind.nextStep(state.stepIndex) == null && !state.skipped && state.stepCount >= step.reps
+}
+
 @Composable
-private fun Readings(state: ComplexRunState, elapsedMs: Long, sizes: RunSizes) {
+private fun Readings(
+    state: ComplexRunState,
+    elapsedMs: Long,
+    widthClass: WidthClass,
+    widthDp: Float,
+    heightDp: Float,
+    inPanel: Boolean,
+) {
     val kind = state.kind
     val step = kind.step(state.stepIndex)
     val next = kind.nextStep(state.stepIndex)
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val fontScale = LocalDensity.current.fontScale
     val minotaurBest = remember(state.weight, state.finished) {
         if (kind == ComplexKind.MINOTAUR) minotaurBestMs(state.weight) else null
     }
     val cindyBest = remember(state.finished) { if (kind == ComplexKind.CINDY) cindyBestRounds() else null }
+    // Мало высоты (разделённый экран) — строки помельче, чтобы камере осталось место.
+    val short = heightDp < Scoreboard.SHORT_HEIGHT_DP
 
-    val timerText: String
+    val timerText = complexTimerText(kind, elapsedMs)
+    val timerSp = Scoreboard.complexTimerSp(widthClass, widthDp, heightDp, timerText.length, fontScale)
     val record: String?
     val progress: Float
     val stageText: String
     when (kind) {
         ComplexKind.MINOTAUR -> {
-            timerText = formatDuration(elapsedMs)
             record = minotaurBest?.let { formatDuration(it) }
             progress = state.totalCounted.toFloat() / Minotaur.totalReps
             stageText = "Ступень ${step.round} из ${Minotaur.ladder.size} · ${state.weight} кг"
         }
         ComplexKind.CINDY -> {
-            // Округление вверх: старт показывает 20:00, а 0:00 — только когда время вышло.
-            val left = (Cindy.DURATION_MS - elapsedMs).coerceAtLeast(0L)
-            timerText = formatDuration(left + 999L)
             record = cindyBest?.let { (r, e) -> "$r + $e" }
             progress = elapsedMs.toFloat() / Cindy.DURATION_MS
             stageText = "Круг ${step.round}"
@@ -289,33 +314,21 @@ private fun Readings(state: ComplexRunState, elapsedMs: Long, sizes: RunSizes) {
     }
     val lastMinute = kind == ComplexKind.CINDY && Cindy.DURATION_MS - elapsedMs <= 60_000L && state.running
 
-    // Таймер и рекорд.
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
+    // Таймер на всю ширину, рекорд — под ним.
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        ScoreText(
             timerText,
-            maxLines = 1,
-            style = TextStyle(
-                fontSize = sizes.timer,
-                lineHeight = sizes.timer,
-                fontWeight = FontWeight.Black,
-                fontFeatureSettings = "tnum",
-                color = if (lastMinute) Accent else MaterialTheme.colorScheme.onBackground,
-            ),
+            sizeSp = timerSp,
+            color = if (lastMinute) Accent else MaterialTheme.colorScheme.onBackground,
+            textAlign = TextAlign.Center,
         )
         if (record != null) {
-            Spacer(Modifier.width(16.dp))
-            Column {
-                Text("Рекорд", color = muted, style = MaterialTheme.typography.labelMedium)
-                Text(
-                    record,
-                    color = muted,
-                    style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
-                )
-            }
+            Text(
+                "Рекорд $record",
+                color = muted,
+                style = MaterialTheme.typography.titleSmall.merge(Tabular),
+                maxLines = 1,
+            )
         }
     }
 
@@ -328,56 +341,37 @@ private fun Readings(state: ComplexRunState, elapsedMs: Long, sizes: RunSizes) {
         trackColor = MaterialTheme.colorScheme.surfaceVariant,
     )
 
-    // Ступень/круг и плашки упражнений внутри неё.
+    // Ступень/круг и плашки упражнений внутри неё; в узкой панели — друг под другом.
     val parts = kind.exercises.size
-    val minotaurDone = kind == ComplexKind.MINOTAUR && state.finished && next == null && !state.skipped &&
-        state.stepCount >= step.reps
-    val pos = if (minotaurDone) parts else step.part
-    Row(
-        Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text(
-            stageText,
-            color = muted,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-        )
+    val pos = if (minotaurDone(state)) parts else step.part
+    val stage: @Composable () -> Unit = {
+        Text(stageText, color = muted, style = MaterialTheme.typography.bodyMedium.merge(Tabular), maxLines = 1)
+    }
+    if (inPanel) {
+        stage()
+        PartBars(parts, pos, Modifier.fillMaxWidth())
+    } else {
         Row(
-            Modifier
-                .weight(1f)
-                .semantics { contentDescription = "Упражнение ${(pos + 1).coerceAtMost(parts)} из $parts" },
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            val shape = RoundedCornerShape(4.dp)
-            repeat(parts) { i ->
-                val base = Modifier
-                    .weight(1f)
-                    .height(14.dp)
-                val mod = when {
-                    i < pos -> base.background(Accent, shape)
-                    i == pos -> base
-                        .background(Accent.copy(alpha = 0.3f), shape)
-                        .border(2.dp, Accent, shape)
-                    else -> base.background(MaterialTheme.colorScheme.surfaceVariant, shape)
-                }
-                Box(mod)
-            }
+            stage()
+            PartBars(parts, pos, Modifier.weight(1f))
         }
     }
 
-    // Что делать сейчас.
+    // Что делать сейчас: упражнение и цель шага.
     Column(Modifier.fillMaxWidth()) {
         Text(
-            step.exercise.name,
+            "${step.exercise.name} ×${step.reps}",
             modifier = Modifier.fillMaxWidth(),
-            style = TextStyle(
-                fontSize = sizes.name,
-                lineHeight = sizes.name * 1.15f,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground,
-            ),
+            style = if (short || widthClass == WidthClass.MEDIUM) {
+                MaterialTheme.typography.headlineSmall
+            } else {
+                MaterialTheme.typography.headlineMedium
+            },
+            color = MaterialTheme.colorScheme.onBackground,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
@@ -388,33 +382,160 @@ private fun Readings(state: ComplexRunState, elapsedMs: Long, sizes: RunSizes) {
                 else -> "Дальше: ${next.exercise.name} ×${next.reps}"
             },
             color = muted,
-            style = if (sizes.compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.titleMedium,
-            maxLines = 1,
+            style = if (short) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.titleMedium,
+            maxLines = if (inPanel) 2 else 1,
             overflow = TextOverflow.Ellipsis,
         )
     }
 }
 
+/** Плашки упражнений внутри ступени/круга: пройденные, текущее, будущие. */
 @Composable
-private fun Controls(enabled: Boolean, onSkip: () -> Unit, onQuit: () -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        val padding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+private fun PartBars(parts: Int, pos: Int, modifier: Modifier) {
+    Row(
+        modifier.semantics { contentDescription = "Упражнение ${(pos + 1).coerceAtMost(parts)} из $parts" },
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        val shape = RoundedCornerShape(4.dp)
+        repeat(parts) { i ->
+            val base = Modifier
+                .weight(1f)
+                .height(14.dp)
+            val mod = when {
+                i < pos -> base.background(Accent, shape)
+                i == pos -> base
+                    .background(Accent.copy(alpha = 0.3f), shape)
+                    .border(2.dp, Accent, shape)
+                else -> base.background(MaterialTheme.colorScheme.surfaceVariant, shape)
+            }
+            Box(mod)
+        }
+    }
+}
+
+private val CellShape = RoundedCornerShape(8.dp)
+
+/** Лесенка Минотавра 10 → 1 (широкий экран): пройденные ступени залиты, текущая обведена. */
+@Composable
+private fun MinotaurLadder(state: ComplexRunState) {
+    val round = state.kind.step(state.stepIndex).round
+    val allDone = minotaurDone(state)
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clearAndSetSemantics {
+                contentDescription = if (allDone) "Все ступени пройдены" else "Ступень $round из ${Minotaur.ladder.size}"
+            },
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text("Лесенка", color = muted, style = MaterialTheme.typography.labelLarge)
+        Minotaur.ladder.chunked(5).forEachIndexed { row, rungs ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                rungs.forEachIndexed { j, reps ->
+                    val r = row * 5 + j + 1
+                    val done = allDone || r < round
+                    val current = !allDone && r == round
+                    val cell = Modifier
+                        .weight(1f)
+                        .height(44.dp)
+                    val mod = when {
+                        done -> cell.background(Accent, CellShape)
+                        current -> cell
+                            .background(Accent.copy(alpha = 0.2f), CellShape)
+                            .border(2.dp, Accent, CellShape)
+                        else -> cell.background(MaterialTheme.colorScheme.surfaceVariant, CellShape)
+                    }
+                    Box(mod, contentAlignment = Alignment.Center) {
+                        Text(
+                            "$reps",
+                            color = when {
+                                done -> OnAccent
+                                current -> Accent
+                                else -> muted
+                            },
+                            style = MaterialTheme.typography.titleMedium.merge(Tabular),
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Круги Синди (широкий экран): число полных кругов и состав текущего круга. */
+@Composable
+private fun CindyRounds(state: ComplexRunState) {
+    val step = state.kind.step(state.stepIndex)
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Полных кругов", color = muted, style = MaterialTheme.typography.labelLarge)
+        ScoreText("${state.fullRounds}", sizeSp = 48, color = Accent)
+        Text("Круг ${step.round}", color = muted, style = MaterialTheme.typography.labelLarge.merge(Tabular))
+        Cindy.round.forEachIndexed { i, part ->
+            val done = i < step.part
+            val current = i == step.part && !state.finished
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 32.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val dot = Modifier.size(14.dp)
+                Box(
+                    when {
+                        done -> dot.background(Accent, CellShape)
+                        current -> dot.border(2.dp, Accent, CellShape)
+                        else -> dot.background(MaterialTheme.colorScheme.surfaceVariant, CellShape)
+                    },
+                )
+                Spacer(Modifier.size(10.dp))
+                Text(
+                    "${part.exercise.name} ×${part.reps}",
+                    color = if (current) MaterialTheme.colorScheme.onBackground else muted,
+                    style = if (current) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/** «Пропустить упражнение» и «Завершить»: в ряд под камерой или столбиком в панели. */
+@Composable
+private fun Controls(enabled: Boolean, stacked: Boolean, onSkip: () -> Unit, onQuit: () -> Unit) {
+    val padding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+    val label = MaterialTheme.typography.titleMedium
+    val skip: @Composable (Modifier) -> Unit = { mod ->
         OutlinedButton(
             onClick = onSkip,
             enabled = enabled,
+            shape = ButtonShape,
             contentPadding = padding,
-            modifier = Modifier
-                .weight(3f)
-                .heightIn(min = 48.dp),
-        ) { Text("Пропустить упражнение", textAlign = TextAlign.Center) }
+            modifier = mod.heightIn(min = MainButtonHeight),
+        ) { Text("Пропустить упражнение", style = label, textAlign = TextAlign.Center) }
+    }
+    val quit: @Composable (Modifier) -> Unit = { mod ->
         OutlinedButton(
             onClick = onQuit,
             enabled = enabled,
+            shape = ButtonShape,
             contentPadding = padding,
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Bad),
-            modifier = Modifier
-                .weight(2f)
-                .heightIn(min = 48.dp),
-        ) { Text("Завершить", textAlign = TextAlign.Center) }
+            modifier = mod.heightIn(min = MainButtonHeight),
+        ) { Text("Завершить", style = label, textAlign = TextAlign.Center) }
+    }
+    if (stacked) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            skip(Modifier.fillMaxWidth())
+            quit(Modifier.fillMaxWidth())
+        }
+    } else {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            skip(Modifier.weight(3f))
+            quit(Modifier.weight(2f))
+        }
     }
 }

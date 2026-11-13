@@ -4,22 +4,18 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.TextAutoSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -29,8 +25,8 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,18 +37,9 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.em
-import androidx.compose.ui.unit.sp
 import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.pose.BodyLocator
 import com.nextlevellife.app.pose.CameraPermissionGate
@@ -95,7 +82,6 @@ internal const val HINT_LOST = "Не вижу тебя"
 private const val FULL_DEPTH = 0.98f
 
 private val Warn = Color(0xFFFFD166)
-private val Scrim = Color.Black.copy(alpha = 0.55f)
 private val PanelShape = RoundedCornerShape(24.dp)
 
 private enum class Phase {
@@ -202,9 +188,16 @@ fun CameraRepPanel(
     sessionKey: Any,         // смена ключа = новый подход: счётчик с нуля, снова ждём исходную позу
     active: Boolean,         // false — превью идёт, счёт не ведётся
     sound: RepSound,
+    // Выбор камеры хранит родитель (rememberSaveable до выбора раскладки): после раскрытия Fold
+    // панель стоит в другом месте дерева, и её собственное сохранённое состояние потерялось бы.
+    frontCamera: Boolean,
+    onFrontCameraChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    showCount: Boolean = true,                     // false — счётчик показывает родитель (широкий экран)
+    onCountingChange: ((Boolean) -> Unit)? = null, // идёт ли счёт: для цвета счётчика у родителя
     onRep: () -> Unit,       // засчитано одно повторение
 ) {
+    val front = frontCamera
     val counter = remember(exercise.id, sessionKey) { RepCounters.forExercise(exercise.id) }
     val panel = modifier.clip(PanelShape).background(Color.Black)
 
@@ -213,8 +206,7 @@ fun CameraRepPanel(
             Text(
                 "Камера пока не умеет считать это упражнение",
                 color = Color.White,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleLarge,
                 textAlign = TextAlign.Center,
             )
         }
@@ -222,7 +214,11 @@ fun CameraRepPanel(
     }
 
     val tracker = remember(counter) { RepTracker(counter) }
-    var front by rememberSaveable { mutableStateOf(true) }
+
+    val currentOnCounting by rememberUpdatedState(onCountingChange)
+    LaunchedEffect(tracker) {
+        snapshotFlow { tracker.phase == Phase.COUNT }.collect { currentOnCounting?.invoke(it) }
+    }
 
     // «Чёрный ящик»: каждый кадр подхода в файл, чтобы проиграть его на компьютере.
     val context = LocalContext.current
@@ -275,7 +271,8 @@ fun CameraRepPanel(
                 exerciseId = exercise.id,
                 count = count,
                 target = target,
-                onSwitchCamera = { front = !front },
+                showCount = showCount,
+                onSwitchCamera = { onFrontCameraChange(!front) },
             )
         }
     }
@@ -385,10 +382,10 @@ private fun Readout(
     exerciseId: String,
     count: Int,
     target: Int?,
+    showCount: Boolean,
     onSwitchCamera: () -> Unit,
 ) {
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val maxCountSp = (maxHeight.value * 0.34f).coerceIn(96f, 160f)
+    Box(Modifier.fillMaxSize()) {
         val phase = tracker.phase
 
         Column(Modifier.fillMaxSize().padding(12.dp)) {
@@ -397,30 +394,37 @@ private fun Readout(
                 Spacer(Modifier.width(8.dp))
                 CameraSwitch(onSwitchCamera)
             }
+            DiagLine(diag, Modifier.padding(top = 6.dp))
 
-            Box(
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    // Справа место под индикатор амплитуды.
-                    .padding(end = 36.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                CountText(count, target, phase == Phase.COUNT, maxCountSp)
-                DiagLine(diag, Modifier.align(Alignment.TopStart).padding(top = 6.dp))
+            // Счётчик сам подбирает размер под эту область: 112 / 128 / 160 sp по ширине окна,
+            // при нехватке высоты — до 96 sp, потом цель уходит вправо от числа.
+            if (showCount) {
+                FittedRepCounter(
+                    count = count,
+                    target = target,
+                    counting = phase == Phase.COUNT,
+                    onCamera = true,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        // Справа место под индикатор амплитуды.
+                        .padding(top = 8.dp, bottom = 8.dp, end = 36.dp),
+                )
+            } else {
+                // Счётчик в панели слева: здесь только человек в кадре.
+                Spacer(Modifier.weight(1f))
             }
 
             if (phase == Phase.SEARCH) {
                 Text(
                     setupLine(exerciseId),
                     color = Color.White,
-                    fontSize = 16.sp,
-                    lineHeight = 21.sp,
+                    style = InstructionStyle,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Scrim, RoundedCornerShape(16.dp))
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                        .background(CameraScrim, RoundedCornerShape(16.dp))
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                 )
             }
         }
@@ -453,7 +457,7 @@ private fun StatusPlate(tracker: RepTracker, count: Int, target: Int?, modifier:
         modifier
             .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(Scrim)
+            .background(CameraScrim)
             .drawBehind {
                 // Полоска удержания позы: видно, что секунда идёт и скоро начнётся счёт.
                 if (showHold) {
@@ -471,62 +475,28 @@ private fun StatusPlate(tracker: RepTracker, count: Int, target: Int?, modifier:
         Text(
             text,
             color = color,
-            fontSize = 22.sp,
-            lineHeight = 26.sp,
-            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.headlineSmall,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
     }
 }
 
-@Composable
-private fun CountText(count: Int, target: Int?, counting: Boolean, maxSp: Float) {
-    val color = if (counting) Accent else Color.White.copy(alpha = 0.6f)
-    val text = buildAnnotatedString {
-        append("$count")
-        if (target != null) {
-            withStyle(SpanStyle(fontSize = 0.45.em)) { append(" / $target") }
-        }
-    }
-    Box(
-        Modifier
-            .widthIn(min = 120.dp)
-            .background(Scrim, PanelShape)
-            .padding(horizontal = 24.dp, vertical = 4.dp)
-            .semantics { contentDescription = if (target != null) "$count из $target" else "$count" },
-        contentAlignment = Alignment.Center,
-    ) {
-        // Длинное «17 / 20» на узком экране уменьшается, но не меньше 96 sp.
-        BasicText(
-            text,
-            style = TextStyle(
-                color = color,
-                fontWeight = FontWeight.Black,
-                fontFeatureSettings = "tnum",
-                textAlign = TextAlign.Center,
-                lineHeight = 1.05.em,
-            ),
-            maxLines = 1,
-            autoSize = TextAutoSize.StepBased(minFontSize = 96.sp, maxFontSize = maxSp.sp, stepSize = 4.sp),
-        )
-    }
-}
-
-/** Мелкая строка диагностики; от новых кадров перекомпонуется только она сама. */
+/**
+ * Мелкая приглушённая строка диагностики; от новых кадров перекомпонуется только она сама.
+ * До первого кадра — заглушка той же высоты, чтобы счётчик под ней не менял размер.
+ */
 @Composable
 private fun DiagLine(diag: FrameDiag, modifier: Modifier) {
-    val text = diag.text
-    if (text.isEmpty()) return
+    val text = diag.text.ifEmpty { "— к/с" }
     Text(
         text,
-        color = Color.White.copy(alpha = 0.85f),
-        fontSize = 12.sp,
-        lineHeight = 15.sp,
+        color = Color.White.copy(alpha = 0.6f),
+        style = MaterialTheme.typography.labelMedium.merge(Tabular),
         maxLines = 1,
         modifier = modifier
-            .background(Scrim, RoundedCornerShape(8.dp))
-            .padding(horizontal = 8.dp, vertical = 3.dp),
+            .background(CameraScrim, RoundedCornerShape(8.dp))
+            .padding(horizontal = 8.dp, vertical = 2.dp),
     )
 }
 
@@ -534,7 +504,7 @@ private fun DiagLine(diag: FrameDiag, modifier: Modifier) {
 private fun DepthBar(tracker: RepTracker, modifier: Modifier) {
     Canvas(modifier) {
         val r = CornerRadius(size.width / 2f)
-        drawRoundRect(Scrim, cornerRadius = r)
+        drawRoundRect(CameraScrim, cornerRadius = r)
         // Глубину читаем при рисовании: каждый кадр перерисовывает только эту полосу.
         val d = if (tracker.tracking) tracker.depth else 0f
         if (d > 0f) {
@@ -556,12 +526,12 @@ private fun CameraSwitch(onClick: () -> Unit) {
         Modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(Scrim)
+            .background(CameraScrim)
             .clickable(onClickLabel = "Переключить камеру", onClick = onClick)
             .padding(horizontal = 14.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text("Камера", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Text("Камера", color = Color.White, style = MaterialTheme.typography.titleSmall)
     }
 }
 
