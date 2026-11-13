@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import com.nextlevellife.app.block.BlockerService
 import com.nextlevellife.app.block.InstalledApps
 import com.nextlevellife.app.data.Cindy
+import com.nextlevellife.app.data.Saitama
 import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.data.Exercises
@@ -192,7 +193,14 @@ fun HomeScreen(
         StatsCard(stats, streak, onStatInfo)
     }
     val earn: @Composable () -> Unit = {
-        EarnSection(version, widthClass.gridColumns, onExercise, onComplex)
+        EarnSection(
+            version,
+            widthClass.gridColumns,
+            onExercise,
+            onComplex,
+            complexesSummary = "Минотавр, Синди, Сайтама",
+            extraComplexes = { SaitamaCard(onClick = { onComplex(Saitama.ID) }) },
+        )
     }
 
     if (widthClass == WidthClass.EXPANDED) {
