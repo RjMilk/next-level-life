@@ -83,6 +83,28 @@ data class MontageBeat(
 }
 
 /**
+ * «Нарезка», которая сейчас играет или уже досмотрена: учётный день [day], серия на её начало [streak], вехи
+ * [milestones]. Хранится строкой «день|серия|ВЕХИ» в rememberSaveable — переживает поворот и раскрытие Fold.
+ */
+data class MontagePlay(val day: Long, val streak: Int, val milestones: List<SaitamaMilestone>) {
+    fun encode(): String = "$day|$streak|" + milestones.joinToString(",") { it.name }
+
+    companion object {
+        /** Разбор [encode]; пустая или испорченная строка, нет ни одной вехи — null. */
+        fun decode(s: String): MontagePlay? {
+            val parts = s.split('|')
+            if (parts.size != 3) return null
+            val day = parts[0].toLongOrNull() ?: return null
+            val streak = parts[1].toIntOrNull() ?: return null
+            val milestones = parts[2].split(',')
+                .mapNotNull { name -> SaitamaMilestone.entries.firstOrNull { it.name == name } }
+                .distinct()
+            return if (milestones.isEmpty()) null else MontagePlay(day, streak, milestones)
+        }
+    }
+}
+
+/**
  * Чистая логика «Сайтамы», без Android: прогресс дня по подходам и активности, полный день, серия
  * и рекорд, новые вехи, недоплаченные бонусы, план «нарезки» и тексты. Её проверяют юнит-тесты.
  */
@@ -111,8 +133,13 @@ object SaitamaMath {
         return SaitamaDay(day, reps, runM?.coerceAtLeast(0L))
     }
 
-    /** Метры бега по строке активности дня: нет строки — бег не подтверждён (null). */
-    fun runMeters(activity: ActivityDay?): Long? = activity?.runDistanceM
+    /**
+     * Метры бега по строке активности дня; null — бег не подтверждён: строки нет, или тренировки и дистанция
+     * при её записи не читались ([ActivityDay.runsRead] = false) и пробежек в ней нет. Строка с одними шагами —
+     * не «0 км».
+     */
+    fun runMeters(activity: ActivityDay?): Long? =
+        activity?.takeIf { it.runsRead || it.runsCount > 0 }?.runDistanceM
 
     /** Полный ли день по его подходам и строке активности (для характеристик). */
     fun isFullDay(sets: List<SetEntry>, activity: ActivityDay?): Boolean {
@@ -125,33 +152,30 @@ object SaitamaMath {
     fun days(from: Long, to: Long, sets: List<SetEntry>, activities: List<ActivityDay>): Map<Long, SaitamaDay> {
         if (from > to) return emptyMap()
         val setsByDay = sets.groupBy { it.day }
-        val runByDay = activities.associate { it.day to it.runDistanceM }
+        val runByDay = activities.associate { it.day to runMeters(it) }
         return (from..to).associateWith { d -> dayOf(d, setsByDay[d].orEmpty(), runByDay[d]) }
     }
 
     /**
      * Почему бег сегодня не подтверждён; null — подтверждён (может быть и 0 км).
-     * [hasRow] — есть строка активности за день, [runsCount] — пробежек в ней, [availability] —
-     * доступ к Health Connect (null — ещё не проверяли), [canReadRuns] — выдано чтение тренировок
-     * и дистанции (null — не известно). Пробежка в строке есть — бег подтверждён при любом доступе.
+     * [row] — строка активности за день (null — нет), [availability] — доступ к Health Connect сейчас
+     * (null — ещё не проверяли), [canReadRuns] — выдано чтение тренировок и дистанции (null — не известно).
+     * Порядок: пробежка в строке — подтверждён при любом доступе; Health Connect сейчас недоступен или
+     * нет разрешения на тренировки — причина, даже если строка есть (старое чтение не подтверждает ноль);
+     * строка записана с прочитанными тренировками ([ActivityDay.runsRead]) — подтверждён; иначе — данных нет.
      */
-    fun runUnknownReason(
-        hasRow: Boolean, runsCount: Int, availability: HealthAvailability?, canReadRuns: Boolean?,
-    ): String? {
-        if (hasRow && runsCount > 0) return null
-        if (hasRow && availability == HealthAvailability.CONNECTED && canReadRuns == false) {
-            return "Нет разрешения читать тренировки и дистанцию"
-        }
-        if (hasRow) return null
-        return when (availability) {
-            HealthAvailability.UNAVAILABLE -> "На этом телефоне нет Health Connect"
-            HealthAvailability.UPDATE_REQUIRED -> "Health Connect нужно обновить"
-            HealthAvailability.NOT_CONNECTED -> "Health Connect не подключён"
+    fun runUnknownReason(row: ActivityDay?, availability: HealthAvailability?, canReadRuns: Boolean?): String? {
+        if (row != null && row.runsCount > 0) return null
+        when (availability) {
+            HealthAvailability.UNAVAILABLE -> return "На этом телефоне нет Health Connect"
+            HealthAvailability.UPDATE_REQUIRED -> return "Health Connect нужно обновить"
+            HealthAvailability.NOT_CONNECTED -> return "Health Connect не подключён"
             HealthAvailability.CONNECTED ->
-                if (canReadRuns == false) "Нет разрешения читать тренировки и дистанцию"
-                else "За сегодня ещё нет данных из Health Connect"
-            null -> "Данные о беге ещё не прочитаны"
+                if (canReadRuns == false) return "Нет разрешения читать тренировки и дистанцию"
+            null -> Unit
         }
+        if (row != null && row.runsRead) return null
+        return if (availability == null) "Данные о беге ещё не прочитаны" else "За сегодня ещё нет данных о тренировках из Health Connect"
     }
 
     // ---------- Серия ----------
@@ -185,11 +209,14 @@ object SaitamaMath {
         return best
     }
 
-    /** Отметка дня [day] в полосе: [p] — его прогресс (null — данных нет). */
+    /**
+     * Отметка дня [day] в полосе: [p] — его прогресс (null — данных нет). Сначала граница начала: день раньше
+     * [since] не в серии, даже если цели в нём выполнены.
+     */
     fun mark(day: Long, p: SaitamaDay?, since: Long, today: Long): SaitamaMark = when {
+        day < since && day != today -> SaitamaMark.BEFORE_START
         p != null && p.full -> SaitamaMark.FULL
         day == today -> SaitamaMark.TODAY
-        day < since -> SaitamaMark.BEFORE_START
         p == null || !p.runKnown -> SaitamaMark.NO_RUN_DATA
         else -> SaitamaMark.PARTIAL
     }
@@ -203,6 +230,15 @@ object SaitamaMath {
     fun bonusDays(days: Map<Long, SaitamaDay>, since: Long, today: Long, window: Int = Saitama.CHECK_DAYS): List<Long> {
         val from = maxOf(since, today - window + 1)
         return days.values.filter { it.full && it.day in from..today }.map { it.day }.sorted()
+    }
+
+    /**
+     * Попытка расчёта по одной и той же базе: [attempt] возвращает null, если базу подменили (восстановление копии)
+     * между началом попытки и записью, — тогда повтор, не больше [maxAttempts] раз. Не удалось — null.
+     */
+    fun <T : Any> untilSameDatabase(maxAttempts: Int, attempt: () -> T?): T? {
+        repeat(maxAttempts) { attempt()?.let { return it } }
+        return null
     }
 
     // ---------- Вехи и «нарезка» ----------

@@ -122,7 +122,7 @@ object ActivitySync {
             )
         }
 
-        val changed = withContext(Dispatchers.IO) { store(days, totals, runs, now, zone) }
+        val changed = withContext(Dispatchers.IO) { store(days, totals, runs, now, zone, runsRead = access.canReadRuns) }
         Settings.setActivityLastSyncMs(now)
         _state.update { it.copy(lastSyncMs = now, error = null) }
         if (changed) Store.notifyChanged()
@@ -130,9 +130,12 @@ object ActivitySync {
 
     /**
      * Пишет итоги, пробежки и начисления одной транзакцией. Возвращает true, если что-то
-     * изменилось (данные дня, пробежки или начислено).
+     * изменилось (данные дня, пробежки или начислено). [runsRead] — тренировки и дистанция читались в этот раз
+     * (выдано разрешение): пишется в строку дня, только тогда «0 пробежек» — подтверждённый ноль.
      */
-    private fun store(days: List<Long>, totals: List<DayTotals>, runs: List<ActivityRun>, now: Long, zone: ZoneId): Boolean {
+    private fun store(
+        days: List<Long>, totals: List<DayTotals>, runs: List<ActivityRun>, now: Long, zone: ZoneId, runsRead: Boolean,
+    ): Boolean {
         val enabled = Settings.stepsRewardEnabled
         val since = Settings.stepsRewardSinceDay
         val from = days.first()
@@ -181,7 +184,7 @@ object ActivitySync {
                 val row = ActivityDay(
                     day = t.day, steps = t.steps, runDistanceM = t.runDistanceM, runDurationMs = t.runDurationMs,
                     runSteps = t.runSteps, runsCount = t.runsCount, sources = t.sources,
-                    rewardedMs = newRewarded, updatedAtMs = now,
+                    rewardedMs = newRewarded, updatedAtMs = now, runsRead = runsRead,
                 )
                 if (old == null || old.copy(updatedAtMs = now) != row) changed = true
                 Diary.upsertActivityDay(db, row)

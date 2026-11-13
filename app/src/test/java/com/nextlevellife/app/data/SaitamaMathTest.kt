@@ -18,8 +18,8 @@ class SaitamaMathTest {
         measurement: Measurement = Measurement.REPS, heldMs: Long = 0L,
     ) = SetEntry(nextId++, 0L, d, exerciseId, exerciseId, null, reps, 0L, 0L, 0L, runId, measurement, heldMs)
 
-    private fun activity(d: Long = day, runM: Long = 0L, runs: Int = if (runM > 0) 1 else 0) =
-        ActivityDay(d, 5_000L, runM, 0L, 0L, runs, emptyList(), 0L, 0L)
+    private fun activity(d: Long = day, runM: Long = 0L, runs: Int = if (runM > 0) 1 else 0, runsRead: Boolean = true) =
+        ActivityDay(d, 5_000L, runM, 0L, 0L, runs, emptyList(), 0L, 0L, runsRead)
 
     private fun fullSets(d: Long = day) = listOf(set("pushups", 100, d), set("abs", 100, d), set("squats", 100, d))
 
@@ -85,18 +85,70 @@ class SaitamaMathTest {
     @Test
     fun runUnknownReasons() {
         val connected = HealthAvailability.CONNECTED
+        val notConnected = HealthAvailability.NOT_CONNECTED
+        val read = activity(runM = 0L, runsRead = true)
+        val stepsOnly = activity(runM = 0L, runsRead = false)
         // Пробежка в строке — подтверждён при любом доступе.
-        assertNull(SaitamaMath.runUnknownReason(true, 1, HealthAvailability.NOT_CONNECTED, false))
-        // Строка есть, тренировки читаются: 0 км — подтверждённый ноль.
-        assertNull(SaitamaMath.runUnknownReason(true, 0, connected, true))
-        assertNull(SaitamaMath.runUnknownReason(true, 0, null, null))
-        // Строка есть, но тренировки читать нельзя — пробежек и не видно.
-        assertNotNull(SaitamaMath.runUnknownReason(true, 0, connected, false))
-        assertEquals("Health Connect не подключён", SaitamaMath.runUnknownReason(false, 0, HealthAvailability.NOT_CONNECTED, false))
-        assertEquals("На этом телефоне нет Health Connect", SaitamaMath.runUnknownReason(false, 0, HealthAvailability.UNAVAILABLE, false))
-        assertEquals("Health Connect нужно обновить", SaitamaMath.runUnknownReason(false, 0, HealthAvailability.UPDATE_REQUIRED, false))
-        assertNotNull(SaitamaMath.runUnknownReason(false, 0, connected, true))
-        assertNotNull(SaitamaMath.runUnknownReason(false, 0, null, null))
+        assertNull(SaitamaMath.runUnknownReason(activity(runM = 4_000L, runsRead = false), notConnected, false))
+        // Строка записана с прочитанными тренировками: 0 км — подтверждённый ноль.
+        assertNull(SaitamaMath.runUnknownReason(read, connected, true))
+        assertNull(SaitamaMath.runUnknownReason(read, null, null))
+        // Строка с одними шагами — не «0 км», даже при подключённом Health Connect.
+        assertNotNull(SaitamaMath.runUnknownReason(stepsOnly, connected, true))
+        assertNotNull(SaitamaMath.runUnknownReason(stepsOnly, null, null))
+        // Health Connect отключили после синхронизации: строка не прячет причину.
+        assertEquals("Health Connect не подключён", SaitamaMath.runUnknownReason(read, notConnected, false))
+        assertEquals("Health Connect не подключён", SaitamaMath.runUnknownReason(stepsOnly, notConnected, false))
+        // Тренировки читать нельзя — пробежек и не видно.
+        assertEquals("Нет разрешения читать тренировки и дистанцию", SaitamaMath.runUnknownReason(read, connected, false))
+        assertEquals("Health Connect не подключён", SaitamaMath.runUnknownReason(null, notConnected, false))
+        assertEquals("На этом телефоне нет Health Connect", SaitamaMath.runUnknownReason(null, HealthAvailability.UNAVAILABLE, false))
+        assertEquals("Health Connect нужно обновить", SaitamaMath.runUnknownReason(null, HealthAvailability.UPDATE_REQUIRED, false))
+        assertNotNull(SaitamaMath.runUnknownReason(null, connected, true))
+        assertNotNull(SaitamaMath.runUnknownReason(null, null, null))
+    }
+
+    @Test
+    fun stepsOnlyRowIsUnknownRunNotZero() {
+        // Синхронизация без разрешения на тренировки (или строка до схемы 7): бег не подтверждён.
+        assertNull(SaitamaMath.runMeters(activity(runM = 0L, runsRead = false)))
+        assertEquals(0L, SaitamaMath.runMeters(activity(runM = 0L, runsRead = true)))
+        assertEquals(5_000L, SaitamaMath.runMeters(activity(runM = 5_000L, runsRead = false)))
+        val days = SaitamaMath.days(day - 1, day - 1, emptyList(), listOf(activity(day - 1, 0L, runsRead = false)))
+        val p = days.getValue(day - 1)
+        assertFalse(p.runKnown)
+        assertEquals(SaitamaMark.NO_RUN_DATA, SaitamaMath.mark(day - 1, p, since = day - 5, today = day))
+        val q = SaitamaMath.days(day - 1, day - 1, emptyList(), listOf(activity(day - 1, 0L, runsRead = true))).getValue(day - 1)
+        assertEquals(SaitamaMark.PARTIAL, SaitamaMath.mark(day - 1, q, since = day - 5, today = day))
+    }
+
+    @Test
+    fun activityMigrationAddsRunsRead() {
+        assertTrue(Diary.SCHEMA_VERSION >= 7)
+        val sql = Diary.MIGRATIONS[6].joinToString("\n")
+        assertTrue("ALTER TABLE activity_days ADD COLUMN runs_read INTEGER NOT NULL DEFAULT 0" in sql)
+    }
+
+    @Test
+    fun bonusRetriesWhileDatabaseIsReplaced() {
+        // Подменили базу в первых двух попытках — третья по одной базе проходит.
+        var calls = 0
+        assertEquals(600_000L, SaitamaMath.untilSameDatabase(3) { calls++; if (calls < 3) null else 600_000L })
+        assertEquals(3, calls)
+        // Подменяли каждый раз — ничего не начислено, попыток не больше трёх.
+        calls = 0
+        assertNull(SaitamaMath.untilSameDatabase(3) { calls++; null as Long? })
+        assertEquals(3, calls)
+    }
+
+    @Test
+    fun montagePlayRoundTrip() {
+        val p = MontagePlay(day, 4, listOf(SaitamaMilestone.SQUATS, SaitamaMilestone.DAY))
+        assertEquals("20000|4|SQUATS,DAY", p.encode())
+        assertEquals(p, MontagePlay.decode(p.encode()))
+        assertNull(MontagePlay.decode(""))
+        assertNull(MontagePlay.decode("20000|4|"))
+        assertNull(MontagePlay.decode("x|4|ABS"))
     }
 
     @Test
@@ -149,6 +201,10 @@ class SaitamaMathTest {
         assertEquals(2, SaitamaMath.streak(full, since = day - 2, today = day))
         assertEquals(2, SaitamaMath.record(full, since = day - 2, today = day))
         assertEquals(SaitamaMark.BEFORE_START, SaitamaMath.mark(day - 5, null, since = day - 2, today = day))
+        // Выполненный день раньше начала не подсвечивается полным: сначала граница начала.
+        val fullBefore = SaitamaMath.dayOf(day - 3, fullSets(day - 3), 10_000L)
+        assertEquals(SaitamaMark.BEFORE_START, SaitamaMath.mark(day - 3, fullBefore, since = day - 2, today = day))
+        assertEquals(SaitamaMark.FULL, SaitamaMath.mark(day - 2, SaitamaMath.dayOf(day - 2, fullSets(day - 2), 10_000L), since = day - 2, today = day))
     }
 
     @Test

@@ -86,6 +86,9 @@ data class ExerciseRecord(
  * [steps] — все шаги за день (агрегат Health Connect без двойного счёта); null — данных нет.
  * [runSteps] — шаги во время пробежек с дистанцией (не оплачиваются второй раз как ходьба).
  * [sources] — пакеты приложений, откуда пришли данные. [rewardedMs] — сколько уже начислено за день.
+ * [runsRead] — при последней записи строки тренировки и дистанция читались (было разрешение): только тогда
+ * «0 пробежек» — подтверждённый ноль. Строки до версии схемы 7 и записанные без разрешения — false
+ * (бег за такой день не подтверждён, если пробежек в строке нет).
  */
 data class ActivityDay(
     val day: Long,
@@ -97,6 +100,7 @@ data class ActivityDay(
     val sources: List<String>,
     val rewardedMs: Long,
     val updatedAtMs: Long,
+    val runsRead: Boolean = false,
 ) {
     /** Есть что показать: шаги или пробежка. Подтверждённый ноль шагов днём активности не считается. */
     val hasActivity: Boolean get() = (steps ?: 0L) > 0L || runsCount > 0
@@ -658,6 +662,7 @@ object Diary {
             put("sources", d.sources.joinToString(","))
             put("rewarded_ms", d.rewardedMs)
             put("updated_at_ms", d.updatedAtMs)
+            put("runs_read", if (d.runsRead) 1 else 0)
         }
         db.insertWithOnConflict("activity_days", null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
@@ -828,7 +833,7 @@ object Diary {
     )
 
     private const val ACTIVITY_COLS =
-        "day, steps, run_distance_m, run_duration_ms, run_steps, runs_count, sources, rewarded_ms, updated_at_ms"
+        "day, steps, run_distance_m, run_duration_ms, run_steps, runs_count, sources, rewarded_ms, updated_at_ms, runs_read"
     private const val ACTIVITY_RUN_COLS =
         "external_id, start_ms, end_ms, day, distance_m, steps, source, exercise_type"
 
@@ -836,7 +841,7 @@ object Diary {
         day = getLong(0), steps = longOrNull(1), runDistanceM = getLong(2), runDurationMs = getLong(3),
         runSteps = getLong(4), runsCount = getInt(5),
         sources = getString(6).split(',').filter { it.isNotBlank() },
-        rewardedMs = getLong(7), updatedAtMs = getLong(8),
+        rewardedMs = getLong(7), updatedAtMs = getLong(8), runsRead = getInt(9) != 0,
     )
 
     private fun Cursor.toActivityRun() = ActivityRun(
@@ -1070,6 +1075,11 @@ object Diary {
         listOf(
             "ALTER TABLE sets ADD COLUMN measurement_type TEXT NOT NULL DEFAULT 'REPS'",
             "ALTER TABLE sets ADD COLUMN held_ms INTEGER NOT NULL DEFAULT 0",
+        ),
+        // 6 → 7: признак «тренировки и дистанция прочитаны» у дня активности («Сайтама»): без него строка с одними
+        // шагами выглядела как подтверждённые 0 км. Старые строки — 0 (не подтверждено), пока синхронизация их не перепишет.
+        listOf(
+            "ALTER TABLE activity_days ADD COLUMN runs_read INTEGER NOT NULL DEFAULT 0",
         ),
     )
 }

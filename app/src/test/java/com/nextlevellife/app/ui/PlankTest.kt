@@ -57,7 +57,7 @@ class PlankTest {
 
     @Test
     fun migrationAddsMeasurementColumns() {
-        assertEquals(6, Diary.SCHEMA_VERSION)
+        assertTrue(Diary.SCHEMA_VERSION >= 6) // дальше схема растёт (6 → 7 — признак чтения бега)
         val sql = Diary.MIGRATIONS[5].joinToString("\n")
         assertTrue("ALTER TABLE sets ADD COLUMN measurement_type TEXT NOT NULL DEFAULT 'REPS'" in sql)
         assertTrue("ALTER TABLE sets ADD COLUMN held_ms INTEGER NOT NULL DEFAULT 0" in sql)

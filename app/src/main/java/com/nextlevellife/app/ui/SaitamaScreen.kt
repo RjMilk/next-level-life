@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,7 +47,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.nextlevellife.app.data.MontageBeat
+import com.nextlevellife.app.data.MontagePlay
+import com.nextlevellife.app.data.SaitamaMilestone
 import com.nextlevellife.app.data.Saitama
 import com.nextlevellife.app.data.SaitamaDay
 import com.nextlevellife.app.data.SaitamaGoal
@@ -99,14 +101,28 @@ fun SaitamaScreen(resumeCount: Int, onExercise: (String) -> Unit, onBack: () -> 
         }?.also { cachedState = it } ?: value
     }
 
-    var montage by remember { mutableStateOf<List<MontageBeat>>(emptyList()) }
-    val playing = montage.isNotEmpty()
+    // Что сейчас играет «нарезка» (день, серия, вехи — строкой, чтобы пережить поворот и раскрытие Fold); "" — ничего.
+    var playingKey by rememberSaveable { mutableStateOf("") }
+    // Вехи, уже досмотренные или пропущенные на этом экране: пока отметка пишется в фоне, второй раз не играть.
+    var handledKey by rememberSaveable { mutableStateOf("") }
+    val playing = remember(playingKey) { MontagePlay.decode(playingKey) }
+    val beats = remember(playing) { playing?.let { SaitamaMath.montage(it.milestones, it.streak) }.orEmpty() }
     // Новые вехи дня: после каждой загрузки (возврат с упражнения, пришла пробежка); пока идёт «нарезка» — ждут её конца.
-    LaunchedEffect(state, playing) {
+    // Здесь ничего не пишется: показанной веха становится только после воспроизведения или пропуска.
+    LaunchedEffect(state, playing == null, handledKey) {
         val s = state ?: return@LaunchedEffect
-        if (playing) return@LaunchedEffect
-        val fresh = withContext(Dispatchers.IO) { SaitamaRepository.takeNewMilestones(s) }
-        if (fresh.isNotEmpty()) montage = SaitamaMath.montage(fresh, s.streak)
+        if (playing != null) return@LaunchedEffect
+        val handled = MontagePlay.decode(handledKey)?.takeIf { it.day == s.today }?.milestones.orEmpty()
+        val fresh = withContext(Dispatchers.IO) { SaitamaRepository.unshownMilestones(s) }.filter { it !in handled }
+        if (fresh.isNotEmpty()) playingKey = MontagePlay(s.today, s.streak, fresh).encode()
+    }
+    val onMontageEnd = {
+        playing?.let { p ->
+            SaitamaRepository.markShownAsync(p.day, p.milestones)
+            val before = MontagePlay.decode(handledKey)?.takeIf { it.day == p.day }?.milestones.orEmpty()
+            handledKey = MontagePlay(p.day, 0, (before + p.milestones).distinct()).encode()
+        }
+        playingKey = ""
     }
 
     val s = state
@@ -115,7 +131,9 @@ fun SaitamaScreen(resumeCount: Int, onExercise: (String) -> Unit, onBack: () -> 
         if (s == null) {
             Column(Modifier.padding(pad)) { SaitamaHeader() }
         } else {
-            val replay = { montage = SaitamaMath.replay(s.day.reached, s.streak) }
+            val replay = {
+                playingKey = MontagePlay(s.today, s.streak, SaitamaMilestone.entries.filter { it in s.day.reached }).encode()
+            }
             if (widthClass == WidthClass.EXPANDED) {
                 Row(
                     Modifier
@@ -169,7 +187,8 @@ fun SaitamaScreen(resumeCount: Int, onExercise: (String) -> Unit, onBack: () -> 
                 }
             }
         }
-        if (playing) SaitamaMontage(montage, sound) { montage = emptyList() }
+        // Досмотрена или пропущена (тап, «Назад») — вехи отмечаются показанными.
+        if (beats.isNotEmpty()) SaitamaMontage(beats, sound, onFinished = onMontageEnd)
     }
 }
 
