@@ -35,12 +35,13 @@ class ExpandableTextTest {
     @Test
     fun kettlebellSummaryHasCountAndWeightFactors() {
         assertEquals(
-            "5${nbsp}упражнений · цена за 16${nbsp}кг; 24${nbsp}кг$nbsp×1,2, 32${nbsp}кг$nbsp×1,6",
+            "5${nbsp}упражнений · цена за 16${nbsp}кг",
             ExpandableText.kettlebellSummary(Exercises.kettlebell.size),
         )
+        assertEquals("1${nbsp}упражнение · цена за 16${nbsp}кг", ExpandableText.kettlebellSummary(1))
         assertEquals(
-            "1${nbsp}упражнение · цена за 16${nbsp}кг; 24${nbsp}кг$nbsp×1,2, 32${nbsp}кг$nbsp×1,6",
-            ExpandableText.kettlebellSummary(1),
+            "Цена за 16${nbsp}кг; 24${nbsp}кг$nbsp×1,2, 32${nbsp}кг$nbsp×1,6",
+            ExpandableText.kettlebellPrices(),
         )
         assertEquals("3${nbsp}упражнения", ExpandableText.kettlebellSummary(3).substringBefore(" ·"))
     }

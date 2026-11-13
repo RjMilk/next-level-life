@@ -17,13 +17,16 @@ object ExpandableText {
     /** «Отжимания, Приседания, Пресс, Подтягивания, Планка». */
     fun exerciseNames(exercises: List<Exercise>): String = exercises.joinToString(", ") { it.name }
 
-    /** «5 упражнений · цена за 16 кг; 24 кг ×1,2, 32 кг ×1,6» — множители берутся из [Weights]. */
-    fun kettlebellSummary(count: Int): String {
+    /** «5 упражнений · цена за 16 кг» — сводка свёрнутой группы (множители — внутри, [kettlebellPrices]). */
+    fun kettlebellSummary(count: Int): String =
+        "$count$NBSP${pluralRu(count, "упражнение", "упражнения", "упражнений")} · цена за ${Weights.DEFAULT}${NBSP}кг"
+
+    /** «Цена за 16 кг; 24 кг ×1,2, 32 кг ×1,6» — пояснение в раскрытой группе, множители из [Weights]. */
+    fun kettlebellPrices(): String {
         val base = Weights.DEFAULT
         val factors = Weights.all.filter { it != base }
             .joinToString(", ") { w -> "$w${NBSP}кг$NBSP×${factorLabel(Weights.factor(w))}" }
-        return "$count$NBSP${pluralRu(count, "упражнение", "упражнения", "упражнений")} · " +
-            "цена за $base${NBSP}кг; $factors"
+        return "Цена за $base${NBSP}кг; $factors"
     }
 
     /** Множитель с запятой: 1.2 → «1,2». */

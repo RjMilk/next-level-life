@@ -365,17 +365,22 @@ private fun CharacterCard(stats: StatsSummary?, streak: Int, legacyXp: Long, onS
     Card(Modifier.fillMaxWidth()) {
         ExpandableHeader(state, spacing = 8.dp) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // Серия — под уровнем, а не справа: на узком экране справа она прятала номер уровня.
                 Column(Modifier.weight(1f)) {
                     Text(
                         "Уровень ${overall.level}",
                         style = MaterialTheme.typography.headlineMedium,
                         color = Accent,
                         maxLines = 1,
-                        softWrap = false,
                     )
-                    Text(Store.titleFor(overall.level), style = MaterialTheme.typography.bodyMedium, color = muted)
+                    Text(
+                        "${Store.titleFor(overall.level)} · ${ProgressMath.streakLabel(streak)}",
+                        style = MaterialTheme.typography.bodyMedium.merge(Tabular),
+                        color = muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
-                Text(ProgressMath.streakLabel(streak), style = MaterialTheme.typography.titleSmall.merge(Tabular))
             }
             LinearProgressIndicator(
                 progress = { overall.fraction },

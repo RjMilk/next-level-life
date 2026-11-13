@@ -423,9 +423,10 @@ private fun StatsCard(stats: StatsSummary?, streak: Int, onStatInfo: (String) ->
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "🔥 $streak ${ProgressMath.daysWord(streak)}",
+                    "🔥 $streak",
                     style = MaterialTheme.typography.titleSmall.merge(Tabular),
                     maxLines = 1,
+                    modifier = Modifier.padding(start = 12.dp),
                 )
             }
             Text(
@@ -574,6 +575,12 @@ private fun EarnSection(
             contentPadding = GroupBodyPadding,
             contentSpacing = 12.dp,
         ) {
+            Text(
+                ExpandableText.kettlebellPrices(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
             CardGrid(Exercises.kettlebell, columns) { ex, m -> ExerciseCard(ex, m, onExercise) }
         }
     }
