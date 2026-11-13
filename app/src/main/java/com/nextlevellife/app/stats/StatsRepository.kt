@@ -110,9 +110,14 @@ object StatsRepository {
         return last ?: StatsSummary.empty(snap.day, legacy)
     }
 
-    /** Сила за день [day] по записям дневника (для экрана результата). Вызывать можно внутри транзакции записи. */
+    /**
+     * Сила за день [day] по записям дневника и строке активности (полный день «Сайтамы» — завершённый комплекс),
+     * для экрана результата. Вызывать можно внутри транзакции записи.
+     */
     fun strengthOfDay(day: Long): Int =
-        StatsMath.strength(StatsMath.strengthInput(Diary.setsForDay(day), Diary.runsForDay(day))).points
+        StatsMath.strength(
+            StatsMath.strengthInput(Diary.setsForDay(day), Diary.runsForDay(day), Diary.activityDay(day)),
+        ).points
 
     /**
      * Первый день характеристик, очки которого ещё не заморожены в кеше по действующим правилам
@@ -269,7 +274,7 @@ object StatsRepository {
             )
             out[day] = StatsMath.day(
                 day,
-                StatsMath.strengthInput(daySets, dayRuns),
+                StatsMath.strengthInput(daySets, dayRuns, activity[day]),
                 StatsMath.enduranceInput(activity[day], dayRuns),
                 discipline,
                 provisional = !complete || (day == to && !discipline.dayEnded),

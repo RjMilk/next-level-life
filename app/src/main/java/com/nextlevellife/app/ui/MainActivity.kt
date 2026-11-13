@@ -60,8 +60,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.unit.dp
+import com.nextlevellife.app.data.Saitama
+import com.nextlevellife.app.data.SaitamaRepository
 import com.nextlevellife.app.data.Store
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /**
  * Простая навигация без библиотек: текущий экран хранится строкой.
@@ -105,10 +111,19 @@ class MainActivity : ComponentActivity() {
                     LaunchedEffect(resumeCount, onTabs, tab) {
                         if (onTabs && resumeCount > 0) ActivitySync.request(this@MainActivity)
                     }
+                    // «Сайтама»: доплатить +10 минут за полные дни — при открытии приложения, после записи подхода
+                    // и после синхронизации активности (всё это меняет Store.version). Повтор ничего не платит;
+                    // пауза гасит серию изменений подряд.
+                    val version by Store.version.collectAsState()
+                    LaunchedEffect(version, resumeCount) {
+                        delay(SAITAMA_CHECK_DELAY_MS)
+                        withContext(Dispatchers.IO) { SaitamaRepository.ensureBonuses() }
+                    }
                     // Состояние вкладок (прокрутка, выбранный день) сохраняется, пока вкладка скрыта.
                     val tabStates = rememberSaveableStateHolder()
                     val goHome = { screen = HOME }
-                    if (screen != HOME) BackHandler(onBack = goHome)
+                    // Упражнение, открытое с «Сайтамы», возвращает на неё; остальное — на главную.
+                    if (screen != HOME) BackHandler { screen = parentOf(screen) }
                     // С «Прогресса» и «Настроек» «Назад» ведёт на «Тренировку»; с «Тренировки» — выход.
                     BackHandler(enabled = screen == HOME && tab != TAB_TRAINING) { tab = TAB_TRAINING }
 
@@ -164,13 +179,18 @@ class MainActivity : ComponentActivity() {
                                             resumeCount = resumeCount,
                                             onBack = goHome,
                                         )
+                                        screen == SAITAMA -> SaitamaScreen(
+                                            resumeCount = resumeCount,
+                                            onExercise = { screen = "$EXERCISE$it$FROM_SAITAMA" },
+                                            onBack = goHome,
+                                        )
                                         screen.startsWith(COMPLEX) -> ComplexScreen(
                                             complexId = screen.removePrefix(COMPLEX),
                                             onDone = goHome,
                                         )
                                         screen.startsWith(EXERCISE) -> ExerciseScreen(
-                                            exerciseId = screen.removePrefix(EXERCISE),
-                                            onDone = goHome,
+                                            exerciseId = screen.removePrefix(EXERCISE).removeSuffix(FROM_SAITAMA),
+                                            onDone = { screen = parentOf(screen) },
                                         )
                                     }
                                 }
@@ -206,12 +226,25 @@ class MainActivity : ComponentActivity() {
     private fun isRationaleIntent(intent: Intent?): Boolean =
         intent?.action == ACTION_SHOW_RATIONALE || intent?.action == Intent.ACTION_VIEW_PERMISSION_USAGE
 
+    /** Куда возвращаться с экрана [screen]: упражнение с «Сайтамы» — на неё, остальное — на главную. */
+    private fun parentOf(screen: String): String =
+        if (screen.startsWith(EXERCISE) && screen.endsWith(FROM_SAITAMA)) SAITAMA else HOME
+
     private companion object {
         const val HOME = "home"
         const val APPS = "apps"
         const val COMPLEX = "complex:"
         const val EXERCISE = "exercise:"
         const val STAT_INFO = "stat:"
+
+        /** Экран «Сайтамы»: главная открывает его как комплекс — onComplex("saitama"). */
+        const val SAITAMA = COMPLEX + Saitama.ID
+
+        /** Суффикс упражнения, открытого с «Сайтамы»: «exercise:pushups@saitama» — после подхода назад на неё. */
+        const val FROM_SAITAMA = "@" + Saitama.ID
+
+        /** Пауза перед доплатой бонуса «Сайтамы» после изменения данных. */
+        const val SAITAMA_CHECK_DELAY_MS = 1_500L
 
         /** Health Connect (Android 13 и старше) просит показать, зачем приложению разрешения. */
         const val ACTION_SHOW_RATIONALE = "androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE"

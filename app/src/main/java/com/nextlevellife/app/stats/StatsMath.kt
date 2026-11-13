@@ -4,6 +4,7 @@ import com.nextlevellife.app.data.ActivityDay
 import com.nextlevellife.app.data.BlockEvent
 import com.nextlevellife.app.data.ComplexRun
 import com.nextlevellife.app.data.Measurement
+import com.nextlevellife.app.data.SaitamaMath
 import com.nextlevellife.app.data.SetEntry
 import com.nextlevellife.app.sleep.NightMode
 import com.nextlevellife.app.sleep.ObservationGap
@@ -137,9 +138,11 @@ object StatsMath {
     /**
      * 2 — пороги: подход от 10, планка от минуты, ходьба от 5 000 шагов.
      * 3 — источник ходьбы и при 0 шагов (штраф выносливости отличает «мало шагов» от «нет данных»).
+     * 4 — полный день «Сайтамы» (100 отжиманий, 100 на пресс, 100 приседаний и 10 км бега) засчитывается силе
+     *     как завершённый комплекс (+[COMPLEX_BONUS], один раз за день); выносливости длительность не добавляет.
      * Правила дисциплины с версии 1 не менялись: её очки из кеша прежних версий переносятся ([keepOldDiscipline]).
      */
-    const val RULE_VERSION = 3
+    const val RULE_VERSION = 4
 
     /** Потолок очков одной характеристики за день. */
     const val DAY_CAP = 10
@@ -382,14 +385,16 @@ object StatsMath {
     /**
      * Сила по записям дня: повторения — только подходы-повторения (подходы комплексов в том числе,
      * каждая строка один раз; total_reps прохождений не добавляется), планка — сумма held_ms,
-     * комплексы — завершённые прохождения.
+     * комплексы — завершённые прохождения, плюс один, если день полный по правилам «Сайтамы»
+     * ([SaitamaMath.isFullDay] по тем же подходам и строке активности дня [activity]).
      */
-    fun strengthInput(sets: List<SetEntry>, runs: List<ComplexRun>): StrengthInput {
+    fun strengthInput(sets: List<SetEntry>, runs: List<ComplexRun>, activity: ActivityDay? = null): StrengthInput {
         val repSets = sets.filter { it.measurement == Measurement.REPS }
+        val saitama = if (SaitamaMath.isFullDay(sets, activity)) 1 else 0
         return StrengthInput(
             reps = repSets.sumOf { it.reps.coerceAtLeast(0) },
             heldMs = sets.filter { it.measurement == Measurement.HOLD }.sumOf { it.heldMs.coerceAtLeast(0L) },
-            completedComplexes = runs.count { it.completed },
+            completedComplexes = runs.count { it.completed } + saitama,
             bestSet = repSets.maxOfOrNull { it.reps } ?: 0,
         )
     }

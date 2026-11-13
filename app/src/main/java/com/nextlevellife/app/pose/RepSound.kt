@@ -146,6 +146,38 @@ class RepSound internal constructor(context: Context) {
         speak(HoldSpeech.MAX, TextToSpeech.QUEUE_ADD)
     }
 
+    /** Голос ещё готовится (движок TextToSpeech не ответил): «нарезка» может подождать его долю секунды. */
+    val voicePending: Boolean get() = voice == Voice.PENDING
+
+    /**
+     * «Удар» для «нарезки» «Сайтамы»: короткий щелчок и плотная низкая нота сразу за ним —
+     * не спутать с сигналами подхода (rep, ready, done).
+     */
+    fun impact() {
+        if (released) return
+        handler.removeCallbacksAndMessages(null)
+        tone(ToneGenerator.TONE_DTMF_9, 40)
+        later(50) { tone(ToneGenerator.TONE_DTMF_1, 140) }
+    }
+
+    /** Финал «нарезки»: два «удара» и долгая высокая нота. */
+    fun finale() {
+        if (released) return
+        handler.removeCallbacksAndMessages(null)
+        tone(ToneGenerator.TONE_DTMF_1, 90)
+        later(120) { tone(ToneGenerator.TONE_DTMF_5, 90) }
+        later(240) { tone(ToneGenerator.TONE_DTMF_9, 90) }
+        later(360) { tone(ToneGenerator.TONE_DTMF_D, 600) }
+    }
+
+    /** Замолчать: отменить отложенные сигналы и оборвать речь (уход с экрана, пропуск «нарезки»). */
+    fun stop() {
+        if (released) return
+        handler.removeCallbacksAndMessages(null)
+        runCatching { tones?.stopTone() }
+        runCatching { tts?.stop() }
+    }
+
     /** Произнести фразу. interrupt = true прерывает текущую речь. */
     fun say(text: String, interrupt: Boolean = true) {
         if (released || text.isBlank()) return
