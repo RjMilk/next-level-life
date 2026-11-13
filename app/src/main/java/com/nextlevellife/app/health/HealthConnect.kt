@@ -146,9 +146,10 @@ object HealthConnect {
             if (steps != null) sourcesByDay[day] = g.result.dataOrigins.mapTo(HashSet()) { it.packageName }
         }
 
-        // 2. Пробежки, начатые в окне.
+        // 2. Пробежки, задевающие окно. Читаем и сутки до окна: пробежка через полночь, начатая накануне
+        //    первого дня, своими шагами в окне — бег, а не ходьба (её дистанция относится к дню начала, вне окна).
         val runs = if (!readRuns) emptyList() else {
-            val windowStart = Instant.ofEpochMilli(ActivityMath.dayStartMs(first, zone))
+            val windowStart = Instant.ofEpochMilli(ActivityMath.dayStartMs(first - ActivityMath.RUNS_LOOKBACK_DAYS, zone))
             val windowEnd = Instant.ofEpochMilli(maxOf(nowMs, ActivityMath.dayStartMs(first, zone) + 1))
             val sessions = ArrayList<ExerciseSessionRecord>()
             var token: String? = null
@@ -167,7 +168,7 @@ object HealthConnect {
 
             val candidates = sessions
                 .filter { it.exerciseType in RUNNING_TYPES && it.endTime.isAfter(it.startTime) }
-                .filter { ActivityMath.dayOf(it.startTime.toEpochMilli(), zone) in first..last }
+                .filter { ActivityMath.runTouchesWindow(it.startTime.toEpochMilli(), it.endTime.toEpochMilli(), first, last, zone) }
                 .map { s ->
                     val origin = s.metadata.dataOrigin.packageName
                     val distance = client.aggregate(

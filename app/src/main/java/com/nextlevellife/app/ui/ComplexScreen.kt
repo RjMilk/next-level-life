@@ -51,6 +51,12 @@ private val cindyCallouts = listOf(
 
 internal enum class ComplexKind { MINOTAUR, CINDY }
 
+// Что повторить после неудачной записи (Int — чтобы проще сохранять при повороте).
+internal const val RETRY_NONE = 0
+internal const val RETRY_INCOMPLETE = 1
+internal const val RETRY_MINOTAUR = 2
+internal const val RETRY_CINDY = 3
+
 /** Шаг комплекса: [part] — номер упражнения внутри круга/ступени, он же индекс в [ComplexKind.exercises]. */
 internal data class ComplexStep(val round: Int, val part: Int, val exercise: Exercise, val reps: Int)
 
@@ -94,6 +100,10 @@ internal class ComplexRunState(val kind: ComplexKind) {
     var resultText by mutableStateOf("")
     var confirmSkip by mutableStateOf(false)
     var confirmQuit by mutableStateOf(false)
+    /** Запись не удалась: что повторить кнопкой «Повторить» (RETRY_*). Тот же sessionId — без дубля. */
+    var retry by mutableIntStateOf(RETRY_NONE)
+    /** Пояснение к незавершённому комплексу для повтора записи. */
+    var retryNote by mutableStateOf("")
 
     val started get() = startedAt != 0L
     val running get() = started && !finished
@@ -106,7 +116,7 @@ internal class ComplexRunState(val kind: ComplexKind) {
                     it.weight, it.startedAt, it.stepIndex, it.stepCount, it.repsByEx.copyOf(),
                     it.skipped, it.fullRounds, it.roundSkipped, it.calloutFlags,
                     it.finished, it.finishedElapsed, it.resultTitle, it.resultText,
-                    it.confirmSkip, it.confirmQuit,
+                    it.confirmSkip, it.confirmQuit, it.retry, it.retryNote,
                 )
             },
             restore = { v ->
@@ -126,6 +136,8 @@ internal class ComplexRunState(val kind: ComplexKind) {
                     resultText = v[12] as String
                     confirmSkip = v[13] as Boolean
                     confirmQuit = v[14] as Boolean
+                    retry = v[15] as Int
+                    retryNote = v[16] as String
                 }
             },
         )
@@ -164,7 +176,9 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
         }
     }
 
-    fun showResult(title: String, text: String) {
+    fun showResult(title: String, text: String, retry: Int = RETRY_NONE, retryNote: String = "") {
+        s.retry = retry
+        s.retryNote = retryNote
         s.resultText = text
         s.resultTitle = title
         // Человек далеко от экрана: итог тоже должен быть слышен.
@@ -196,7 +210,7 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
             "Засчитано $total ${complexRepsWord(total)}: +${formatShort(earned)} экранного времени, +$xp опыта.",
             if (failed > 0) "Не удалось записать $failed ${complexRepsWord(failed)}." else null,
         ).joinToString(" ")
-        showResult(title, text)
+        if (r.saved) showResult(title, text) else showResult(title, text, RETRY_INCOMPLETE, note.orEmpty())
     }
 
     fun beginFinish(): Long? {
@@ -210,15 +224,11 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
         return elapsed
     }
 
-    fun finishMinotaur() {
-        val elapsed = beginFinish() ?: return
-        if (s.skipped) {
-            finishIncomplete()
-            return
-        }
+    /** Запись пройденного Минотавра; при сбое — итог с кнопкой «Повторить». */
+    fun recordMinotaurResult(elapsed: Long) {
         val r = Workouts.recordMinotaur(s.weight, elapsed, sessionId)
         if (!r.saved) {
-            showResult("Не удалось записать", "Комплекс не сохранился, время не начислено.")
+            showResult("Не удалось записать", "Комплекс не сохранился, время не начислено.", RETRY_MINOTAUR)
             return
         }
         if (r.earnedMs == 0L) {
@@ -233,11 +243,17 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
         showResult(title, text)
     }
 
-    fun finishCindyByTime() {
-        if (beginFinish() == null) return
-        s.finishedElapsed = Cindy.DURATION_MS
-        sound.say("Время!")
-        haptics.strong()
+    fun finishMinotaur() {
+        val elapsed = beginFinish() ?: return
+        if (s.skipped) {
+            finishIncomplete()
+            return
+        }
+        recordMinotaurResult(elapsed)
+    }
+
+    /** Запись Синди по времени; при сбое — итог с кнопкой «Повторить». */
+    fun recordCindyResult() {
         val reps = kind.exercises.mapIndexed { i, ex -> ex to s.repsByEx[i] }.toMap()
         // Полные круги — только без пропусков; всё остальное засчитанное — повторения сверх,
         // чтобы rounds * repsPerRound + extra совпадало с оплаченными повторениями.
@@ -249,7 +265,7 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
             return
         }
         if (!r.saved) {
-            showResult("Не удалось записать", "Синди не сохранилась, время не начислено.")
+            showResult("Не удалось записать", "Синди не сохранилась, время не начислено.", RETRY_CINDY)
             return
         }
         val title = if (r.isRecord) "Новый рекорд!" else "Синди завершена"
@@ -259,6 +275,28 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
             r.previousBestRounds?.let { (pr, pe) -> text += " Прежний рекорд: $pr + $pe." }
         }
         showResult(title, text)
+    }
+
+    fun finishCindyByTime() {
+        if (beginFinish() == null) return
+        s.finishedElapsed = Cindy.DURATION_MS
+        sound.say("Время!")
+        haptics.strong()
+        recordCindyResult()
+    }
+
+    /** «Повторить» после сбоя записи: тот же sessionId, поэтому второй раз ничего не начислится. */
+    fun retryRecord() {
+        val what = s.retry
+        val note = s.retryNote.ifEmpty { null }
+        s.retry = RETRY_NONE
+        s.retryNote = ""
+        s.resultTitle = ""
+        when (what) {
+            RETRY_INCOMPLETE -> finishIncomplete(note)
+            RETRY_MINOTAUR -> recordMinotaurResult(s.finishedElapsed)
+            RETRY_CINDY -> recordCindyResult()
+        }
     }
 
     fun finishEarly() {
@@ -401,7 +439,16 @@ fun ComplexScreen(complexId: String, onDone: () -> Unit) {
         )
     }
 
-    if (s.finished && s.resultTitle.isNotEmpty()) {
+    if (s.finished && s.resultTitle.isNotEmpty() && s.retry != RETRY_NONE) {
+        AlertDialog(
+            // Случайным касанием мимо диалога результат не теряется: выбор только кнопками.
+            onDismissRequest = {},
+            confirmButton = { TextButton(onClick = { retryRecord() }) { Text("Повторить") } },
+            dismissButton = { TextButton(onClick = onDone) { Text("Выйти без записи", color = Bad) } },
+            title = { Text(s.resultTitle) },
+            text = { Text(s.resultText) },
+        )
+    } else if (s.finished && s.resultTitle.isNotEmpty()) {
         AlertDialog(
             onDismissRequest = onDone,
             confirmButton = { TextButton(onClick = onDone) { Text("Отлично") } },

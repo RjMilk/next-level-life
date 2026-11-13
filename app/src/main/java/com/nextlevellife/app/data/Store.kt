@@ -29,6 +29,8 @@ object Store {
     fun init(context: Context) {
         if (!::sp.isInitialized) {
             sp = context.applicationContext.getSharedPreferences("nll", Context.MODE_PRIVATE)
+            // До открытия дневника: восстановление из копии могло прерваться посреди подмены базы.
+            Backup.recoverInterruptedRestore(context)
             // Отсюда, чтобы дневник был готов везде, где готов Store: экраны и служба его не вызывают.
             Diary.init(context)
             // Сбой журнала не должен ронять init (его вызывает и служба): баланс тогда читается как 0,
@@ -163,6 +165,8 @@ object Store {
         settings.put(Settings.KEY_NIGHT_START, Settings.nightStartMin)
         settings.put(Settings.KEY_NIGHT_END, Settings.nightEndMin)
         settings.put(Settings.KEY_STEPS_REWARD, Settings.stepsRewardEnabled)
+        // День включения оплаты шагов: без него восстановленный переключатель не платит.
+        Settings.stepsRewardSinceDay?.let { settings.put(Settings.KEY_STEPS_SINCE, it) }
         o.put("settings", settings)
         return o
     }
@@ -188,7 +192,11 @@ object Store {
         val nightOn = s.optBoolean(Settings.KEY_NIGHT_ENABLED, true)
         val nightStart = s.optInt(Settings.KEY_NIGHT_START, Settings.DEFAULT_NIGHT_START_MIN)
         val nightEnd = s.optInt(Settings.KEY_NIGHT_END, Settings.DEFAULT_NIGHT_END_MIN)
-        val steps = s.optBoolean(Settings.KEY_STEPS_REWARD, true)
+        val stepsSince = restoredStepsSince(
+            enabled = s.optBoolean(Settings.KEY_STEPS_REWARD, false),
+            sinceDay = if (s.has(Settings.KEY_STEPS_SINCE)) s.getLong(Settings.KEY_STEPS_SINCE) else null,
+        )
+        val steps = stepsSince != null
         require(limit in com.nextlevellife.app.block.BlockRules.LIMIT_RANGE) { "Лимит в копии вне диапазона: $limit" }
         require(nightStart in com.nextlevellife.app.block.BlockRules.MINUTE_RANGE) { "Начало ночи в копии вне суток" }
         require(nightEnd in com.nextlevellife.app.block.BlockRules.MINUTE_RANGE) { "Конец ночи в копии вне суток" }
@@ -204,8 +212,15 @@ object Store {
             e.putInt(Settings.KEY_NIGHT_START, nightStart)
             e.putInt(Settings.KEY_NIGHT_END, nightEnd)
             e.putBoolean(Settings.KEY_STEPS_REWARD, steps)
+            if (steps && stepsSince != null) e.putLong(Settings.KEY_STEPS_SINCE, stepsSince) else e.remove(Settings.KEY_STEPS_SINCE)
         }
     }
+
+    /**
+     * День включения оплаты шагов после восстановления; null — оплата выключена.
+     * Оплата включается только вместе с днём включения: в старых копиях дня нет — остаётся выключенной.
+     */
+    internal fun restoredStepsSince(enabled: Boolean, sinceDay: Long?): Long? = if (enabled) sinceDay else null
 
     /** Записывает снимок синхронно; false — запись не удалась. */
     internal fun commitPrefs(snapshot: PrefsSnapshot): Boolean {

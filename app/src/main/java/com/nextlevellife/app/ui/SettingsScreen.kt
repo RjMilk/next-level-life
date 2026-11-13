@@ -226,6 +226,11 @@ private fun ScreenTimeSection(version: Int) {
                     selected = limit == minutes,
                     onClick = { runCatching { Settings.setDailyLimitMin(minutes) } },
                     shape = SegmentedButtonDefaults.itemShape(i, choices.size),
+                    // Выбранный лимит — акцентом, как остальные выбранные элементы приложения.
+                    colors = SegmentedButtonDefaults.colors(
+                        activeContainerColor = Accent,
+                        activeContentColor = OnAccent,
+                    ),
                     icon = {},
                 ) { Text("$minutes мин", maxLines = 1) }
             }

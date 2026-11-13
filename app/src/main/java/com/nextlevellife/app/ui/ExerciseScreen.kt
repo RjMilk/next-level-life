@@ -65,7 +65,8 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
     var recordedElapsedMs by rememberSaveable { mutableLongStateOf(0L) }
     var recordedEarnedMs by rememberSaveable { mutableLongStateOf(0L) }
     var recordedXp by rememberSaveable { mutableLongStateOf(0L) }
-    var recordedSaved by rememberSaveable { mutableStateOf(true) }
+    // Запись не удалась: подход не потерян, его можно записать ещё раз (тем же sessionId — без дубля).
+    var saveFailed by rememberSaveable { mutableStateOf(false) }
     // Один подход — один идентификатор: повторный вызов записи с ним ничего не начислит второй раз.
     val sessionId = rememberSaveable { UUID.randomUUID().toString() }
     var frontCamera by rememberSaveable { mutableStateOf(true) }
@@ -79,19 +80,24 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
             delay(500)
         }
     }
-    val elapsedMs = if (recorded) recordedElapsedMs else (now - startedAt).coerceAtLeast(0L)
+    val elapsedMs = if (recorded || saveFailed) recordedElapsedMs else (now - startedAt).coerceAtLeast(0L)
 
     fun finish() {
         if (recorded || count <= 0) return
-        val duration = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
+        // Повтор после сбоя — с той же длительностью, что и первая попытка.
+        val duration = if (saveFailed) recordedElapsedMs else (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
         val result = Workouts.recordSet(ex, weight, count, duration, sessionId)
+        recordedElapsedMs = duration
+        showExit = false
+        if (!result.saved) {
+            saveFailed = true
+            return
+        }
+        saveFailed = false
         recorded = true
         recordedCount = count
-        recordedElapsedMs = duration
         recordedEarnedMs = result.earnedMs
         recordedXp = result.xp
-        recordedSaved = result.saved
-        showExit = false
         haptics.strong()
         sound.done()
     }
@@ -121,7 +127,7 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
             target = null,
             sessionKey = Unit,
             // На диалоге выхода счёт на паузе: человек смотрит в экран, а не делает повторения.
-            active = !recorded && !showExit,
+            active = !recorded && !showExit && !saveFailed,
             sound = sound,
             frontCamera = frontCamera,
             onFrontCameraChange = { frontCamera = it },
@@ -191,7 +197,7 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
         }
     }
 
-    if (showExit && !recorded) {
+    if (showExit && !recorded && !saveFailed) {
         AlertDialog(
             onDismissRequest = { showExit = false },
             title = { Text("Записать ${repsText(count)}?") },
@@ -207,15 +213,32 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
         )
     }
 
+    if (saveFailed && !recorded) {
+        AlertDialog(
+            // Случайным касанием мимо диалога подход не теряется: выбор только кнопками.
+            onDismissRequest = {},
+            title = { Text("Не удалось записать") },
+            text = {
+                Text(
+                    "Подход (${repsText(count)}) не сохранился, время не начислено. Можно попробовать ещё раз.",
+                    style = MaterialTheme.typography.bodyLarge.merge(Tabular),
+                )
+            },
+            confirmButton = { TextButton(onClick = { finish() }) { Text("Повторить") } },
+            dismissButton = {
+                TextButton(onClick = onDone) { Text("Выйти без записи", color = Bad) }
+            },
+        )
+    }
+
     if (recorded) {
         AlertDialog(
             onDismissRequest = onDone,
             confirmButton = { TextButton(onClick = onDone) { Text("Отлично") } },
-            title = { Text(if (recordedSaved) "Тренировка записана" else "Не удалось записать") },
+            title = { Text("Тренировка записана") },
             text = {
                 Text(
-                    if (recordedSaved) "${repsText(recordedCount)}: +${formatShort(recordedEarnedMs)}, +$recordedXp опыта"
-                    else "Подход не сохранился, время не начислено.",
+                    "${repsText(recordedCount)}: +${formatShort(recordedEarnedMs)}, +$recordedXp опыта",
                     style = MaterialTheme.typography.bodyLarge.merge(Tabular),
                 )
             },

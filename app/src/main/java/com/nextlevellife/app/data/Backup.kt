@@ -122,8 +122,14 @@ object Backup {
             val prefsRaw = prefsText ?: return RestoreResult.Error("В копии нет настроек")
 
             // 3. Настройки разбираются заранее: подмена начнётся, только если они в порядке.
+            val newPrefsJson = try {
+                JSONObject(prefsRaw)
+            } catch (e: Exception) {
+                Log.e(TAG, "Настройки копии повреждены", e)
+                return RestoreResult.Error("Настройки в копии повреждены")
+            }
             val newPrefs = try {
-                Store.parsePrefs(JSONObject(prefsRaw))
+                Store.parsePrefs(newPrefsJson)
             } catch (e: Exception) {
                 Log.e(TAG, "Настройки копии повреждены", e)
                 return RestoreResult.Error("Настройки в копии повреждены")
@@ -133,7 +139,7 @@ object Backup {
             checkDbFile(dbTmp, schema!!)?.let { return RestoreResult.Error(it) }
 
             // 5. Подмена.
-            return swap(context, dbTmp, newPrefs).let { error ->
+            return swap(context, dbTmp, newPrefs, newPrefsJson).let { error ->
                 if (error != null) RestoreResult.Error(error)
                 else RestoreResult.Ok(manifest.optLong("created_at_ms", 0L), manifest.optString("device_id").ifEmpty { null })
             }
@@ -206,52 +212,206 @@ object Backup {
     private val SUFFIXES = listOf("", "-wal", "-shm", "-journal")
     private const val BAK = ".restore-bak"
 
-    /** Заменяет базу и настройки. null — успех; иначе причина, а данные возвращены как были. */
-    private fun swap(context: Context, newDb: File, newPrefs: Store.PrefsSnapshot): String? = synchronized(Diary) {
+    private const val STAGING = ".restore-new"
+    private const val MARKER = ".restore-marker"
+    private const val MARKER_OLD_PREFS = "old_prefs"
+    private const val MARKER_NEW_PREFS = "new_prefs"
+
+    private fun markerFile(dbFile: File) = File(dbFile.path + MARKER)
+
+    /**
+     * Заменяет базу и настройки. null — успех; иначе причина, а данные возвращены как были.
+     *
+     * Порядок рассчитан на остановку процесса в любой момент: до первого переноса пишется маркер
+     * (с прежними и новыми настройками), и следующий запуск по нему доводит или откатывает подмену
+     * ([recoverInterruptedRestore]). Основной файл базы переносится в `.restore-bak` первым, а новая
+     * база кладётся на место одним переименованием последней, так что по наличию файлов видно стадию.
+     */
+    private fun swap(
+        context: Context, newDb: File, newPrefs: Store.PrefsSnapshot, newPrefsJson: JSONObject,
+    ): String? = synchronized(Diary) {
         val dbFile = Diary.dbFile(context)
         val localDeviceId = runCatching { Ledger.deviceId() }.getOrNull()
-        val oldPrefs = Store.parsePrefs(Store.exportPrefs())
+        val oldPrefsJson = Store.exportPrefs()
+        val oldPrefs = Store.parsePrefs(oldPrefsJson)
+        val staging = File(dbFile.path + STAGING)
+        val marker = markerFile(dbFile)
+        // Каждый успешный шаг отмечается, чтобы откат трогал только то, что действительно сделано.
         val moved = ArrayList<Pair<File, File>>()
+        var installed = false
         var prefsWritten = false
+
+        // Новая база готовится целиком до остановки текущей: копия и device_id этой установки.
+        try {
+            staging.delete()
+            newDb.inputStream().use { input -> staging.outputStream().use { input.copyTo(it) } }
+            if (localDeviceId != null) {
+                SQLiteDatabase.openDatabase(staging.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+                    db.insertWithOnConflict(
+                        "meta", null,
+                        android.content.ContentValues().apply {
+                            put("key", Ledger.KEY_DEVICE_ID)
+                            put("value", localDeviceId)
+                        },
+                        SQLiteDatabase.CONFLICT_REPLACE,
+                    )
+                }
+                for (s in listOf("-wal", "-shm", "-journal")) File(staging.path + s).delete()
+            }
+            // Остатки прошлых попыток мешают понять стадию по файлам — убираем заранее.
+            for (suffix in SUFFIXES) {
+                val bak = File(dbFile.path + suffix + BAK)
+                if (bak.exists() && !bak.delete()) throw IOException("Не удалось убрать старый ${bak.name}")
+            }
+            writeMarker(marker, JSONObject().put(MARKER_OLD_PREFS, oldPrefsJson).put(MARKER_NEW_PREFS, newPrefsJson))
+        } catch (e: Exception) {
+            Log.e(TAG, "Подготовка подмены не удалась", e)
+            staging.delete()
+            marker.delete()
+            return@synchronized "Не удалось заменить данные: ${e.message ?: e.javaClass.simpleName}. Текущие данные сохранены."
+        }
 
         Diary.close()
         try {
-            // Старые файлы — в сторону (не удаляем, пока новая база не открылась).
+            // Старые файлы — в сторону (не удаляем, пока новая база не открылась). Основной — первым.
             for (suffix in SUFFIXES) {
                 val f = File(dbFile.path + suffix)
                 if (!f.exists()) continue
                 val bak = File(f.path + BAK)
-                bak.delete()
                 if (!f.renameTo(bak)) throw IOException("Не удалось отложить ${f.name}")
                 moved += f to bak
             }
-            val staging = File(dbFile.path + ".restore-new")
-            newDb.inputStream().use { input -> staging.outputStream().use { input.copyTo(it) } }
             if (!staging.renameTo(dbFile)) throw IOException("Не удалось положить базу на место")
+            installed = true
 
             Diary.reopen()
-            if (localDeviceId != null) Diary.metaPut(Ledger.KEY_DEVICE_ID, localDeviceId)
             Ledger.onDatabaseReplaced()
             if (!Ledger.isConsistent()) throw IllegalStateException("Баланс не сходится с журналом после подмены")
 
             prefsWritten = true
             if (!Store.commitPrefs(newPrefs)) throw IOException("Не удалось записать настройки")
 
+            // Основной .restore-bak удаляется первым: без него запуск считает подмену завершённой.
             moved.forEach { (_, bak) -> bak.delete() }
+            marker.delete()
             Store.notifyChanged()
             null
         } catch (e: Exception) {
             Log.e(TAG, "Подмена не удалась, возвращаю прежние данные", e)
             runCatching { Diary.close() }
-            for (suffix in SUFFIXES) File(dbFile.path + suffix).takeIf { it.exists() }?.delete()
-            File(dbFile.path + ".restore-new").delete()
-            for ((orig, bak) in moved) if (!bak.renameTo(orig)) Log.e(TAG, "Не удалось вернуть ${orig.name}")
+            // Файлы по исходным путям удаляются, только если новая база уже была установлена:
+            // тогда все прежние файлы лежат в .restore-bak, а по исходным путям — только новые.
+            // До установки там могут быть ещё не перенесённые прежние файлы — их не трогаем.
+            if (installed) for (suffix in SUFFIXES) File(dbFile.path + suffix).delete()
+            staging.delete()
+            var restoredAll = true
+            for ((orig, bak) in moved) {
+                if (!bak.renameTo(orig)) {
+                    restoredAll = false
+                    Log.e(TAG, "Не удалось вернуть ${orig.name}")
+                }
+            }
             if (prefsWritten) runCatching { Store.commitPrefs(oldPrefs) }
-            runCatching { Diary.reopen() }
+            if (restoredAll) {
+                marker.delete()
+                runCatching { Diary.reopen() }
+            } else {
+                // Базу не открываем: иначе на месте прежней появится пустая. Маркер остаётся —
+                // следующий запуск повторит возврат (recoverInterruptedRestore).
+                Log.e(TAG, "Прежние данные возвращены не полностью; повтор при следующем запуске")
+            }
             Ledger.onDatabaseReplaced()
             Store.notifyChanged()
             "Не удалось заменить данные: ${e.message ?: e.javaClass.simpleName}. Текущие данные сохранены."
         }
+    }
+
+    /** Пишет маркер надёжно: во временный файл с fsync, затем переименованием. */
+    private fun writeMarker(marker: File, content: JSONObject) {
+        val tmp = File(marker.path + ".tmp")
+        java.io.FileOutputStream(tmp).use { out ->
+            out.write(content.toString().toByteArray(Charsets.UTF_8))
+            out.flush()
+            out.fd.sync()
+        }
+        if (!tmp.renameTo(marker)) {
+            tmp.delete()
+            throw IOException("Не удалось записать маркер восстановления")
+        }
+    }
+
+    // ---------- Прерванное восстановление ----------
+
+    /**
+     * Доводит или откатывает восстановление, прерванное остановкой процесса. Вызывается из [Store.init]
+     * до открытия дневника: иначе на месте отложенной базы создалась бы пустая. Ошибки только логируются.
+     */
+    internal fun recoverInterruptedRestore(context: Context) {
+        val dbFile = Diary.dbFile(context)
+        val marker = markerFile(dbFile)
+        if (!marker.exists()) return
+        try {
+            val markerJson = runCatching { JSONObject(marker.readText(Charsets.UTF_8)) }.getOrNull()
+            val dbPresent = dbFile.exists()
+            val bakPresent = File(dbFile.path + BAK).exists()
+            val usable = dbPresent && bakPresent && isUsableDb(dbFile)
+            val action = BackupMath.recoveryAction(markerPresent = true, dbPresent, bakPresent, usable)
+            Log.w(TAG, "Найдено прерванное восстановление: $action (база ${dbPresent}, копия старой ${bakPresent}, целая $usable)")
+            File(dbFile.path + STAGING).delete()
+            when (action) {
+                BackupMath.RestoreRecovery.NONE -> Unit
+                BackupMath.RestoreRecovery.KEEP_CURRENT -> {
+                    for (suffix in SUFFIXES) File(dbFile.path + suffix + BAK).delete()
+                    marker.delete()
+                }
+                BackupMath.RestoreRecovery.KEEP_NEW -> {
+                    val prefs = markerJson?.optJSONObject(MARKER_NEW_PREFS)
+                    if (prefs != null) {
+                        if (!Store.commitPrefs(Store.parsePrefs(prefs))) throw IOException("Не удалось записать настройки копии")
+                    } else {
+                        Log.e(TAG, "В маркере нет настроек копии: остаются прежние")
+                    }
+                    for (suffix in SUFFIXES) File(dbFile.path + suffix + BAK).delete()
+                    marker.delete()
+                }
+                BackupMath.RestoreRecovery.ROLL_BACK -> {
+                    // Основной файл на месте только после установки новой базы: тогда все прежние файлы
+                    // уже в .restore-bak, а по исходным путям — новые (или их остатки).
+                    if (dbPresent) for (suffix in SUFFIXES) File(dbFile.path + suffix).delete()
+                    var restoredAll = true
+                    for (suffix in SUFFIXES) {
+                        val orig = File(dbFile.path + suffix)
+                        val bak = File(orig.path + BAK)
+                        if (!bak.exists() || orig.exists()) continue
+                        if (!bak.renameTo(orig)) {
+                            restoredAll = false
+                            Log.e(TAG, "Не удалось вернуть ${orig.name}")
+                        }
+                    }
+                    markerJson?.optJSONObject(MARKER_OLD_PREFS)?.let { Store.commitPrefs(Store.parsePrefs(it)) }
+                    if (restoredAll) marker.delete()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось разобрать прерванное восстановление", e)
+        }
+    }
+
+    /** Новая база на месте открывается, цела и похожа на дневник. */
+    private fun isUsableDb(file: File): Boolean = try {
+        SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            val check = db.rawQuery("PRAGMA quick_check", null).use { c -> if (c.moveToFirst()) c.getString(0) else null }
+            val tables = db.rawQuery("SELECT name FROM sqlite_master WHERE type = 'table'", null).use { c ->
+                buildSet { while (c.moveToNext()) add(c.getString(0)) }
+            }
+            check == "ok" &&
+                db.version in BackupMath.MIN_DB_SCHEMA..Diary.SCHEMA_VERSION &&
+                tables.containsAll(BackupMath.REQUIRED_TABLES) &&
+                db.rawQuery("SELECT COUNT(*) FROM account", null).use { c -> c.moveToFirst() && c.getInt(0) == 1 }
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "Новая база не открывается", e)
+        false
     }
 
     // ---------- Мелочи ----------
@@ -311,6 +471,32 @@ object BackupMath {
         dbSchema > supportedSchema ->
             "Копия сделана более новой версией приложения (база версии $dbSchema, поддерживается до $supportedSchema). Обновите приложение."
         else -> null
+    }
+
+    /** Что делать при запуске с прерванным восстановлением. */
+    enum class RestoreRecovery {
+        /** Маркера нет — восстановления не было. */
+        NONE,
+        /** Прежняя база ещё не отложена (или подмена уже завершена): оставить, что на месте, убрать остатки. */
+        KEEP_CURRENT,
+        /** Новая база установлена и цела: оставить её, дописать настройки копии, убрать прежние файлы. */
+        KEEP_NEW,
+        /** Новой базы нет или она испорчена: вернуть прежние файлы из .restore-bak и прежние настройки. */
+        ROLL_BACK,
+    }
+
+    /**
+     * Выбор действия по файлам на диске. Порядок подмены: маркер → основной файл в .restore-bak (первым)
+     * → прочие файлы → новая база одним переименованием → настройки → удаление .restore-bak (основной первым).
+     * [dbPresent] — основной файл базы по исходному пути; [dbBakPresent] — основной файл в .restore-bak;
+     * [newDbUsable] — база по исходному пути открывается и цела (имеет смысл, только когда есть оба файла).
+     */
+    fun recoveryAction(markerPresent: Boolean, dbPresent: Boolean, dbBakPresent: Boolean, newDbUsable: Boolean): RestoreRecovery = when {
+        !markerPresent -> RestoreRecovery.NONE
+        // Основной файл не отложен: либо подмена не началась, либо уже завершена (настройки записаны раньше).
+        !dbBakPresent -> RestoreRecovery.KEEP_CURRENT
+        dbPresent && newDbUsable -> RestoreRecovery.KEEP_NEW
+        else -> RestoreRecovery.ROLL_BACK
     }
 
     /** Версия самой базы должна совпадать с манифестом и поддерживаться. */

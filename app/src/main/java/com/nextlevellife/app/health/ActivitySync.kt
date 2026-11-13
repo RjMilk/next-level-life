@@ -106,7 +106,8 @@ object ActivitySync {
         val days = ActivityMath.syncDays(today)
         val snapshot = HealthConnect.read(context, days, zone, now, readRuns = access.canReadRuns)
         val totals = ActivityMath.buildDays(days, snapshot.stepsByDay, snapshot.sourcesByDay, snapshot.runs, zone)
-        val runs = snapshot.runs.map { r ->
+        // Хранятся только пробежки, начатые в окне; начатые накануне окна нужны лишь для шагов в buildDays.
+        val runs = snapshot.runs.filter { ActivityMath.dayOf(it.startMs, zone) in days.first()..days.last() }.map { r ->
             ActivityRun(
                 externalId = r.id, startMs = r.startMs, endMs = r.endMs, day = ActivityMath.dayOf(r.startMs, zone),
                 distanceM = r.distanceM, steps = r.steps, source = r.source, exerciseType = r.exerciseType,

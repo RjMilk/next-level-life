@@ -203,6 +203,27 @@ class ActivityMathTest {
         assertNull(ActivityMath.buildDays(listOf(d13 + 1), emptyMap(), emptyMap(), emptyList(), zone).single().steps)
     }
 
+    @Test
+    fun runStartedBeforeWindowStillCountsInWindow() {
+        val d12 = day(2026, 11, 12)
+        val d13 = day(2026, 11, 13)
+        val d14 = day(2026, 11, 14)
+        // Окно 13–14: пробежка с 12-го на 13-е задевает окно, пробежка целиком 12-го — нет.
+        assertTrue(ActivityMath.runTouchesWindow(ms(2026, 11, 12, 23, 40), ms(2026, 11, 13, 0, 20), d13, d14, zone))
+        assertFalse(ActivityMath.runTouchesWindow(ms(2026, 11, 12, 22, 0), ms(2026, 11, 12, 23, 0), d13, d14, zone))
+        assertFalse(ActivityMath.runTouchesWindow(ms(2026, 11, 12, 23, 0), ms(2026, 11, 13, 0, 0), d13, d14, zone))
+        assertTrue(ActivityMath.runTouchesWindow(ms(2026, 11, 14, 23, 0), ms(2026, 11, 15, 0, 30), d13, d14, zone))
+        assertFalse(ActivityMath.runTouchesWindow(ms(2026, 11, 15, 0, 10), ms(2026, 11, 15, 0, 30), d13, d14, zone))
+
+        // Шаги такой пробежки в окне вычитаются из ходьбы; дистанция и счёт — дню начала (вне окна).
+        val night = run("n", ms(2026, 11, 12, 23, 40), ms(2026, 11, 13, 0, 20), 6_000, byDay = mapOf(d12 to 2_000L, d13 to 2_500L))
+        val t13 = ActivityMath.buildDays(listOf(d13, d14), mapOf(d13 to 7_000L), emptyMap(), listOf(night), zone).first()
+        assertEquals(2_500L, t13.runSteps)
+        assertEquals(0L, t13.runDistanceM)
+        assertEquals(0, t13.runsCount)
+        assertEquals(4_500L, ActivityMath.walkSteps(t13.steps, t13.runSteps))
+    }
+
     // ---------- Подписи ----------
 
     @Test

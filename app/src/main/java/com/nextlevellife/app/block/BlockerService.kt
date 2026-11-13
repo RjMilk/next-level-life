@@ -39,12 +39,24 @@ class BlockerService : AccessibilityService() {
     private var sessionId: String? = null
     private var sessionPkg: String? = null
     private val ignored = mutableSetOf<String>()
+    /**
+     * Просмотренное время, которое журнал не принял (ошибка базы). Списывается вместе со следующим
+     * тиком текущей сессии: строки расхода ведутся по одной сессии, старую возобновлять нельзя.
+     */
+    private var unpaidMs = 0L
+    /** Сколько попыток списания подряд закончились ошибкой. */
+    private var failedCharges = 0
 
     private val tick = object : Runnable {
         override fun run() {
             settle()
             val pkg = currentPkg
             if (!spending || pkg == null) return
+            // Журнал не принимает списания несколько тиков подряд — смотреть бесплатно нельзя.
+            if (failedCharges >= MAX_FAILED_CHARGES) {
+                block(pkg, BlockReason.BALANCE)
+                return
+            }
             val decision = decide()
             if (decision.reason != null) block(pkg, decision.reason) else handler.postDelayed(this, TICK_MS)
         }
@@ -89,6 +101,11 @@ class BlockerService : AccessibilityService() {
             Toast.makeText(this, "Осталось ${formatMinutes(decision.availableMs)}", Toast.LENGTH_SHORT).show()
         }
         startSpending(pkg)
+        if (failedCharges >= MAX_FAILED_CHARGES) {
+            // Журнал недавно не принимал списания: сразу пробуем списать долг в новой сессии; не вышло — блок.
+            settle()
+            if (failedCharges >= MAX_FAILED_CHARGES) block(pkg, BlockReason.BALANCE)
+        }
     }
 
     /** Правила на текущий момент: локальное время, баланс, расход за локальные сутки, настройки. */
@@ -96,8 +113,9 @@ class BlockerService : AccessibilityService() {
         val spentToday = try {
             Ledger.spentMs(LedgerMath.accountingDay(System.currentTimeMillis()))
         } catch (e: Exception) {
+            // Безопасная сторона: расход неизвестен — считаем дневной лимит исчерпанным (если он задан).
             Log.e(TAG, "Не удалось прочитать расход за сегодня", e)
-            0L
+            Long.MAX_VALUE
         }
         return BlockRules.evaluate(LocalTime.now(), Store.balanceMs(), spentToday, Settings.blockSettings())
     }
@@ -120,21 +138,30 @@ class BlockerService : AccessibilityService() {
         handler.removeCallbacks(tick)
     }
 
-    /** Списывает время, прошедшее с прошлой проверки, но не больше, чем сейчас разрешают правила. */
+    /**
+     * Списывает время, прошедшее с прошлой проверки, но не больше, чем сейчас разрешают правила,
+     * плюс долг [unpaidMs] от прошлых неудачных списаний. При ошибке журнала время не теряется,
+     * а копится в долг; счётчик [failedCharges] решает, когда блокировать.
+     */
     private fun settle() {
         if (!spending) return
         val now = SystemClock.elapsedRealtime()
         val elapsed = now - lastTickAt
         lastTickAt = now
         val screenOn = getSystemService(PowerManager::class.java)?.isInteractive != false
-        if (!screenOn || elapsed <= 0) return
         val sid = sessionId ?: return
         val pkg = sessionPkg ?: return
+        val viewed = if (screenOn && elapsed > 0) minOf(elapsed, decide().availableMs).coerceAtLeast(0L) else 0L
+        val charge = unpaidMs + viewed
+        if (charge <= 0L) return
         try {
-            val charge = minOf(elapsed, decide().availableMs)
-            if (charge > 0) Ledger.spend(sid, pkg, charge)
+            Ledger.spend(sid, pkg, charge)
+            unpaidMs = 0L
+            failedCharges = 0
         } catch (e: Exception) {
-            Log.e(TAG, "Не удалось списать время", e)
+            Log.e(TAG, "Не удалось списать время (долг ${charge} мс, ошибок подряд ${failedCharges + 1})", e)
+            unpaidMs = charge
+            failedCharges++
         }
     }
 
@@ -161,6 +188,8 @@ class BlockerService : AccessibilityService() {
     companion object {
         private const val TAG = "BlockerService"
         private const val TICK_MS = 2_000L
+        /** После стольких неудачных списаний подряд заблокированное приложение закрывается. */
+        private const val MAX_FAILED_CHARGES = 2
 
         fun isEnabled(context: Context): Boolean {
             val expected = ComponentName(context, BlockerService::class.java).flattenToString()

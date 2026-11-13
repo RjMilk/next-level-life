@@ -25,6 +25,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -40,6 +43,41 @@ import com.nextlevellife.app.health.ActivitySync
 /** Показывается поверх заблокированного приложения: баланс на нуле, дневной лимит исчерпан или ночной режим. */
 class BlockActivity : ComponentActivity() {
 
+    /** Что показывает экран: приложение, причина и тексты с числами на момент блокировки. */
+    private data class BlockScreen(val label: String, val reason: BlockReason, val title: String, val message: String)
+
+    private var screen by mutableStateOf(BlockScreen("", BlockReason.BALANCE, "", ""))
+
+    /** Причина, приложение и числа берутся из Intent и текущих данных. */
+    private fun bind(intent: Intent) {
+        val pkg = intent.getStringExtra(EXTRA_PACKAGE).orEmpty()
+        val label = runCatching {
+            packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+        }.getOrDefault("Это приложение")
+        val reason = intent.getStringExtra(EXTRA_REASON)
+            ?.let { runCatching { BlockReason.valueOf(it) }.getOrNull() }
+            ?: BlockReason.BALANCE
+        screen = BlockScreen(
+            label = label,
+            reason = reason,
+            title = BlockText.title(reason),
+            message = BlockText.message(
+                reason = reason,
+                balanceMs = Store.balanceMs(),
+                dailyLimitMin = Settings.dailyLimitMin,
+                nightEndMin = Settings.nightEndMin,
+                pushupsRewardMs = Exercises.rewardMs(Exercises.pushups, 10, Weights.DEFAULT),
+            ),
+        )
+    }
+
+    // Activity singleInstance: повторная блокировка приходит сюда, а не в onCreate — обновить экран.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        bind(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
@@ -52,25 +90,12 @@ class BlockActivity : ComponentActivity() {
             override fun handleOnBackPressed() = goHome()
         })
 
-        val pkg = intent.getStringExtra(EXTRA_PACKAGE).orEmpty()
-        val label = runCatching {
-            packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
-        }.getOrDefault("Это приложение")
-        val reason = intent.getStringExtra(EXTRA_REASON)
-            ?.let { runCatching { BlockReason.valueOf(it) }.getOrNull() }
-            ?: BlockReason.BALANCE
-        val title = BlockText.title(reason)
-        val message = BlockText.message(
-            reason = reason,
-            balanceMs = Store.balanceMs(),
-            dailyLimitMin = Settings.dailyLimitMin,
-            nightEndMin = Settings.nightEndMin,
-            pushupsRewardMs = Exercises.rewardMs(Exercises.pushups, 10, Weights.DEFAULT),
-        )
-        // При лимите и ночью заработанные минуты всё равно не откроют приложение: главное — уйти на рабочий стол.
-        val homeFirst = reason != BlockReason.BALANCE
+        bind(intent)
 
         setContent {
+            val (label, reason, title, message) = screen
+            // При лимите и ночью заработанные минуты всё равно не откроют приложение: главное — уйти на рабочий стол.
+            val homeFirst = reason != BlockReason.BALANCE
             NextLevelTheme {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     // По центру экрана; на низком окне (альбомная ориентация) — прокрутка.
