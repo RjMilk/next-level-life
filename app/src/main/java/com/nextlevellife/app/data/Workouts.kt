@@ -63,7 +63,7 @@ object Workouts {
         val result = WorkoutResult(earnedMs, xp)
         val key = LedgerMath.setKey(sessionId ?: UUID.randomUUID().toString())
         return persist(key, "подходы") {
-            val now = System.currentTimeMillis()
+            val now = TrustedClock.nowMs() // доверенное время: перевод часов не меняет сутки начисления
             val ids = newSets.map { Diary.addSet(now, it) }
             credit(
                 OpKind.SET_REWARD, key, result, sourceType = "sets", sourceId = ids.joinToString(","), now = now,
@@ -90,7 +90,7 @@ object Workouts {
                 Store.minotaurBestMs(weightKg),
             )
             val result = WorkoutResult(earnedMs, xp, previousBest == null || durationMs < previousBest, previousBest)
-            val now = System.currentTimeMillis()
+            val now = TrustedClock.nowMs() // доверенное время: перевод часов не меняет сутки начисления
             val runId = Diary.addRun(
                 timeMs = now, complexId = Minotaur.ID, weightKg = weightKg,
                 durationMs = durationMs, rounds = null, extraReps = null, totalReps = Minotaur.totalReps,
@@ -125,7 +125,7 @@ object Workouts {
             // Прерванная раньше времени Синди не сравнивается с полными.
             val isRecord = completed && DiaryMath.isBetterRounds(rounds to extraReps, previousBest)
             val result = WorkoutResult(earnedMs, xp, isRecord, previousBestRounds = previousBest)
-            val now = System.currentTimeMillis()
+            val now = TrustedClock.nowMs() // доверенное время: перевод часов не меняет сутки начисления
             val runId = Diary.addRun(
                 timeMs = now, complexId = Cindy.ID, weightKg = null,
                 durationMs = durationMs.coerceAtLeast(0L), rounds = rounds, extraReps = extraReps,

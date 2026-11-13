@@ -9,6 +9,7 @@ import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.OpKind
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
+import com.nextlevellife.app.data.TrustedClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,7 +20,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
-import java.time.LocalDate
 import java.time.ZoneId
 
 /** Состояние синхронизации для экранов. */
@@ -44,7 +44,8 @@ data class ActivitySyncState(
  *
  * Начисление идемпотентно и только «вверх»: за день считается положенное (due); если оно больше
  * уже начисленного (rewarded_ms), одной транзакцией пишется операция STEPS_REWARD с ключом
- * `steps:<day>:<due>` на разницу и обновляется rewarded_ms. Уменьшение данных ничего не списывает.
+ * `steps:v2:<day>:<due>` на разницу и обновляется rewarded_ms. Уменьшение данных ничего не списывает.
+ * Сутки — учётные ([TrustedClock]): доверенное время и учётный пояс, а не часы и пояс телефона.
  */
 object ActivitySync {
     private const val TAG = "ActivitySync"
@@ -95,21 +96,26 @@ object ActivitySync {
             return
         }
 
-        val now = System.currentTimeMillis()
+        // Доверенное время и учётный пояс: перевод часов и смена пояса телефона не сдвигают сутки начисления.
+        val time = TrustedClock.snapshot()
+        val now = time.utcMs
         val last = listOfNotNull(lastAttemptMs, _state.value.lastSyncMs).maxOrNull()
         if (!ActivityMath.shouldSync(last, now, force)) return
         lastAttemptMs = now
         _state.update { it.copy(running = true) }
 
-        val zone = ZoneId.systemDefault()
-        val today = LocalDate.now(zone).toEpochDay()
+        val zone = time.zone
+        val today = time.day
         val days = ActivityMath.syncDays(today)
         val snapshot = HealthConnect.read(context, days, zone, now, readRuns = access.canReadRuns)
-        val totals = ActivityMath.buildDays(days, snapshot.stepsByDay, snapshot.sourcesByDay, snapshot.runs, zone)
-        // Хранятся только пробежки, начатые в окне; начатые накануне окна нужны лишь для шагов в buildDays.
-        val runs = snapshot.runs.filter { ActivityMath.dayOf(it.startMs, zone) in days.first()..days.last() }.map { r ->
+        // Уже записанная пробежка сохраняет свой день: смена учётного пояса не оплатит её второй раз.
+        val knownDays = withContext(Dispatchers.IO) { Diary.activityRunDays(snapshot.runs.map { it.id }) }
+        val runDays = ActivityMath.assignRunDays(snapshot.runs, knownDays, zone)
+        val totals = ActivityMath.buildDays(days, snapshot.stepsByDay, snapshot.sourcesByDay, snapshot.runs, zone, runDays)
+        // Хранятся только пробежки своего дня в окне; начатые накануне окна нужны лишь для шагов в buildDays.
+        val runs = snapshot.runs.filter { runDays.getValue(it.id) in days.first()..days.last() }.map { r ->
             ActivityRun(
-                externalId = r.id, startMs = r.startMs, endMs = r.endMs, day = ActivityMath.dayOf(r.startMs, zone),
+                externalId = r.id, startMs = r.startMs, endMs = r.endMs, day = runDays.getValue(r.id),
                 distanceM = r.distanceM, steps = r.steps, source = r.source, exerciseType = r.exerciseType,
             )
         }

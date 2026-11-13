@@ -1,9 +1,12 @@
 package com.nextlevellife.app.block
 
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -13,12 +16,13 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
+import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Ledger
-import com.nextlevellife.app.data.LedgerMath
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
+import com.nextlevellife.app.data.TimeSnapshot
+import com.nextlevellife.app.data.TrustedClock
 import com.nextlevellife.app.ui.BlockActivity
-import java.time.LocalTime
 import java.util.UUID
 
 /**
@@ -26,8 +30,11 @@ import java.util.UUID
  * Заблокированное приложение открывается, только пока это разрешают правила ([BlockRules]):
  * не ночь, дневной лимит не исчерпан и есть баланс. Правила проверяются при открытии и на каждом тике,
  * поэтому ночь наступает и лимит кончается и внутри уже открытого приложения.
- * Время списывается по монотонным часам (SystemClock), поэтому перевод системных часов ничего не даёт;
- * пока экран выключен, время не списывается. Каждый тик пишется в журнал ([Ledger.spend]).
+ *
+ * Длительность списывается по монотонным часам (SystemClock), а «какие сейчас сутки» и «ночь ли сейчас» —
+ * по доверенному времени и учётному поясу ([TrustedClock]): перевод системных часов и смена пояса телефона
+ * ни лимит, ни ночь не снимают. Пока экран выключен, время не списывается. Каждый тик пишется в журнал
+ * ([Ledger.spend]); переход к блокировке — в block_events ([Diary.addBlockEvent]).
  */
 class BlockerService : AccessibilityService() {
 
@@ -47,6 +54,21 @@ class BlockerService : AccessibilityService() {
     /** Сколько попыток списания подряд закончились ошибкой. */
     private var failedCharges = 0
 
+    /** Перевод системных часов и смена пояса — только для лога: доверенное время от них не зависит. */
+    private val timeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                Intent.ACTION_TIME_CHANGED -> TrustedClock.logSkew("перевод системных часов")
+                Intent.ACTION_TIMEZONE_CHANGED -> {
+                    Log.i(TAG, "Пояс телефона сменился; учётный пояс прежний: ${TrustedClock.zone().id}")
+                    // Экран настроек покажет кнопку «Сменить на текущий».
+                    Store.notifyChanged()
+                }
+            }
+        }
+    }
+    private var timeReceiverRegistered = false
+
     private val tick = object : Runnable {
         override fun run() {
             settle()
@@ -54,11 +76,11 @@ class BlockerService : AccessibilityService() {
             if (!spending || pkg == null) return
             // Журнал не принимает списания несколько тиков подряд — смотреть бесплатно нельзя.
             if (failedCharges >= MAX_FAILED_CHARGES) {
-                block(pkg, BlockReason.BALANCE)
+                block(pkg, BlockReason.BALANCE, TRIGGER_CHARGE_FAILED)
                 return
             }
             val decision = decide()
-            if (decision.reason != null) block(pkg, decision.reason) else handler.postDelayed(this, TICK_MS)
+            if (decision.reason != null) block(pkg, decision.reason, TRIGGER_TICK) else handler.postDelayed(this, TICK_MS)
         }
     }
 
@@ -66,6 +88,23 @@ class BlockerService : AccessibilityService() {
         super.onServiceConnected()
         Store.init(this)
         refreshIgnored()
+        registerTimeReceiver()
+    }
+
+    private fun registerTimeReceiver() {
+        if (timeReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_TIME_CHANGED)
+            addAction(Intent.ACTION_TIMEZONE_CHANGED)
+        }
+        try {
+            // Системные широковещательные сообщения: отправить их чужое приложение не может.
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(timeReceiver, filter, Context.RECEIVER_EXPORTED)
+            else registerReceiver(timeReceiver, filter)
+            timeReceiverRegistered = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Не удалось подписаться на смену времени", e)
+        }
     }
 
     private fun refreshIgnored() {
@@ -94,7 +133,7 @@ class BlockerService : AccessibilityService() {
         }
         val decision = decide()
         if (decision.reason != null) {
-            block(pkg, decision.reason)
+            block(pkg, decision.reason, TRIGGER_OPEN)
             return
         }
         if (!wasBlocked) {
@@ -104,20 +143,22 @@ class BlockerService : AccessibilityService() {
         if (failedCharges >= MAX_FAILED_CHARGES) {
             // Журнал недавно не принимал списания: сразу пробуем списать долг в новой сессии; не вышло — блок.
             settle()
-            if (failedCharges >= MAX_FAILED_CHARGES) block(pkg, BlockReason.BALANCE)
+            if (failedCharges >= MAX_FAILED_CHARGES) block(pkg, BlockReason.BALANCE, TRIGGER_CHARGE_FAILED)
         }
     }
 
-    /** Правила на текущий момент: локальное время, баланс, расход за локальные сутки, настройки. */
-    private fun decide(): BlockDecision {
+    /**
+     * Правила на момент [time] (доверенное время и учётный пояс): ночь, баланс, расход за учётные сутки, настройки.
+     */
+    private fun decide(time: TimeSnapshot = TrustedClock.snapshot()): BlockDecision {
         val spentToday = try {
-            Ledger.spentMs(LedgerMath.accountingDay(System.currentTimeMillis()))
+            Ledger.spentMs(time.day)
         } catch (e: Exception) {
             // Безопасная сторона: расход неизвестен — считаем дневной лимит исчерпанным (если он задан).
             Log.e(TAG, "Не удалось прочитать расход за сегодня", e)
             Long.MAX_VALUE
         }
-        return BlockRules.evaluate(LocalTime.now(), Store.balanceMs(), spentToday, Settings.blockSettings())
+        return BlockRules.evaluate(time, Store.balanceMs(), spentToday, Settings.blockSettings())
     }
 
     private fun startSpending(pkg: String) {
@@ -142,6 +183,7 @@ class BlockerService : AccessibilityService() {
      * Списывает время, прошедшее с прошлой проверки, но не больше, чем сейчас разрешают правила,
      * плюс долг [unpaidMs] от прошлых неудачных списаний. При ошибке журнала время не теряется,
      * а копится в долг; счётчик [failedCharges] решает, когда блокировать.
+     * Правила и журнал получают один и тот же снимок доверенного времени.
      */
     private fun settle() {
         if (!spending) return
@@ -151,11 +193,12 @@ class BlockerService : AccessibilityService() {
         val screenOn = getSystemService(PowerManager::class.java)?.isInteractive != false
         val sid = sessionId ?: return
         val pkg = sessionPkg ?: return
-        val viewed = if (screenOn && elapsed > 0) minOf(elapsed, decide().availableMs).coerceAtLeast(0L) else 0L
+        val time = TrustedClock.snapshot()
+        val viewed = if (screenOn && elapsed > 0) minOf(elapsed, decide(time).availableMs).coerceAtLeast(0L) else 0L
         val charge = unpaidMs + viewed
         if (charge <= 0L) return
         try {
-            Ledger.spend(sid, pkg, charge)
+            Ledger.spend(sid, pkg, charge, time)
             unpaidMs = 0L
             failedCharges = 0
         } catch (e: Exception) {
@@ -165,8 +208,9 @@ class BlockerService : AccessibilityService() {
         }
     }
 
-    private fun block(pkg: String, reason: BlockReason) {
+    private fun block(pkg: String, reason: BlockReason, trigger: String) {
         stopSpending()
+        recordBlockEvent(pkg, reason, trigger)
         // Экран блокировки открывается прямо поверх приложения. Нажимать «Домой» нельзя:
         // рабочий стол появляется после него и перекрывает экран блокировки.
         startActivity(
@@ -177,11 +221,25 @@ class BlockerService : AccessibilityService() {
         )
     }
 
+    /** Одна строка на переход к блокировке (не на тик). Ошибка базы блокировку не отменяет. */
+    private fun recordBlockEvent(pkg: String, reason: BlockReason, trigger: String) {
+        try {
+            val time = TrustedClock.snapshot()
+            Diary.addBlockEvent(time.utcMs, time.day, pkg, reason.name, trigger)
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось записать событие блокировки", e)
+        }
+    }
+
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
         settle()
         stopSpending()
+        if (timeReceiverRegistered) {
+            runCatching { unregisterReceiver(timeReceiver) }
+            timeReceiverRegistered = false
+        }
         super.onDestroy()
     }
 
@@ -190,6 +248,11 @@ class BlockerService : AccessibilityService() {
         private const val TICK_MS = 2_000L
         /** После стольких неудачных списаний подряд заблокированное приложение закрывается. */
         private const val MAX_FAILED_CHARGES = 2
+
+        /** Значения block_events.trigger. */
+        const val TRIGGER_OPEN = "open"
+        const val TRIGGER_TICK = "tick"
+        const val TRIGGER_CHARGE_FAILED = "charge_failed"
 
         fun isEnabled(context: Context): Boolean {
             val expected = ComponentName(context, BlockerService::class.java).flattenToString()

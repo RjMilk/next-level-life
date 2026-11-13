@@ -1,5 +1,6 @@
 package com.nextlevellife.app.block
 
+import com.nextlevellife.app.data.TimeSnapshot
 import java.time.LocalTime
 
 /** Почему заблокированное приложение сейчас не открывается. Порядок — приоритет: ночь важнее лимита, лимит важнее баланса. */
@@ -64,6 +65,17 @@ object BlockRules {
 
     fun evaluate(time: LocalTime, balanceMs: Long, spentTodayMs: Long, s: BlockSettings): BlockDecision =
         evaluate(minuteOfDay(time), balanceMs, spentTodayMs, s)
+
+    /**
+     * Решение по снимку доверенного времени ([com.nextlevellife.app.data.TrustedClock.snapshot]):
+     * ночь — по минуте суток в учётном поясе, [spentTodayMs] — расход за учётные сутки [TimeSnapshot.day].
+     * Системные часы телефона здесь не участвуют.
+     */
+    fun evaluate(time: TimeSnapshot, balanceMs: Long, spentTodayMs: Long, s: BlockSettings): BlockDecision =
+        evaluate(time.minuteOfDay, balanceMs, spentTodayMs, s)
+
+    /** Ночь ли в момент снимка (минута суток в учётном поясе). */
+    fun isNight(time: TimeSnapshot, s: BlockSettings): Boolean = isNight(time.minuteOfDay, s)
 
     /** «07:00» для минут от полуночи. */
     fun formatClock(minuteOfDay: Int): String {

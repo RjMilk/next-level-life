@@ -36,7 +36,7 @@ object Settings {
     val stepsRewardEnabled: Boolean
         get() = Store.prefs().getBoolean(KEY_STEPS_REWARD, false) && stepsRewardSinceDay != null
 
-    /** С какого дня (LocalDate.toEpochDay) платить за шаги; выставляется при включении. null — ещё не включали. */
+    /** С каких учётных суток ([TrustedClock.today]) платить за шаги; выставляется при включении. null — ещё не включали. */
     val stepsRewardSinceDay: Long?
         get() = Store.prefs().takeIf { it.contains(KEY_STEPS_SINCE) }?.getLong(KEY_STEPS_SINCE, 0L)
 
@@ -74,7 +74,7 @@ object Settings {
      * Включение запоминает день [today]: дни раньше него не оплачиваются. Повторное включение
      * уже включённого день не сдвигает; выключение и новое включение — сдвигает.
      */
-    fun setStepsRewardEnabled(enabled: Boolean, today: Long = java.time.LocalDate.now().toEpochDay()) {
+    fun setStepsRewardEnabled(enabled: Boolean, today: Long = TrustedClock.today()) {
         val edit = Store.prefs().edit().putBoolean(KEY_STEPS_REWARD, enabled)
         if (enabled && !stepsRewardEnabled) edit.putLong(KEY_STEPS_SINCE, today)
         edit.apply()

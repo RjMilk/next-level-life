@@ -61,6 +61,8 @@ import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.RestoreResult
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
+import com.nextlevellife.app.data.TrustedClock
+import com.nextlevellife.app.data.TrustedClockMath
 import com.nextlevellife.app.health.ActivityMath
 import com.nextlevellife.app.health.ActivitySync
 import com.nextlevellife.app.health.HealthAccess
@@ -205,7 +207,8 @@ internal fun SettingsSwitchRow(label: String, checked: Boolean, onChange: (Boole
 @Composable
 private fun ScreenTimeSection(version: Int) {
     val limit = remember(version) { Settings.dailyLimitMin }
-    val today = LocalDate.now().toEpochDay()
+    // Учётные сутки — те же, по которым служба блокировки считает лимит.
+    val today = TrustedClock.today()
     val spent by produceState<Long?>(null, version, today) {
         value = withContext(Dispatchers.IO) { runCatching { Ledger.spentMs(today) }.getOrNull() }
     }
@@ -244,7 +247,44 @@ private fun ScreenTimeSection(version: Int) {
             modifier = Modifier.padding(bottom = 8.dp),
             color = MaterialTheme.colorScheme.onSurface,
         )
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+        AccountingZoneRows(version)
     }
+}
+
+/**
+ * Учётный часовой пояс: в нём считаются сутки лимита, ночной режим и шаги. Кнопка смены на пояс телефона
+ * видна, только если он другой; смена вступает в силу через 24 часа (TrustedClock).
+ */
+@Composable
+private fun AccountingZoneRows(version: Int) {
+    val state = remember(version) { TrustedClock.zoneState() }
+    val phoneZone = remember(version) { ZoneId.systemDefault().id }
+    val offer = TrustedClockMath.zoneSwitchOffer(state, phoneZone)
+    SettingsRow("Часовой пояс учёта", state.zoneId)
+    state.pending?.let { p ->
+        val now = TrustedClock.nowMs()
+        SettingsText(
+            "Сменится на ${p.zoneId}: ${SettingsMath.dateTime(p.effectiveAtMs, now)}",
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        SettingsRow("Оставить ${state.zoneId}", onClick = { runCatching { TrustedClock.cancelZoneChange() } })
+    }
+    if (offer != null) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+            OutlinedButton(
+                onClick = { runCatching { TrustedClock.requestZoneChange(ZoneId.of(offer)) } },
+                shape = ButtonShape,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+            ) { Text("Сменить на текущий ($offer)") }
+        }
+    }
+    SettingsText(
+        "В этом поясе считаются сутки лимита, ночной режим и шаги. Смена вступает в силу через 24 часа",
+        modifier = Modifier.padding(bottom = 8.dp),
+    )
 }
 
 // ---------- 2. Ночной режим ----------
@@ -399,7 +439,8 @@ private fun StepsSection(version: Int) {
     val sync by ActivitySync.state.collectAsState()
     val access = sync.access
     val enabled = remember(version) { Settings.stepsRewardEnabled }
-    val today = LocalDate.now().toEpochDay()
+    // Дни шагов — учётные сутки (как пишет ActivitySync).
+    val today = TrustedClock.today()
     val day by produceState<ActivityDay?>(null, version, today) {
         value = withContext(Dispatchers.IO) { runCatching { Diary.activityDay(today) }.getOrNull() }
     }

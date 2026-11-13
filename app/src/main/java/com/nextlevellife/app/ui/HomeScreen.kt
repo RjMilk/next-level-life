@@ -51,6 +51,7 @@ import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.Minotaur
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
+import com.nextlevellife.app.data.TrustedClock
 import com.nextlevellife.app.data.Weights
 import com.nextlevellife.app.health.ActivitySync
 import com.nextlevellife.app.health.HealthAvailability
@@ -117,9 +118,11 @@ fun HomeScreen(
             }.getOrNull()
         }?.also { cachedToday = today to it }
     }
-    val spentToday by produceState(cachedSpent?.takeIf { it.first == today }?.second, version, today, resumeCount) {
-        value = withContext(Dispatchers.IO) { runCatching { Ledger.spentMs(today) }.getOrNull() }
-            ?.also { cachedSpent = today to it }
+    // Расход — за учётные сутки (доверенное время и учётный пояс), как считает лимит служба блокировки.
+    val spendDay = TrustedClock.today()
+    val spentToday by produceState(cachedSpent?.takeIf { it.first == spendDay }?.second, version, spendDay, resumeCount) {
+        value = withContext(Dispatchers.IO) { runCatching { Ledger.spentMs(spendDay) }.getOrNull() }
+            ?.also { cachedSpent = spendDay to it }
     }
 
     val mainScroll = rememberScrollState()

@@ -13,7 +13,6 @@ import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.metadata.DataOrigin
-import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
@@ -21,8 +20,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Instant
-import java.time.LocalDate
-import java.time.Period
 import java.time.ZoneId
 
 /** Что Health Connect может дать приложению прямо сейчас. */
@@ -109,6 +106,7 @@ object HealthConnect {
 
     /**
      * Читает окно дней [days] (по возрастанию, подряд) в поясе [zone] до момента [nowMs].
+     * [zone] — учётный пояс (TrustedClock), [nowMs] — доверенное время.
      * Шаги по дням — только агрегатом Health Connect (он сам убирает двойной счёт часов и телефона).
      * Пробежки — сессии бега; дистанция — агрегат за интервал сессии от её же источника,
      * шаги — агрегат за интервал (по суткам), чтобы не оплачивать их второй раз как ходьбу.
@@ -125,25 +123,23 @@ object HealthConnect {
         val first = days.first()
         val last = days.last()
 
-        // 1. Шаги по локальным суткам.
-        val groups = client.aggregateGroupByPeriod(
-            AggregateGroupByPeriodRequest(
-                metrics = setOf(StepsRecord.COUNT_TOTAL),
-                timeRangeFilter = TimeRangeFilter.between(
-                    LocalDate.ofEpochDay(first).atStartOfDay(),
-                    LocalDate.ofEpochDay(last + 1).atStartOfDay(),
-                ),
-                timeRangeSlicer = Period.ofDays(1),
-            )
-        )
+        // 1. Шаги по учётным суткам пояса [zone]: по запросу на сутки, границы — точные моменты (Instant).
+        //    Группировка по LocalDateTime считала бы сутки в поясе каждой записи, то есть в поясе телефона.
         val stepsByDay = HashMap<Long, Long?>()
         val sourcesByDay = HashMap<Long, Set<String>>()
-        for (g in groups) {
-            val day = g.startTime.toLocalDate().toEpochDay()
-            if (day !in first..last) continue
-            val steps = g.result[StepsRecord.COUNT_TOTAL]
+        for (day in first..last) {
+            val result = client.aggregate(
+                AggregateRequest(
+                    metrics = setOf(StepsRecord.COUNT_TOTAL),
+                    timeRangeFilter = TimeRangeFilter.between(
+                        Instant.ofEpochMilli(ActivityMath.dayStartMs(day, zone)),
+                        Instant.ofEpochMilli(ActivityMath.dayStartMs(day + 1, zone)),
+                    ),
+                )
+            )
+            val steps = result[StepsRecord.COUNT_TOTAL]
             stepsByDay[day] = steps
-            if (steps != null) sourcesByDay[day] = g.result.dataOrigins.mapTo(HashSet()) { it.packageName }
+            if (steps != null) sourcesByDay[day] = result.dataOrigins.mapTo(HashSet()) { it.packageName }
         }
 
         // 2. Пробежки, задевающие окно. Читаем и сутки до окна: пробежка через полночь, начатая накануне

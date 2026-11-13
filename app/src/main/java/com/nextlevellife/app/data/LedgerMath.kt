@@ -48,6 +48,9 @@ data class UsagePlan(
     val next: UsageCursor,
 )
 
+/** Часть списания в учётных сутках [day]: [ms] расхода, время операции [occurredAtMs]. */
+data class DayShare(val day: Long, val ms: Long, val occurredAtMs: Long)
+
 /** Чистая логика журнала, без Android: её проверяют юнит-тесты. */
 object LedgerMath {
     /** Одна строка USAGE копит не больше минуты расхода. */
@@ -62,9 +65,36 @@ object LedgerMath {
     fun complexKey(sessionId: String) = "complex:$sessionId"
     fun usageKey(sessionId: String, index: Int) = "usage:$sessionId:$index"
 
-    /** Локальный день (LocalDate.toEpochDay) момента [timeMs] в поясе [zone]. */
-    fun accountingDay(timeMs: Long, zone: ZoneId = ZoneId.systemDefault()): Long =
+    /**
+     * Учётные сутки (LocalDate.toEpochDay) момента [timeMs] в поясе [zone].
+     * В приложении пояс — учётный ([TrustedClock.zone]), а момент — доверенный ([TrustedClock.nowMs]).
+     */
+    fun accountingDay(timeMs: Long, zone: ZoneId): Long =
         Instant.ofEpochMilli(timeMs).atZone(zone).toLocalDate().toEpochDay()
+
+    /**
+     * Делит просмотр длиной [durationMs], закончившийся в [endMs] (интервал [endMs − durationMs, endMs)),
+     * по учётным суткам пояса [zone]. Части — по возрастанию суток; у каждой [DayShare.occurredAtMs] —
+     * конец части внутри её суток. Пустая длительность — пустой список.
+     */
+    fun splitByDay(endMs: Long, durationMs: Long, zone: ZoneId): List<DayShare> {
+        require(durationMs >= 0) { "durationMs должен быть ≥ 0" }
+        val out = ArrayList<DayShare>(2)
+        var to = endMs
+        var rest = durationMs
+        while (rest > 0) {
+            // Миллисекунда to − 1 — последняя в части: по ней и сутки.
+            val day = accountingDay(to - 1, zone)
+            val dayStart = java.time.LocalDate.ofEpochDay(day).atStartOfDay(zone).toInstant().toEpochMilli()
+            val part = minOf(rest, to - dayStart)
+            val occurred = if (to == endMs && accountingDay(endMs, zone) == day) endMs else to - 1
+            out += DayShare(day, part, occurred)
+            to -= part
+            rest -= part
+        }
+        out.reverse()
+        return out
+    }
 
     /**
      * Раскладывает списание [chargeMs] на открытую строку и новые строки по [chunkMs].

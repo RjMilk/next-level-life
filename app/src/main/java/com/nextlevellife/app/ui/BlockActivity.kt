@@ -37,8 +37,11 @@ import com.nextlevellife.app.block.BlockRules
 import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
+import com.nextlevellife.app.data.TrustedClock
+import com.nextlevellife.app.data.TrustedClockMath
 import com.nextlevellife.app.data.Weights
 import com.nextlevellife.app.health.ActivitySync
+import java.time.ZoneId
 
 /** Показывается поверх заблокированного приложения: баланс на нуле, дневной лимит исчерпан или ночной режим. */
 class BlockActivity : ComponentActivity() {
@@ -57,6 +60,14 @@ class BlockActivity : ComponentActivity() {
         val reason = intent.getStringExtra(EXTRA_REASON)
             ?.let { runCatching { BlockReason.valueOf(it) }.getOrNull() }
             ?: BlockReason.BALANCE
+        val nightEndMin = Settings.nightEndMin
+        // Тот же снимок, что у службы: полночь и конец ночи — в учётном поясе, а показываются по часам телефона.
+        val time = TrustedClock.snapshot()
+        val resumeClock = when (reason) {
+            BlockReason.LIMIT -> TrustedClockMath.nextLocalClock(0, time, ZoneId.systemDefault())
+            BlockReason.NIGHT -> TrustedClockMath.nextLocalClock(nightEndMin, time, ZoneId.systemDefault())
+            BlockReason.BALANCE -> null
+        }
         screen = BlockScreen(
             label = label,
             reason = reason,
@@ -65,8 +76,9 @@ class BlockActivity : ComponentActivity() {
                 reason = reason,
                 balanceMs = Store.balanceMs(),
                 dailyLimitMin = Settings.dailyLimitMin,
-                nightEndMin = Settings.nightEndMin,
+                nightEndMin = nightEndMin,
                 pushupsRewardMs = Exercises.rewardMs(Exercises.pushups, 10, Weights.DEFAULT),
+                resumeClock = resumeClock,
             ),
         )
     }
@@ -217,12 +229,17 @@ internal object BlockText {
     fun balanceKept(balanceMs: Long): String =
         if (balanceMs > 0) " Баланс ${formatShort(balanceMs)} сохранён." else ""
 
+    /**
+     * [resumeClock] — когда доступ вернётся, по часам телефона («00:00» при лимите, конец ночи ночью);
+     * null — как в учётном поясе: 00:00 и [nightEndMin]. Отличается, только если пояс телефона не учётный.
+     */
     fun message(
         reason: BlockReason,
         balanceMs: Long,
         dailyLimitMin: Int,
         nightEndMin: Int,
         pushupsRewardMs: Long,
+        resumeClock: String? = null,
     ): String = when (reason) {
         BlockReason.BALANCE ->
             "Экранное время закончилось. Сделай упражнения, чтобы заработать минуты: " +
@@ -230,8 +247,8 @@ internal object BlockText {
         // Лимит исчерпан — значит, потрачено ровно столько, сколько разрешено.
         BlockReason.LIMIT ->
             "Использовано $dailyLimitMin из $dailyLimitMin ${minutesGenitive(dailyLimitMin)}. " +
-                "Доступ возобновится в 00:00." + balanceKept(balanceMs)
+                "Доступ возобновится в ${resumeClock ?: "00:00"}." + balanceKept(balanceMs)
         BlockReason.NIGHT ->
-            "Приложение доступно с ${BlockRules.formatClock(nightEndMin)}." + balanceKept(balanceMs)
+            "Приложение доступно с ${resumeClock ?: BlockRules.formatClock(nightEndMin)}." + balanceKept(balanceMs)
     }
 }

@@ -65,7 +65,7 @@ object Ledger {
                     db, OpKind.OPENING, LedgerMath.OPENING_KEY,
                     deltaMs = openingBalanceMs.coerceAtLeast(0L), deltaXp = openingXp.coerceAtLeast(0L),
                     sourceType = "migration", sourceId = "shared_prefs",
-                    occurredAtMs = System.currentTimeMillis(),
+                    occurredAtMs = TrustedClock.nowMs(),
                     metadataJson = JSONObject().put("from", "shared_prefs").toString(),
                 )
             }
@@ -88,6 +88,8 @@ object Ledger {
         // Номер строки в сессии сохраняется, чтобы ключи не повторились; сама строка считается закрытой.
         usageCursor = usageCursor?.copy(accumulatedMs = LedgerMath.USAGE_CHUNK_MS)
         reloadCacheQuietly()
+        // Учётный пояс мог прийти из копии.
+        TrustedClock.onDatabaseReplaced()
     }
 
     // ---------- Чтение ----------
@@ -96,7 +98,13 @@ object Ledger {
 
     fun xp(): Long = cachedXp
 
-    /** Сколько экранного времени потрачено в локальные сутки [day] (положительное число). */
+    /** Сколько экранного времени потрачено в учётные сутки сейчас ([TrustedClock.today]). */
+    fun spentTodayMs(): Long = spentMs(TrustedClock.today())
+
+    /**
+     * Сколько экранного времени потрачено в учётные сутки [day] (положительное число).
+     * «Сегодня» брать из [TrustedClock.today] или [TimeSnapshot.day], а не из системных часов.
+     */
     fun spentMs(day: Long): Long = synchronized(Diary) {
         Diary.query(
             "SELECT COALESCE(-SUM(delta_ms), 0) FROM balance_ops WHERE kind = ? AND accounting_day = ?",
@@ -160,6 +168,7 @@ object Ledger {
      * Можно вызывать внутри уже открытой [Diary.write] — тогда операция войдёт в ту же транзакцию
      * и откатится вместе с ней. Ошибки базы пробрасываются.
      * [metadata] сохраняется как JSON (значения — строки, числа, булевы, null, вложенные Map/List).
+     * Учётные сутки — по [occurredAtMs] (по умолчанию доверенное «сейчас») в учётном поясе [TrustedClock.zone].
      */
     fun reward(
         kind: OpKind,
@@ -168,7 +177,7 @@ object Ledger {
         deltaXp: Long,
         sourceType: String,
         sourceId: String,
-        occurredAtMs: Long = System.currentTimeMillis(),
+        occurredAtMs: Long = TrustedClock.nowMs(),
         metadata: Map<String, Any?> = emptyMap(),
     ): Boolean {
         require(kind != OpKind.USAGE) { "Расход пишется через Ledger.spend" }
@@ -186,46 +195,51 @@ object Ledger {
     /**
      * Списывает [elapsedMs] расхода приложения [packageName] в сессии [sessionId], не больше баланса.
      * Возвращает сколько реально списано. Одна открытая строка USAGE на сессию копит до минуты
-     * расхода, затем начинается следующая (`usage:<sessionId>:<номер>`); смена локальных суток
-     * тоже начинает новую строку. Ошибки базы пробрасываются (открытая строка тогда закрывается).
+     * расхода, затем начинается следующая (`usage:<sessionId>:<номер>`); смена учётных суток
+     * тоже начинает новую строку. Просмотр, закончившийся в [time] и начавшийся до полуночи учётного
+     * пояса, делится на строки по суткам ([LedgerMath.splitByDay]). Сутки и время операций — из [time]
+     * (доверенный момент и учётный пояс, [TrustedClock.snapshot]). Ошибки базы пробрасываются
+     * (открытая строка тогда закрывается).
      */
-    fun spend(sessionId: String, packageName: String, elapsedMs: Long): Long {
+    fun spend(sessionId: String, packageName: String, elapsedMs: Long, time: TimeSnapshot = TrustedClock.snapshot()): Long {
         if (elapsedMs <= 0L) return 0L
         return synchronized(Diary) {
-            val now = System.currentTimeMillis()
-            val zone = ZoneId.systemDefault()
-            val day = LedgerMath.accountingDay(now, zone)
-            var plan: UsagePlan? = null
+            val now = time.utcMs
+            val zone = time.zone
+            var cursor = usageCursor
             try {
                 val charged = Diary.write { db ->
                     val charge = minOf(elapsedMs, readAccount(db).first)
                     if (charge <= 0L) return@write 0L
-                    val p = LedgerMath.planUsage(usageCursor, sessionId, packageName, day, charge)
-                    if (p.addToOpen > 0L) {
-                        val open = usageCursor!!
-                        val key = LedgerMath.usageKey(open.sessionId, open.index)
-                        val changed = db.compileStatement(
-                            "UPDATE balance_ops SET delta_ms = delta_ms - ? WHERE idempotency_key = ? AND kind = ?",
-                        ).use { st ->
-                            st.bindLong(1, p.addToOpen)
-                            st.bindString(2, key)
-                            st.bindString(3, OpKind.USAGE.name)
-                            st.executeUpdateDelete()
+                    for (share in LedgerMath.splitByDay(now, charge, zone)) {
+                        val p = LedgerMath.planUsage(cursor, sessionId, packageName, share.day, share.ms)
+                        if (p.addToOpen > 0L) {
+                            val open = cursor!!
+                            val key = LedgerMath.usageKey(open.sessionId, open.index)
+                            val changed = db.compileStatement(
+                                "UPDATE balance_ops SET delta_ms = delta_ms - ? WHERE idempotency_key = ? AND kind = ?",
+                            ).use { st ->
+                                st.bindLong(1, p.addToOpen)
+                                st.bindString(2, key)
+                                st.bindString(3, OpKind.USAGE.name)
+                                st.executeUpdateDelete()
+                            }
+                            check(changed == 1) { "Открытая строка расхода $key не найдена" }
+                            addToAccount(db, -p.addToOpen, 0L, now)
                         }
-                        check(changed == 1) { "Открытая строка расхода $key не найдена" }
-                        addToAccount(db, -p.addToOpen, 0L, now)
+                        p.newRows.forEachIndexed { i, ms ->
+                            insertOp(
+                                db, OpKind.USAGE, LedgerMath.usageKey(sessionId, p.firstNewIndex + i),
+                                deltaMs = -ms, deltaXp = 0L, sourceType = "app", sourceId = packageName,
+                                occurredAtMs = share.occurredAtMs, metadataJson = "{}", zone = zone, day = share.day,
+                                recordedAtMs = now,
+                            )
+                        }
+                        cursor = p.next
                     }
-                    p.newRows.forEachIndexed { i, ms ->
-                        insertOp(
-                            db, OpKind.USAGE, LedgerMath.usageKey(sessionId, p.firstNewIndex + i),
-                            deltaMs = -ms, deltaXp = 0L, sourceType = "app", sourceId = packageName,
-                            occurredAtMs = now, metadataJson = "{}", zone = zone, day = day,
-                        )
-                    }
-                    plan = p
                     charge
                 }
-                plan?.let { usageCursor = it.next }
+                usageCursor = cursor
                 charged
             } catch (e: Exception) {
                 usageCursor = usageCursor?.copy(accumulatedMs = LedgerMath.USAGE_CHUNK_MS)
@@ -272,10 +286,11 @@ object Ledger {
         sourceId: String,
         occurredAtMs: Long,
         metadataJson: String,
-        zone: ZoneId = ZoneId.systemDefault(),
+        zone: ZoneId = TrustedClock.zone(),
         day: Long = LedgerMath.accountingDay(occurredAtMs, zone),
+        recordedAtMs: Long = TrustedClock.nowMs(),
     ) {
-        val now = System.currentTimeMillis()
+        val now = recordedAtMs
         val values = ContentValues().apply {
             put("id", UUID.randomUUID().toString())
             put("device_id", ensureDeviceId())

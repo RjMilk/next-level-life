@@ -44,7 +44,8 @@ data class Due(val walkMs: Long, val runMs: Long) {
 
 /**
  * Чистая логика шагов и пробежек, без Android: её проверяют юнит-тесты.
- * Дни — номера локальных суток (`LocalDate.toEpochDay()`), как в дневнике.
+ * Дни — номера учётных суток (`LocalDate.toEpochDay()` в учётном поясе TrustedClock); пояс передаётся
+ * параметром `zone`, в приложении это всегда учётный пояс, а не пояс телефона.
  */
 object ActivityMath {
     /** Сколько прошлых дней перечитывается при синхронизации (плюс сегодня). */
@@ -64,8 +65,14 @@ object ActivityMath {
     /** Автоматическая синхронизация — не чаще раза в 5 минут (кнопка «Обновить» — без ограничения). */
     const val SYNC_INTERVAL_MS = 5 * 60_000L
 
-    /** Префикс ключа операции журнала: `steps:<day>:<due>`. */
+    /** Префикс ключа операции журнала: `steps:v2:<day>:<due>`. */
     const val KEY_PREFIX = "steps"
+
+    /**
+     * Версия ключа. v2 — сутки в учётном поясе (TrustedClock) вместо пояса телефона. Ключи v1
+     * (`steps:<day>:<due>`) остаются в журнале как есть; повторной оплаты нет — разницу считает rewarded_ms дня.
+     */
+    const val KEY_VERSION = "v2"
 
     // ---------- Дни ----------
 
@@ -129,6 +136,14 @@ object ActivityMath {
         return out
     }
 
+    /**
+     * День каждой пробежки (id → учётные сутки): уже записанная ([knownDays], из activity_runs) сохраняет
+     * свой день, даже если учётный пояс сменился; новая — день начала в поясе [zone].
+     * Так смена пояса не переносит пробежку у полуночи в соседний день и не оплачивает её второй раз.
+     */
+    fun assignRunDays(runs: List<RunSession>, knownDays: Map<String, Long>, zone: ZoneId): Map<String, Long> =
+        runs.associate { it.id to (knownDays[it.id] ?: dayOf(it.startMs, zone)) }
+
     private fun best(cluster: List<RunSession>): RunSession = cluster.sortedWith(
         compareByDescending<RunSession> { it.distanceM }
             .thenByDescending { it.durationMs }
@@ -138,7 +153,8 @@ object ActivityMath {
 
     /**
      * Сводит прочитанное в итоги по дням [days]. Дистанция, время и число пробежек относятся
-     * к дню начала пробежки; шаги пробежки вычитаются по тем суткам, где они сделаны.
+     * к дню пробежки: из [runDays] (см. [assignRunDays]), иначе — к дню начала в поясе [zone];
+     * шаги пробежки вычитаются по тем суткам, где они сделаны.
      * Пробежка без дистанции (дорожка без датчика) не оплачивается как бег — поэтому её шаги
      * остаются шагами ходьбы и не вычитаются.
      */
@@ -148,8 +164,9 @@ object ActivityMath {
         sourcesByDay: Map<Long, Set<String>>,
         runs: List<RunSession>,
         zone: ZoneId,
+        runDays: Map<String, Long> = emptyMap(),
     ): List<DayTotals> = days.map { day ->
-        val started = runs.filter { dayOf(it.startMs, zone) == day }
+        val started = runs.filter { (runDays[it.id] ?: dayOf(it.startMs, zone)) == day }
         val runSteps = runs.filter { it.distanceM > 0 }.sumOf { it.stepsByDay[day] ?: 0L }
         val sources = (sourcesByDay[day].orEmpty() + started.map { it.source }).filter { it.isNotBlank() }.sorted()
         DayTotals(
@@ -200,7 +217,7 @@ object ActivityMath {
         (Exercises.xp(dueMs) - Exercises.xp(rewardedMs.coerceAtLeast(0L))).coerceAtLeast(0L)
 
     /** Ключ идемпотентности: каждая новая положенная сумма дня оплачивается один раз. */
-    fun rewardKey(day: Long, dueMs: Long): String = "$KEY_PREFIX:$day:$dueMs"
+    fun rewardKey(day: Long, dueMs: Long): String = "$KEY_PREFIX:$KEY_VERSION:$day:$dueMs"
 
     /** Время операции: для прошлых дней — последняя миллисекунда того дня, чтобы начисление легло в свой день. */
     fun occurredAtMs(day: Long, nowMs: Long, zone: ZoneId): Long = minOf(nowMs, dayStartMs(day + 1, zone) - 1)

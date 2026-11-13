@@ -73,6 +73,20 @@ data class ActivityRun(
     val durationMs: Long get() = (endMs - startMs).coerceAtLeast(0L)
 }
 
+/**
+ * Переход к блокировке. [reason] — имя BlockReason (NIGHT, LIMIT, BALANCE); [trigger] — что привело к блоку:
+ * `open` (открыли заблокированное приложение), `tick` (правило сработало во время просмотра),
+ * `charge_failed` (журнал не принимает списания). [utcMs] — доверенное время, [accountingDay] — учётные сутки.
+ */
+data class BlockEvent(
+    val id: Long,
+    val utcMs: Long,
+    val accountingDay: Long,
+    val packageName: String,
+    val reason: String,
+    val trigger: String,
+)
+
 /** Подход, который ещё не записан: время, день и прохождение проставляет [Diary]. */
 data class NewSet(
     val exerciseId: String, val exerciseName: String, val weightKg: Int?,
@@ -132,6 +146,44 @@ object Diary {
             put("value", value)
         }
         db().insertWithOnConflict("meta", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    @Synchronized
+    internal fun metaDelete(key: String) {
+        db().delete("meta", "key = ?", arrayOf(key))
+    }
+
+    // ---------- События блокировки ----------
+
+    /**
+     * Записывает переход к блокировке: приложение [packageName] закрыто по причине [reason]
+     * (имя BlockReason: NIGHT, LIMIT, BALANCE) из-за [trigger] (open, tick, charge_failed).
+     * [utcMs] и [accountingDay] — доверенное время и учётные сутки. Возвращает id строки.
+     */
+    @Synchronized
+    fun addBlockEvent(utcMs: Long, accountingDay: Long, packageName: String, reason: String, trigger: String): Long =
+        db().compileStatement(
+            "INSERT INTO block_events (utc_ms, accounting_day, package_name, reason, \"trigger\") VALUES (?, ?, ?, ?, ?)",
+        ).use { st ->
+            st.bindLong(1, utcMs)
+            st.bindLong(2, accountingDay)
+            st.bindString(3, packageName)
+            st.bindString(4, reason)
+            st.bindString(5, trigger)
+            st.executeInsert()
+        }
+
+    /** События блокировки за учётные сутки [fromDay]..[toDay], по времени. */
+    @Synchronized
+    fun blockEvents(fromDay: Long, toDay: Long): List<BlockEvent> = query(
+        "SELECT id, utc_ms, accounting_day, package_name, reason, \"trigger\" FROM block_events " +
+            "WHERE accounting_day BETWEEN ? AND ? ORDER BY utc_ms, id",
+        fromDay.toString(), toDay.toString(),
+    ) {
+        BlockEvent(
+            id = it.getLong(0), utcMs = it.getLong(1), accountingDay = it.getLong(2),
+            packageName = it.getString(3), reason = it.getString(4), trigger = it.getString(5),
+        )
     }
 
     // ---------- Файл базы (для резервной копии) ----------
@@ -259,6 +311,24 @@ object Diary {
         "SELECT $ACTIVITY_RUN_COLS FROM activity_runs WHERE day BETWEEN ? AND ? ORDER BY start_ms, external_id",
         fromDay.toString(), toDay.toString(),
     ) { it.toActivityRun() }
+
+    /**
+     * Учётные сутки уже записанных пробежек по их external_id (только найденные).
+     * Записанная пробежка своего дня не меняет — даже если потом сменился учётный пояс.
+     */
+    @Synchronized
+    fun activityRunDays(externalIds: Collection<String>): Map<String, Long> {
+        if (externalIds.isEmpty()) return emptyMap()
+        val out = HashMap<String, Long>()
+        // Порциями: у SQLite ограничено число параметров запроса.
+        for (chunk in externalIds.distinct().chunked(500)) {
+            val marks = chunk.joinToString(",") { "?" }
+            query("SELECT external_id, day FROM activity_runs WHERE external_id IN ($marks)", *chunk.toTypedArray()) {
+                it.getString(0) to it.getLong(1)
+            }.forEach { (id, day) -> out[id] = day }
+        }
+        return out
+    }
 
     /** Дни с пробежкой: в календаре они тренировочные. Обычные шаги день тренировочным не делают. */
     @Synchronized
@@ -607,6 +677,19 @@ object Diary {
                 exercise_type INTEGER NOT NULL
             )""",
             "CREATE INDEX idx_activity_runs_day ON activity_runs(day)",
+        ),
+        // 3 → 4: события блокировки (переход к экрану блокировки), для характеристик.
+        // utc_ms — доверенное время, accounting_day — учётные сутки ([TrustedClock]).
+        listOf(
+            """CREATE TABLE block_events (
+                id INTEGER PRIMARY KEY,
+                utc_ms INTEGER NOT NULL,
+                accounting_day INTEGER NOT NULL,
+                package_name TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                "trigger" TEXT NOT NULL
+            )""",
+            "CREATE INDEX idx_block_events_day ON block_events(accounting_day)",
         ),
     )
 }

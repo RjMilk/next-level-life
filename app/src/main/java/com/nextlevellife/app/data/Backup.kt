@@ -72,7 +72,9 @@ object Backup {
     /**
      * Восстанавливает данные из копии. Сначала всё читается и проверяется во временной папке;
      * текущие данные меняются только после этого, а при сбое подмены возвращаются как были.
-     * Идентификатор этой установки (device_id) сохраняется прежним.
+     * Идентификатор этой установки (device_id) и якорь доверенных часов (номер загрузки, якорь,
+     * last_trusted_ms) сохраняются прежними; учётный часовой пояс берётся из копии
+     * ([TrustedClockMath.restoredMeta]).
      */
     fun restore(context: Context, input: InputStream): RestoreResult {
         Store.init(context)
@@ -232,6 +234,8 @@ object Backup {
     ): String? = synchronized(Diary) {
         val dbFile = Diary.dbFile(context)
         val localDeviceId = runCatching { Ledger.deviceId() }.getOrNull()
+        // Якорь доверенных часов и номер загрузки — здешние, из копии не берутся; учётный пояс — из копии.
+        val localClockMeta = runCatching { TrustedClock.localMetaForRestore() }.getOrNull()
         val oldPrefsJson = Store.exportPrefs()
         val oldPrefs = Store.parsePrefs(oldPrefsJson)
         val staging = File(dbFile.path + STAGING)
@@ -245,16 +249,28 @@ object Backup {
         try {
             staging.delete()
             newDb.inputStream().use { input -> staging.outputStream().use { input.copyTo(it) } }
-            if (localDeviceId != null) {
+            if (localDeviceId != null || localClockMeta != null) {
                 SQLiteDatabase.openDatabase(staging.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
-                    db.insertWithOnConflict(
-                        "meta", null,
-                        android.content.ContentValues().apply {
-                            put("key", Ledger.KEY_DEVICE_ID)
-                            put("value", localDeviceId)
-                        },
-                        SQLiteDatabase.CONFLICT_REPLACE,
-                    )
+                    fun putMeta(key: String, value: String) {
+                        db.insertWithOnConflict(
+                            "meta", null,
+                            android.content.ContentValues().apply {
+                                put("key", key)
+                                put("value", value)
+                            },
+                            SQLiteDatabase.CONFLICT_REPLACE,
+                        )
+                    }
+                    if (localDeviceId != null) putMeta(Ledger.KEY_DEVICE_ID, localDeviceId)
+                    if (localClockMeta != null) {
+                        val backupMeta = HashMap<String, String>()
+                        db.rawQuery("SELECT key, value FROM meta", null).use { c ->
+                            while (c.moveToNext()) backupMeta[c.getString(0)] = c.getString(1)
+                        }
+                        for ((key, value) in TrustedClockMath.restoredMeta(localClockMeta, backupMeta)) {
+                            if (value != null) putMeta(key, value) else db.delete("meta", "key = ?", arrayOf(key))
+                        }
+                    }
                 }
                 for (s in listOf("-wal", "-shm", "-journal")) File(staging.path + s).delete()
             }

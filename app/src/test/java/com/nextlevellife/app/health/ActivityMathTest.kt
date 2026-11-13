@@ -92,7 +92,7 @@ class ActivityMathTest {
         assertEquals(30 * min, paid)
         assertEquals(30 * min, rewarded)
         assertEquals(3, keys.size)
-        assertEquals("steps:$d:${30 * min}", ActivityMath.rewardKey(d, 30 * min))
+        assertEquals("steps:v2:$d:${30 * min}", ActivityMath.rewardKey(d, 30 * min))
     }
 
     @Test
