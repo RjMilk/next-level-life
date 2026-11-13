@@ -1,6 +1,7 @@
 package com.nextlevellife.app.pose
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.cos
 import kotlin.math.roundToInt
@@ -90,32 +91,45 @@ internal object StickFigure {
     }
 }
 
-/** Последовательность кадров 30 кадров/с с плавным (косинусным) движением между позами. */
+/**
+ * Последовательность кадров (по умолчанию 30 кадров/с, шаг [stepMs]) с плавным (косинусным)
+ * движением между позами.
+ */
 internal class Timeline(
     private val visible: Side = Side.LEFT,
     private val facingLeft: Boolean = false,
     private val noise: Random? = null,
     private val noiseDeg: Float = 3f,
+    private val stepMs: Double = STEP_MS,
 ) {
     val frames = ArrayList<PoseFrame>()
     private var tMs = 0.0
 
-    private fun framesFor(ms: Long) = (ms / STEP_MS).roundToInt().coerceAtLeast(1)
+    private fun framesFor(ms: Long) = (ms / stepMs).roundToInt().coerceAtLeast(1)
 
-    fun frame(key: Key?) {
+    /** Кадр позы [key] (null — пустой кадр); [edit] — правка суставов кадра (например, понизить уверенность). */
+    fun frame(key: Key?, edit: ((MutableMap<Joint, PosePoint>) -> Unit)? = null) {
         val points = if (key == null) {
             emptyMap()
         } else {
             val k = if (noise != null) key.noisy(noise, noiseDeg) else key
-            StickFigure.points(k, visible, facingLeft)
+            val p = HashMap(StickFigure.points(k, visible, facingLeft))
+            edit?.invoke(p)
+            p
         }
         frames += PoseFrame((START_MS + tMs).toLong(), 1080, 1920, points)
-        tMs += STEP_MS
+        tMs += stepMs
     }
 
     fun hold(key: Key, ms: Long) = apply { repeat(framesFor(ms)) { frame(key) } }
 
     fun empty(ms: Long) = apply { repeat(framesFor(ms)) { frame(null) } }
+
+    /** Камера не присылает кадров [ms] мс (кадров нет вовсе — не путать с пустыми кадрами). */
+    fun skip(ms: Long) = apply { tMs += ms }
+
+    /** Время следующего кадра. */
+    val nextTimeMs: Long get() = (START_MS + tMs).toLong()
 
     fun move(from: Key, to: Key, ms: Long) = apply {
         val n = framesFor(ms)
@@ -175,6 +189,32 @@ class StickFigureTest {
         assertEquals(0f, s.torsoElevation, 0.5f)
         val up = Signals.measure(body(Key(345f, 45f, 145f, 0f, 0f)))
         assertEquals(75f, up.torsoElevation, 0.5f)
+    }
+
+    @Test
+    fun plankSignals() {
+        for (facingLeft in listOf(false, true)) {
+            fun sig(k: Key): Signals {
+                val located = BodyLocator.locate(
+                    PoseFrame(0, 1080, 1920, StickFigure.points(k, facingLeft = facingLeft)),
+                    Limb.entries.toSet(),
+                    emptySet(),
+                )
+                return Signals.measure((located as Located.Found).body)
+            }
+            val s = sig(PLANK)
+            assertEquals(180f, s.hipAngle, 0.1f)
+            assertEquals(0f, s.hipOffLine, 0.01f)
+            assertEquals(12f, s.bodyFromHorizontal, 0.1f)
+            assertEquals(90f, s.elbow, 0.1f)
+            assertEquals(0.6f, s.shoulderOverElbow, 0.01f)
+            assertEquals(0f, s.elbowShoulderDx, 0.01f)
+            assertEquals(156f, sig(PLANK_SAG).hipAngle, 0.1f)
+            assertTrue("провис — таз ниже линии", sig(PLANK_SAG).hipOffLine < -0.2f)
+            assertTrue("таз задран — выше линии", sig(PLANK_PIKE).hipOffLine > 0.2f)
+            assertEquals(-0.177f, sig(PLANK_SLIGHT_SAG).hipOffLine, 0.01f)
+            assertEquals(90f, sig(STAND).bodyFromHorizontal, 0.1f)
+        }
     }
 
     @Test

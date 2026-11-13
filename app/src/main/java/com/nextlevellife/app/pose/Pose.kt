@@ -37,6 +37,15 @@ class PoseFrame(
  * [depth] — 0..1, насколько глубоко выполнено текущее повторение (для индикатора амплитуды);
  * [atStart] — человек в позе упражнения И в исходной точке движения (а не посреди повторения):
  * по нему панель подтверждает готовность перед счётом.
+ *
+ * Поля удержания (только у счётчиков вида [CountKind.HOLD], у остальных — нули; [count] у них 0):
+ * [heldMs] — ЗАСЧИТАННОЕ время: сумма отрезков не короче минимального (у планки 10 с) плюс
+ * текущий отрезок, если он уже дотянул до минимума. Именно оно идёт в итог подхода.
+ * [currentSegmentMs] — оплаченное время текущего отрезка (0 — отрезка нет); пока оно меньше
+ * минимума, его нет в [heldMs] — это [pendingMs]. Если отрезок оборвётся раньше минимума,
+ * [pendingMs] пропадёт, а [heldMs] не изменится.
+ * [holding] — время идёт прямо сейчас (последний кадр хороший и отрезок открыт).
+ * На экране показывать [shownHeldMs] = [heldMs] + [pendingMs].
  */
 data class RepState(
     val count: Int = 0,
@@ -45,10 +54,23 @@ data class RepState(
     val hint: String = "",
     val depth: Float = 0f,
     val atStart: Boolean = false,
-)
+    val heldMs: Long = 0,
+    val currentSegmentMs: Long = 0,
+    val pendingMs: Long = 0,
+    val holding: Boolean = false,
+) {
+    /** Что показывать на экране: засчитанное плюс ещё не подтверждённый текущий отрезок. */
+    val shownHeldMs: Long get() = heldMs + pendingMs
+}
+
+/** Вид счёта: повторения ([RepState.count]) или удержание позы ([RepState.heldMs]). */
+enum class CountKind { REPS, HOLD }
 
 interface RepCounter {
     val state: RepState
+
+    /** Что считает счётчик; интерфейс выбирает по нему табло (повторения или время). */
+    val kind: CountKind get() = CountKind.REPS
 
     /** Обработать кадр и вернуть новое состояние. Вызывается из главного потока. */
     fun onFrame(frame: PoseFrame): RepState

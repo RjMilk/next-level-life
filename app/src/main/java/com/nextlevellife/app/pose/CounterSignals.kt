@@ -68,6 +68,21 @@ internal enum class Feature(val isAngle: Boolean, vararg limbs: Limb) {
 
     /** Насколько локоть выше запястья. */
     ELBOW_OVER_WRIST(false, Limb.ELBOW, Limb.WRIST),
+
+    /** Угол в тазу плечо–таз–лодыжка. 180 — тело одной прямой. */
+    HIP_ANGLE(true, Limb.SHOULDER, Limb.HIP, Limb.ANKLE),
+
+    /** Отклонение таза от отрезка плечо–лодыжка: положительное — таз выше линии, отрицательное — провис. */
+    HIP_OFF_LINE(false, Limb.SHOULDER, Limb.HIP, Limb.ANKLE),
+
+    /** Наклон линии плечо–лодыжка от горизонтали, 0..90: 0 — тело лежит, 90 — стоит. */
+    BODY_FROM_HORIZONTAL(true, Limb.SHOULDER, Limb.ANKLE),
+
+    /** Насколько плечо выше локтя (положительное — локоть ниже плеча). */
+    SHOULDER_OVER_ELBOW(false, Limb.SHOULDER, Limb.ELBOW),
+
+    /** Смещение локтя от плеча по горизонтали (всегда ≥ 0). */
+    ELBOW_SHOULDER_DX(false, Limb.SHOULDER, Limb.ELBOW),
     ;
 
     val joints: Set<Limb> = limbs.toSet()
@@ -129,6 +144,15 @@ internal enum class Feature(val isAngle: Boolean, vararg limbs: Limb) {
             }
             if (h != null && a != null) v[HIP_OVER_ANKLE.ordinal] = Geometry.heightAbove(h, a, scale)
             if (e != null && w != null) v[ELBOW_OVER_WRIST.ordinal] = Geometry.heightAbove(e, w, scale)
+            if (s != null && h != null && a != null) {
+                v[HIP_ANGLE.ordinal] = Geometry.jointAngle(s, h, a)
+                v[HIP_OFF_LINE.ordinal] = Geometry.offsetFromLine(h, s, a, scale)
+            }
+            if (s != null && a != null) v[BODY_FROM_HORIZONTAL.ordinal] = Geometry.tiltFromHorizontal(a, s)
+            if (s != null && e != null) {
+                v[SHOULDER_OVER_ELBOW.ordinal] = Geometry.heightAbove(s, e, scale)
+                v[ELBOW_SHOULDER_DX.ordinal] = Geometry.horizontalGap(e, s, scale)
+            }
             return v
         }
     }
@@ -234,6 +258,74 @@ internal class SideTrack(val side: Side) {
     }
 }
 
+/**
+ * Обе стороны тела и выбор «липкой» стороны: меняется, только если другая сторона заметно
+ * увереннее непрерывно [EngineTuning.SIDE_SWITCH_MS] или текущая потеряна дольше
+ * [EngineTuning.SIDE_LOST_MS]. [need] — главные суставы упражнения; [onSwitch] — после смены стороны
+ * (счётчик сбрасывает фильтры, чтобы не смешивать стороны).
+ */
+internal class SideSelector(private val need: Set<Limb>, private val onSwitch: () -> Unit = {}) {
+    val tracks = Side.entries.map { SideTrack(it) }
+
+    var active: SideTrack? = null
+        private set
+    private var challengerSince: Long? = null
+    private var activeStaleSince: Long? = null
+
+    fun update(frame: PoseFrame) {
+        for (tr in tracks) tr.update(frame)
+    }
+
+    /** Выбранная сторона, если все [need] на ней есть (свежие или устаревшие); иначе null. */
+    fun choose(t: Long): SideTrack? {
+        val cur = active
+        if (cur != null) {
+            val other = tracks.first { it !== cur }
+            if (cur.allFresh(need)) {
+                activeStaleSince = null
+            } else if (activeStaleSince == null) {
+                activeStaleSince = t
+            }
+            val staleSince = activeStaleSince
+            val otherOk = other.allFresh(need)
+            if (staleSince != null && t - staleSince > EngineTuning.SIDE_LOST_MS && otherOk) {
+                switchTo(other)
+            } else if (otherOk && other.score(need) > cur.score(need) + EngineTuning.SIDE_SWITCH_MARGIN * need.size) {
+                val since = challengerSince ?: t.also { challengerSince = it }
+                if (t - since >= EngineTuning.SIDE_SWITCH_MS) switchTo(other)
+            } else {
+                challengerSince = null
+            }
+        }
+        if (active == null) {
+            tracks.filter { it.allFresh(need) }.maxByOrNull { it.score(need) }?.let { switchTo(it) }
+        }
+        return active?.takeIf { it.available(need) }
+    }
+
+    /** Сторона, где видно больше всего нужных суставов (для подсказки «Не вижу …»). */
+    fun closest(): SideTrack = tracks.maxBy { it.score(need) }
+
+    /** Забыть выбранную сторону (человек пропал надолго); суставы остаются. */
+    fun drop() {
+        active = null
+    }
+
+    fun reset() {
+        active = null
+        challengerSince = null
+        activeStaleSince = null
+        tracks.forEach { it.reset() }
+    }
+
+    private fun switchTo(track: SideTrack) {
+        active = track
+        challengerSince = null
+        activeStaleSince = null
+        onSwitch()
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Диагностика одного кадра (без истории). Используется панелью отладки и разбором записей;
 // сам счётчик работает через [SideTrack] и [Sample].
@@ -314,6 +406,11 @@ internal class Signals(private val v: FloatArray) {
     val shoulderOverHip get() = this[Feature.SHOULDER_OVER_HIP]
     val hipOverAnkle get() = this[Feature.HIP_OVER_ANKLE]
     val elbowOverWrist get() = this[Feature.ELBOW_OVER_WRIST]
+    val hipAngle get() = this[Feature.HIP_ANGLE]
+    val hipOffLine get() = this[Feature.HIP_OFF_LINE]
+    val bodyFromHorizontal get() = this[Feature.BODY_FROM_HORIZONTAL]
+    val shoulderOverElbow get() = this[Feature.SHOULDER_OVER_ELBOW]
+    val elbowShoulderDx get() = this[Feature.ELBOW_SHOULDER_DX]
 
     companion object {
         const val ARM_TO_TORSO = Feature.ARM_TO_TORSO

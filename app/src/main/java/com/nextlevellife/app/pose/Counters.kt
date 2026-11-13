@@ -9,9 +9,13 @@ import kotlin.math.abs
  * (у становой — в долях длины бедра).
  */
 object RepCounters {
-    /** Счётчик для упражнения по его id; null, если камера это упражнение считать не умеет. */
+    /**
+     * Счётчик для упражнения по его id; null, если камера это упражнение считать не умеет.
+     * Вид счёта — [RepCounter.kind]: повторения или удержание («plank»).
+     */
     fun forExercise(exerciseId: String): RepCounter? =
         ExerciseConfigs.byId[exerciseId]?.let { PhaseCounter(it) }
+            ?: HoldConfigs.byId[exerciseId]?.let { HoldCounter(it) }
 }
 
 /**
@@ -233,6 +237,110 @@ internal object CounterThresholds {
 
         const val TORSO_TILT_UPRIGHT = 10f
     }
+
+    /**
+     * Планка на предплечьях, камера строго сбоку. ENTER — вход (непрерывно [ENTER_MS]),
+     * HOLD — пока отрезок идёт (гистерезис). Ровная планка: таз и колено ≈ 180°, локоть ≈ 90°,
+     * локоть под плечом, линия плечо–лодыжка поднята над горизонталью на ~10°.
+     */
+    object Plank {
+        /** Угол в тазу плечо–таз–лодыжка не меньше. */
+        const val ENTER_HIP_ANGLE = 165f
+        const val HOLD_HIP_ANGLE = 160f
+
+        /** Угол в колене не меньше. */
+        const val ENTER_KNEE = 160f
+        const val HOLD_KNEE = 155f
+
+        /** Угол в локте в этих пределах (предплечье на полу, плечо вертикально ≈ 90°). */
+        const val ENTER_ELBOW_MIN = 70f
+        const val ENTER_ELBOW_MAX = 110f
+        const val HOLD_ELBOW_MIN = 65f
+        const val HOLD_ELBOW_MAX = 115f
+
+        /** Таз отклонён от отрезка плечо–лодыжка не больше чем на столько торса (вверх или вниз). */
+        const val ENTER_HIP_OFF_LINE = 0.15f
+        const val HOLD_HIP_OFF_LINE = 0.20f
+
+        /** Линия плечо–лодыжка наклонена от горизонтали не больше (и на входе, и в удержании). */
+        const val BODY_TILT_MAX = 30f
+
+        /** Локоть ниже плеча: плечо выше локтя больше чем на столько торса. */
+        const val SHOULDER_OVER_ELBOW_MIN = 0f
+
+        /** Локоть под плечом: смещение по горизонтали не больше стольких торса. */
+        const val ELBOW_SHOULDER_DX_MAX = 0.35f
+
+        /** Вход: столько мс подряд правильных кадров. */
+        const val ENTER_MS = 500L
+
+        /** Оплачивается интервал между соседними хорошими кадрами не длиннее (как устаревание сустава). */
+        const val PAID_GAP_MS = JointTuning.STALE_MS
+
+        /** Провал (плохие или пропавшие кадры) дольше — отрезок завершается. */
+        const val BREAK_MS = EngineTuning.POSTURE_GRACE_MS
+
+        /** Отрезок короче не засчитывается. */
+        const val MIN_SEGMENT_MS = 10_000L
+    }
+}
+
+internal object HoldConfigs {
+    private const val LIE_DOWN = "Ляг в планку боком к телефону"
+    private const val HIP_UP = "Таз выше"
+    private const val HIP_DOWN = "Таз ниже"
+    private const val STRAIGHTEN_LEGS = "Выпрями ноги"
+    private const val ELBOWS_UNDER = "Локти под плечи"
+
+    /** Пороги одного набора (вход или удержание). Сравнения записаны так, что NaN — нарушение. */
+    private class PlankLimits(
+        val hipAngle: Float,
+        val knee: Float,
+        val elbowMin: Float,
+        val elbowMax: Float,
+        val hipOffLine: Float,
+    )
+
+    private val plankEnter = with(CounterThresholds.Plank) {
+        PlankLimits(ENTER_HIP_ANGLE, ENTER_KNEE, ENTER_ELBOW_MIN, ENTER_ELBOW_MAX, ENTER_HIP_OFF_LINE)
+    }
+    private val plankHold = with(CounterThresholds.Plank) {
+        PlankLimits(HOLD_HIP_ANGLE, HOLD_KNEE, HOLD_ELBOW_MIN, HOLD_ELBOW_MAX, HOLD_HIP_OFF_LINE)
+    }
+
+    /** Что не так с планкой (подсказка) или null. Порядок — от грубого к тонкому. */
+    private fun plankFault(s: Sample, strict: Boolean): String? = with(CounterThresholds.Plank) {
+        val l = if (strict) plankEnter else plankHold
+        val elbow = s[Feature.ELBOW]
+        val off = s[Feature.HIP_OFF_LINE]
+        when {
+            !(s[Feature.BODY_FROM_HORIZONTAL] <= BODY_TILT_MAX) -> LIE_DOWN
+            !(elbow >= l.elbowMin && elbow <= l.elbowMax) ||
+                !(s[Feature.SHOULDER_OVER_ELBOW] > SHOULDER_OVER_ELBOW_MIN) ||
+                !(s[Feature.ELBOW_SHOULDER_DX] <= ELBOW_SHOULDER_DX_MAX) -> ELBOWS_UNDER
+            !(s[Feature.KNEE] >= l.knee) -> STRAIGHTEN_LEGS
+            off.isNaN() -> LIE_DOWN
+            !(s[Feature.HIP_ANGLE] >= l.hipAngle) || !(abs(off) <= l.hipOffLine) -> if (off < 0f) HIP_UP else HIP_DOWN
+            else -> null
+        }
+    }
+
+    private val plank = with(CounterThresholds.Plank) {
+        HoldConfig(
+            id = "plank",
+            required = setOf(Limb.SHOULDER, Limb.ELBOW, Limb.WRIST, Limb.HIP, Limb.KNEE, Limb.ANKLE),
+            postureHint = LIE_DOWN,
+            fault = ::plankFault,
+            enterMs = ENTER_MS,
+            paidGapMs = PAID_GAP_MS,
+            breakMs = BREAK_MS,
+            minSegmentMs = MIN_SEGMENT_MS,
+        )
+    }
+
+    val all: List<HoldConfig> = listOf(plank)
+
+    val byId: Map<String, HoldConfig> = all.associateBy { it.id }
 }
 
 internal object ExerciseConfigs {

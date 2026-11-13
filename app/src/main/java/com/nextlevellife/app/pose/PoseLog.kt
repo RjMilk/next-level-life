@@ -23,17 +23,18 @@ import kotlin.math.roundToLong
  * «Чёрный ящик» подхода: поток суставов и состояние счёта по кадрам, чтобы на компьютере
  * проиграть подход через счётчики с любыми порогами.
  *
- * Формат v2 — текст, разделитель `;`, десятичная точка:
+ * Формат v3 — текст, разделитель `;`, десятичная точка:
  * ```
- * # nll-poselog v2 exercise=squats front=true device=Pixel_7 app=0.1.0 started=2026-11-12T10:15:30+03:00
- * t;w;h;NOSE_x;NOSE_y;NOSE_c;…;RIGHT_ANKLE_c;phase;count;tracking;inPosition;depth;hint;atStart
- * 0;480;640;231.4;118.0;0.99;…;SEARCH;0;1;0;0.000;Встань прямо;0
+ * # nll-poselog v3 exercise=squats front=true device=Pixel_7 app=0.1.0 started=2026-11-12T10:15:30+03:00
+ * t;w;h;NOSE_x;NOSE_y;NOSE_c;…;RIGHT_ANKLE_c;phase;count;tracking;inPosition;depth;hint;atStart;heldMs
+ * 0;480;640;231.4;118.0;0.99;…;SEARCH;0;1;0;0.000;Встань прямо;0;0
  * # reset
  * …
  * ```
  * `t` — мс от первого кадра; у отсутствующего сустава x, y, c пустые. Состояние — после обработки кадра.
  * Строка-комментарий `# reset` — панель вернулась к поиску вне кадра (пауза, снятие паузы).
- * v1 — то же без столбца `atStart` (при разборе atStart = false).
+ * `heldMs` — засчитанное время удержания ([RepState.heldMs]; у счётчиков повторений 0).
+ * v2 — то же без столбца `heldMs` (при разборе heldMs = 0); v1 — ещё и без `atStart` (atStart = false).
  */
 
 /** Состояние панели и счётчика после кадра, как записано на телефоне. */
@@ -45,12 +46,13 @@ data class RecordedState(
     val depth: Float,
     val hint: String,
     val atStart: Boolean = false,
+    val heldMs: Long = 0,
 )
 
 /**
  * Разобранная запись. [frames] и [recorded] одной длины. [resets] — индексы кадров,
  * перед которыми панель сбросилась в поиск по внешней причине (строка `# reset`).
- * [version] — версия формата файла (v1, v2).
+ * [version] — версия формата файла (v1, v2, v3).
  */
 class PoseLogData(
     val exerciseId: String,
@@ -65,15 +67,16 @@ class PoseLogData(
 /** Чистый Kotlin, без Android: строки формата и разбор. */
 object PoseLogFormat {
     const val MAGIC = "nll-poselog"
-    const val VERSION = "v2"
+    const val VERSION = "v3"
     const val RESET_MARK = "# reset"
     private const val SEP = ';'
 
     /** Версии, которые умеет читать [parse]. */
-    val READABLE = setOf("v1", "v2")
+    val READABLE = setOf("v1", "v2", "v3")
 
     private val STATE_COLUMNS_V1 = listOf("phase", "count", "tracking", "inPosition", "depth", "hint")
-    private val STATE_COLUMNS = STATE_COLUMNS_V1 + "atStart"
+    private val STATE_COLUMNS_V2 = STATE_COLUMNS_V1 + "atStart"
+    private val STATE_COLUMNS = STATE_COLUMNS_V2 + "heldMs"
 
     /**
      * Заголовок-комментарий. Значения без пробелов (пробел → `_`), чтобы строку можно было
@@ -108,7 +111,13 @@ object PoseLogFormat {
         for (j in Joint.entries) {
             add("${j.name}_x"); add("${j.name}_y"); add("${j.name}_c")
         }
-        addAll(if (version == "v1") STATE_COLUMNS_V1 else STATE_COLUMNS)
+        addAll(
+            when (version) {
+                "v1" -> STATE_COLUMNS_V1
+                "v2" -> STATE_COLUMNS_V2
+                else -> STATE_COLUMNS
+            },
+        )
     }
 
     /** Строка кадра. [t0] — timeMs первого кадра записи; [phase] — фаза панели (SEARCH/HOLD/COUNT). */
@@ -132,11 +141,12 @@ object PoseLogFormat {
         sb.append(SEP); fixed(sb, if (state.depth.isNaN()) 0f else state.depth, 3)
         sb.append(SEP).append(clean(state.hint))
         sb.append(SEP).append(if (state.atStart) 1 else 0)
+        sb.append(SEP).append(state.heldMs)
         return sb.toString()
     }
 
     /**
-     * Разбор записи v1 или v2. Бросает [IllegalArgumentException] с номером строки, если файл не в формате.
+     * Разбор записи v1, v2 или v3. Бросает [IllegalArgumentException] с номером строки, если файл не в формате.
      */
     fun parse(lines: Sequence<String>): PoseLogData {
         var version = VERSION
@@ -246,6 +256,7 @@ object PoseLogFormat {
             depth = float("depth"),
             hint = cell("hint"),
             atStart = if ("atStart" in index) flag("atStart") else false,
+            heldMs = if ("heldMs" in index) long("heldMs") else 0L,
         )
     }
 

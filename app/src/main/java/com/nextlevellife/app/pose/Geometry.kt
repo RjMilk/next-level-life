@@ -1,6 +1,7 @@
 package com.nextlevellife.app.pose
 
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.hypot
 
@@ -44,6 +45,39 @@ internal object Geometry {
     /** Насколько [a] выше [b] на экране, в долях [scale] (положительное — [a] выше). */
     fun heightAbove(a: PosePoint, b: PosePoint, scale: Float): Float =
         if (scale > EPS) (b.y - a.y) / scale else Float.NaN
+
+    /** Расстояние между [a] и [b] по горизонтали, в долях [scale] (всегда ≥ 0). */
+    fun horizontalGap(a: PosePoint, b: PosePoint, scale: Float): Float =
+        if (scale > EPS) abs(a.x - b.x) / scale else Float.NaN
+
+    /**
+     * Наклон отрезка [from]→[to] от горизонтали, градусы 0..90 (направление не важно):
+     * 0 — горизонтально, 90 — вертикально.
+     */
+    fun tiltFromHorizontal(from: PosePoint, to: PosePoint): Float {
+        val t = tiltFromVertical(from, to)
+        return if (t.isNaN()) t else abs(90f - t)
+    }
+
+    /**
+     * Отклонение точки [p] от прямой через [a] и [b] по перпендикуляру, в долях [scale].
+     * Знак — по экрану: положительное — [p] выше прямой, отрицательное — ниже.
+     * NaN, если отрезок вырожден или вертикален (тогда «выше/ниже» не определено).
+     */
+    fun offsetFromLine(p: PosePoint, a: PosePoint, b: PosePoint, scale: Float): Float {
+        val dx = b.x - a.x
+        val dy = b.y - a.y
+        val len = hypot(dx, dy)
+        if (len < EPS || scale <= EPS || abs(dx) < EPS) return Float.NaN
+        // Нормаль к прямой, смотрящая вверх по экрану (y вниз, поэтому её y < 0).
+        var nx = -dy / len
+        var ny = dx / len
+        if (ny > 0f) {
+            nx = -nx
+            ny = -ny
+        }
+        return ((p.x - a.x) * nx + (p.y - a.y) * ny) / scale
+    }
 
     /** Доля пути значения [x] от [from] к [to], 0..1; NaN → 0. Работает в обе стороны. */
     fun progress(x: Float, from: Float, to: Float): Float {

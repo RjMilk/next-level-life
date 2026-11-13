@@ -161,7 +161,9 @@ internal object PoseLogReplay {
         val rec = data.recorded
         val target = data.meta["target"]?.toIntOrNull()
         val counter = counterFor(data.exerciseId)
-        val sim = counter?.let { PanelSim(it, target) }
+        // Удержание панель повторений не ведёт: такой счётчик проигрываем напрямую, без PanelSim.
+        val holdCounter = counter?.takeIf { it.kind == CountKind.HOLD }
+        val sim = counter?.takeIf { holdCounter == null }?.let { PanelSim(it, target) }
 
         val states = ArrayList<RepState>(frames.size)
         val phases = ArrayList<String>(frames.size)
@@ -170,6 +172,11 @@ internal object PoseLogReplay {
                 if (i in data.resets) sim.toSearch()
                 states += sim.onFrame(f)
                 phases += sim.phase.name
+            }
+        } else if (holdCounter != null) {
+            for ((i, f) in frames.withIndex()) {
+                states += holdCounter.onFrame(f)
+                phases += rec[i].phase
             }
         }
 
@@ -227,7 +234,14 @@ internal object PoseLogReplay {
 
         val phoneCount = phoneCount(rec)
         val phoneRepTimes = phoneRepTimes(frames, rec)
-        if (sim == null) {
+        if (holdCounter != null) {
+            val replayHeld = states.lastOrNull()?.heldMs ?: 0L
+            line("УДЕРЖАНИЕ (засчитано): телефон ${fmt(rec.maxOf { it.heldMs } / 1000.0, 1)} с, " +
+                "проигрывание ${fmt(replayHeld / 1000.0, 1)} с" +
+                (if (data.version != PoseLogFormat.VERSION) "   (запись ${data.version}: heldMs не писался)" else ""))
+            line("в позе при проигрывании: ${pct(states.count { it.inPosition }, states.size)} кадров, " +
+                "время шло: ${pct(states.count { it.holding }, states.size)}")
+        } else if (sim == null) {
             line("СЧЁТ: телефон $phoneCount, проигрывание — нет счётчика для «${data.exerciseId}»")
         } else {
             line("СЧЁТ: телефон $phoneCount, проигрывание ${sim.announced}")
@@ -246,7 +260,7 @@ internal object PoseLogReplay {
 
         // --- Углы и высоты, посчитанные прямо из кадров
         val cfg = ExerciseConfigs.byId[data.exerciseId]
-        val required = cfg?.required ?: setOf(Limb.SHOULDER, Limb.HIP)
+        val required = cfg?.required ?: HoldConfigs.byId[data.exerciseId]?.required ?: setOf(Limb.SHOULDER, Limb.HIP)
         val optional = Limb.entries.toSet() - required
         val elbow = ArrayList<Float>()
         val knee = ArrayList<Float>()
@@ -269,7 +283,7 @@ internal object PoseLogReplay {
             wrist.addIfNum(s.wristOverShoulder)
         }
         line("тело найдено (все нужные суставы ≥ ${BodyLocator.MIN_CONFIDENCE}): ${pct(found, frames.size)} кадров" +
-            (cfg?.let { "; нужны: " + it.required.joinToString(",") { l -> l.name.lowercase() } } ?: ""))
+            "; нужны: " + required.joinToString(",") { l -> l.name.lowercase() })
         line("сигналы по кадрам (без сглаживания)        мин     p5    p95   макс   кадров")
         line(statLine("локоть, °", elbow, 0))
         line(statLine("колено, °", knee, 0))

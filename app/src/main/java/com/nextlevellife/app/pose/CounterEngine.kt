@@ -143,10 +143,13 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
     override var state: RepState = RepState()
         private set
 
-    private val tracks = Side.entries.map { SideTrack(it) }
-    private var active: SideTrack? = null
-    private var challengerSince: Long? = null
-    private var activeStaleSince: Long? = null
+    /** Фильтры другой стороны не смешиваем: при смене стороны защёлки и сглаживание начинаются заново. */
+    private val sides = SideSelector(cfg.required) {
+        restLatch.clear()
+        farLatch.clear()
+        finishLatch.clear()
+        depthEma = Float.NaN
+    }
 
     private var count = 0
     private var phase = initialPhase()
@@ -177,22 +180,22 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
 
     override fun onFrame(frame: PoseFrame): RepState {
         val t = frame.timeMs
-        for (tr in tracks) tr.update(frame)
+        sides.update(frame)
 
         val last = lastTrackedMs
         if (last != null && t - last > EngineTuning.LOST_RESET_MS) {
             resetMotion(t)
             engaged = false
-            active = null
+            sides.drop()
             lastTrackedMs = null
         }
 
         // Пустой кадр — человека нет совсем: устаревшие суставы его не заменяют
         // (они только для кратко пропавших отдельных суставов).
-        val track = if (frame.points.isEmpty()) null else chooseSide(t)
+        val track = if (frame.points.isEmpty()) null else sides.choose(t)
         val s = track?.cur
         if (track == null || s == null) {
-            val closest = tracks.maxBy { it.score(cfg.required) }
+            val closest = sides.closest()
             val hint = if (frame.points.isEmpty()) {
                 BodyLocator.HINT_NOT_IN_FRAME
             } else {
@@ -281,48 +284,6 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         return emit(tracking = true, inPosition = true, hint = hint, depth = depth, atStart = atStart)
     }
 
-    /**
-     * «Липкая» сторона тела: меняется, только если другая сторона заметно увереннее
-     * непрерывно [EngineTuning.SIDE_SWITCH_MS] или текущая потеряна дольше [EngineTuning.SIDE_LOST_MS].
-     */
-    private fun chooseSide(t: Long): SideTrack? {
-        val need = cfg.required
-        val cur = active
-        if (cur != null) {
-            val other = tracks.first { it !== cur }
-            if (cur.allFresh(need)) {
-                activeStaleSince = null
-            } else if (activeStaleSince == null) {
-                activeStaleSince = t
-            }
-            val staleSince = activeStaleSince
-            val otherOk = other.allFresh(need)
-            if (staleSince != null && t - staleSince > EngineTuning.SIDE_LOST_MS && otherOk) {
-                switchTo(other)
-            } else if (otherOk && other.score(need) > cur.score(need) + EngineTuning.SIDE_SWITCH_MARGIN * need.size) {
-                val since = challengerSince ?: t.also { challengerSince = it }
-                if (t - since >= EngineTuning.SIDE_SWITCH_MS) switchTo(other)
-            } else {
-                challengerSince = null
-            }
-        }
-        if (active == null) {
-            tracks.filter { it.allFresh(need) }.maxByOrNull { it.score(need) }?.let { switchTo(it) }
-        }
-        return active?.takeIf { it.available(need) }
-    }
-
-    private fun switchTo(track: SideTrack) {
-        active = track
-        challengerSince = null
-        activeStaleSince = null
-        // Фильтры другой стороны не смешиваем: защёлки и сглаживание начинаются заново.
-        restLatch.clear()
-        farLatch.clear()
-        finishLatch.clear()
-        depthEma = Float.NaN
-    }
-
     private fun smoothDepth(t: Long, raw: Float): Float {
         if (raw.isNaN()) return if (depthEma.isNaN()) 0f else depthEma
         val r = raw.coerceIn(0f, 1f)
@@ -351,9 +312,8 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         count = 0
         resetMotion(Latches.NEVER)
         engaged = false
-        active = null
         lastTrackedMs = null
-        tracks.forEach { it.reset() }
+        sides.reset()
         state = RepState()
     }
 
