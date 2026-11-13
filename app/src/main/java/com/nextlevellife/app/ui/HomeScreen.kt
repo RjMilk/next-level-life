@@ -55,6 +55,8 @@ import com.nextlevellife.app.data.TrustedClock
 import com.nextlevellife.app.data.Weights
 import com.nextlevellife.app.health.ActivitySync
 import com.nextlevellife.app.health.HealthAvailability
+import com.nextlevellife.app.sleep.SleepNight
+import com.nextlevellife.app.sleep.SleepRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
@@ -64,6 +66,9 @@ private var cachedToday: Pair<Long, ProgressMath.DayDigest>? = null
 
 /** Расход за день с прошлого показа — по той же причине. */
 private var cachedSpent: Pair<Long, Long>? = null
+
+/** Ночной перерыв с прошлого показа — по той же причине. */
+private var cachedNight: Pair<Long, SleepNight?>? = null
 
 /**
  * Главная («Тренировка»). COMPACT — одна колонка; MEDIUM — одна колонка не шире 600 dp, упражнения
@@ -120,6 +125,12 @@ fun HomeScreen(
     }
     // Расход — за учётные сутки (доверенное время и учётный пояс), как считает лимит служба блокировки.
     val spendDay = TrustedClock.today()
+    // Ночной перерыв перед сегодняшним днём (день пробуждения — учётные сутки). События экрана
+    // экраны не будят, поэтому пересчёт ещё и при каждом возврате в приложение (resumeCount).
+    val night by produceState(cachedNight?.takeIf { it.first == spendDay }?.second, version, spendDay, resumeCount) {
+        value = withContext(Dispatchers.IO) { SleepRepository.night(spendDay) }
+            .also { cachedNight = spendDay to it }
+    }
     val spentToday by produceState(cachedSpent?.takeIf { it.first == spendDay }?.second, version, spendDay, resumeCount) {
         value = withContext(Dispatchers.IO) { runCatching { Ledger.spentMs(spendDay) }.getOrNull() }
             ?.also { cachedSpent = spendDay to it }
@@ -164,7 +175,7 @@ fun HomeScreen(
             night = if (nightOn) nightStart to nightEnd else null,
             large = widthClass == WidthClass.EXPANDED,
         )
-        TodayCard(todayDigest, health.availability, onProgress, onSettings)
+        TodayCard(todayDigest, night, health.availability, onProgress, onSettings)
         LevelCard(xp, streak)
     }
     val earn: @Composable () -> Unit = {
@@ -293,12 +304,14 @@ private fun BalanceScore(balanceMs: Long, large: Boolean) {
 // ---------- Сегодня, уровень ----------
 
 /**
- * «Сегодня»: итог дня, не больше двух строк тренировок, затем шаги и бег из Health Connect;
- * нажатие открывает вкладку «Прогресс». Без подключения — одна строка-ссылка в настройки.
+ * «Сегодня»: ночной перерыв одной строкой (если подтверждён), итог дня, не больше двух строк тренировок,
+ * затем шаги и бег из Health Connect; нажатие открывает вкладку «Прогресс». Без подключения — одна
+ * строка-ссылка в настройки.
  */
 @Composable
 private fun TodayCard(
     digest: ProgressMath.DayDigest?,
+    night: SleepNight?,
     health: HealthAvailability?,
     onProgress: () -> Unit,
     onSettings: () -> Unit,
@@ -311,6 +324,15 @@ private fun TodayCard(
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Сегодня", style = MaterialTheme.typography.titleMedium)
+                ProgressMath.nightTodayLine(night)?.let { line ->
+                    Text(
+                        line,
+                        style = MaterialTheme.typography.bodyMedium.merge(Tabular),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 if (digest == null || !digest.hasWorkout) {
                     Text(
                         "Тренировок ещё не было",

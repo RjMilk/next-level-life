@@ -1,6 +1,7 @@
 package com.nextlevellife.app.block
 
 import android.accessibilityservice.AccessibilityService
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -22,6 +23,8 @@ import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TimeSnapshot
 import com.nextlevellife.app.data.TrustedClock
+import com.nextlevellife.app.sleep.PhoneEventType
+import com.nextlevellife.app.sleep.PhoneEvents
 import com.nextlevellife.app.ui.BlockActivity
 import java.util.UUID
 
@@ -69,6 +72,28 @@ class BlockerService : AccessibilityService() {
     }
     private var timeReceiverRegistered = false
 
+    /**
+     * Включение, выключение и разблокировка экрана — для ночного перерыва ([PhoneEvents]).
+     * Использование — экран включён и разблокирован; экран, включённый уведомлением поверх экрана
+     * блокировки, использованием не считается — поэтому при включении записывается, показан ли экран блокировки.
+     */
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                Intent.ACTION_SCREEN_ON ->
+                    PhoneEvents.record(PhoneEventType.SCREEN_ON, PhoneEvents.SOURCE_RECEIVER, interactive = true, locked = keyguardLocked())
+                Intent.ACTION_SCREEN_OFF ->
+                    PhoneEvents.record(PhoneEventType.SCREEN_OFF, PhoneEvents.SOURCE_RECEIVER, interactive = false, locked = null)
+                Intent.ACTION_USER_PRESENT ->
+                    PhoneEvents.record(PhoneEventType.USER_PRESENT, PhoneEvents.SOURCE_RECEIVER, interactive = true, locked = false)
+                // Выключение телефона — конец использования: после перезагрузки это не пропуск наблюдения.
+                Intent.ACTION_SHUTDOWN ->
+                    PhoneEvents.record(PhoneEventType.SCREEN_OFF, PhoneEvents.SOURCE_SHUTDOWN, interactive = false, locked = null)
+            }
+        }
+    }
+    private var screenReceiverRegistered = false
+
     private val tick = object : Runnable {
         override fun run() {
             settle()
@@ -89,7 +114,32 @@ class BlockerService : AccessibilityService() {
         Store.init(this)
         refreshIgnored()
         registerTimeReceiver()
+        registerScreenReceiver()
+        // Состояние экрана на момент подключения — без выдумывания прошлого; пропуск, если служба не работала.
+        PhoneEvents.onServiceConnected(this, interactive(), keyguardLocked())
     }
+
+    private fun registerScreenReceiver() {
+        if (screenReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
+            addAction(Intent.ACTION_SHUTDOWN)
+        }
+        try {
+            // Только системные сообщения: чужим приложениям приёмник не открыт.
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(screenReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            else registerReceiver(screenReceiver, filter)
+            screenReceiverRegistered = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Не удалось подписаться на события экрана", e)
+        }
+    }
+
+    private fun interactive(): Boolean? = runCatching { getSystemService(PowerManager::class.java)?.isInteractive }.getOrNull()
+
+    private fun keyguardLocked(): Boolean? = runCatching { getSystemService(KeyguardManager::class.java)?.isKeyguardLocked }.getOrNull()
 
     private fun registerTimeReceiver() {
         if (timeReceiverRegistered) return
@@ -239,6 +289,11 @@ class BlockerService : AccessibilityService() {
         if (timeReceiverRegistered) {
             runCatching { unregisterReceiver(timeReceiver) }
             timeReceiverRegistered = false
+        }
+        PhoneEvents.onServiceDisconnected()
+        if (screenReceiverRegistered) {
+            runCatching { unregisterReceiver(screenReceiver) }
+            screenReceiverRegistered = false
         }
         super.onDestroy()
     }

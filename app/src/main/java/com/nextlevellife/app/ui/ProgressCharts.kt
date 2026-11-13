@@ -5,7 +5,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -47,6 +51,8 @@ internal fun CalendarCard(
     trained: Set<Long>,
     onMonth: (Int) -> Unit,
     onSelect: (Long) -> Unit,
+    /** Дни пробуждения после «ночи без телефона»: маленькая точка под числом. */
+    phoneFree: Set<Long> = emptySet(),
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 8.dp, vertical = 8.dp)) {
@@ -87,6 +93,7 @@ internal fun CalendarCard(
                                 isToday = day == today,
                                 isSelected = day == selected,
                                 isTrained = day in trained,
+                                isPhoneFree = day in phoneFree,
                                 isFuture = day > today,
                                 label = ProgressMath.dayTitle(day, today),
                                 onClick = { onSelect(day) },
@@ -106,6 +113,7 @@ private fun DayCell(
     isToday: Boolean,
     isSelected: Boolean,
     isTrained: Boolean,
+    isPhoneFree: Boolean,
     isFuture: Boolean,
     label: String,
     onClick: () -> Unit,
@@ -125,11 +133,26 @@ private fun DayCell(
             )
             .clickable(enabled = !isFuture, role = Role.Button, onClick = onClick)
             .semantics {
-                contentDescription = if (isTrained) "$label, была тренировка" else label
+                contentDescription = buildString {
+                    append(label)
+                    if (isTrained) append(", была тренировка")
+                    if (isPhoneFree) append(", ночь без телефона")
+                }
                 selected = isSelected
             },
         contentAlignment = Alignment.Center,
     ) {
+        if (isPhoneFree) {
+            // Ночь без телефона — точка под кружком числа, не мешает отметке тренировки.
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 1.dp)
+                    .size(4.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.secondary),
+            )
+        }
         Box(
             Modifier
                 .size(36.dp)
@@ -173,44 +196,32 @@ private fun ArrowButton(symbol: String, description: String, enabled: Boolean, o
 // ---------- Диаграмма за 14 дней ----------
 
 /**
- * Диаграмма за последние дни: один показатель за раз — повторы, шаги или километры бега.
- * Переключатель показателей виден, только если есть что показывать кроме повторов ([showMetrics]).
- * Нажатие на столбик выбирает день.
+ * Диаграмма за последние дни: один показатель за раз — повторы, шаги, километры бега или ночной перерыв.
+ * [metrics] — какие показатели есть что показывать (повторы — всегда); переключатель виден, если их больше
+ * одного. У ночного перерыва дни без данных — разрыв (столбика нет), а не ноль. Нажатие на столбик выбирает день.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ChartCard(
     days: List<Long>,
     reps: List<Int>,
     steps: List<Long?>,
     runMeters: List<Long>,
+    breakMs: List<Long?>,
     earnedMs: Long,
     metric: ProgressMath.ChartMetric,
-    showMetrics: Boolean,
+    metrics: List<ProgressMath.ChartMetric>,
     onMetric: (ProgressMath.ChartMetric) -> Unit,
     today: Long,
     selected: Long,
     onSelect: (Long) -> Unit,
 ) {
-    val shown = if (showMetrics) metric else ProgressMath.ChartMetric.REPS
-    val values = ProgressMath.chartValues(shown, reps, steps, runMeters)
-    val fractions = ProgressMath.barFractionsLong(values)
+    val shown = if (metric in metrics) metric else ProgressMath.ChartMetric.REPS
+    val values = ProgressMath.chartValues(shown, reps, steps, runMeters, breakMs)
+    val fractions = ProgressMath.barFractionsNullable(values)
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Последние ${days.size} дней", style = MaterialTheme.typography.titleMedium)
-            if (showMetrics) {
-                val metrics = ProgressMath.ChartMetric.entries
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    metrics.forEachIndexed { i, m ->
-                        SegmentedButton(
-                            selected = shown == m,
-                            onClick = { onMetric(m) },
-                            shape = SegmentedButtonDefaults.itemShape(i, metrics.size),
-                            icon = {},
-                        ) { Text(m.label, maxLines = 1) }
-                    }
-                }
-            }
+            if (metrics.size > 1) MetricPicker(metrics, shown, onMetric)
             Text(
                 ProgressMath.chartSummary(shown, days.size, values, earnedMs),
                 style = MaterialTheme.typography.bodySmall.merge(Tabular),
@@ -224,7 +235,7 @@ internal fun ChartCard(
                 days.forEachIndexed { i, day ->
                     val isToday = day == today
                     val isSelected = day == selected
-                    val value = values.getOrElse(i) { 0L }
+                    val value = values.getOrNull(i)
                     Column(
                         Modifier
                             .weight(1f)
@@ -245,8 +256,10 @@ internal fun ChartCard(
                                 .fillMaxWidth(),
                             contentAlignment = Alignment.BottomCenter,
                         ) {
-                            val f = fractions.getOrElse(i) { 0f }
-                            if (f > 0f) {
+                            val f = fractions.getOrNull(i)
+                            if (f == null) {
+                                // Нет данных — разрыв: ни столбика, ни нулевой черты.
+                            } else if (f > 0f) {
                                 Box(
                                     Modifier
                                         .fillMaxWidth(0.75f)
@@ -279,6 +292,49 @@ internal fun ChartCard(
                             color = if (isToday) Accent else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+/** Ширина, при которой подписи показателей помещаются в один сегментированный ряд. */
+private val SegmentMinWidth = 104.dp
+
+/**
+ * Выбор показателя: сегментированный ряд, если все подписи помещаются, иначе — чипы с переносом
+ * (на узком S25 и в правой колонке развёрнутого Fold четыре сегмента не помещаются).
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun MetricPicker(
+    metrics: List<ProgressMath.ChartMetric>,
+    shown: ProgressMath.ChartMetric,
+    onMetric: (ProgressMath.ChartMetric) -> Unit,
+) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        if (maxWidth >= SegmentMinWidth * metrics.size) {
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                metrics.forEachIndexed { i, m ->
+                    SegmentedButton(
+                        selected = shown == m,
+                        onClick = { onMetric(m) },
+                        shape = SegmentedButtonDefaults.itemShape(i, metrics.size),
+                        icon = {},
+                    ) { Text(m.label, maxLines = 1) }
+                }
+            }
+        } else {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+            ) {
+                metrics.forEach { m ->
+                    FilterChip(
+                        selected = shown == m,
+                        onClick = { onMetric(m) },
+                        label = { Text(m.label, maxLines = 1) },
+                    )
                 }
             }
         }

@@ -9,6 +9,8 @@ import com.nextlevellife.app.data.ExerciseTotal
 import com.nextlevellife.app.data.Minotaur
 import com.nextlevellife.app.data.SetEntry
 import com.nextlevellife.app.health.ActivityMath
+import com.nextlevellife.app.sleep.NightStatus
+import com.nextlevellife.app.sleep.SleepNight
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -266,6 +268,8 @@ internal object ProgressMath {
         val activity: ActivityDay? = null,
         /** Пробежки дня по времени. */
         val activityRuns: List<ActivityRun> = emptyList(),
+        /** Ночной перерыв перед этим днём (день пробуждения); null — расчёта нет. */
+        val night: SleepNight? = null,
     ) {
         /** Были подходы или комплексы. */
         val hasWorkout: Boolean get() = sets > 0 || runs.isNotEmpty()
@@ -273,8 +277,11 @@ internal object ProgressMath {
         /** Были шаги (больше нуля) или пробежка. */
         val hasActivity: Boolean get() = activity?.hasActivity == true || activityRuns.isNotEmpty()
 
-        /** День пустой: ни тренировок, ни шагов, ни пробежек. */
-        val isEmpty: Boolean get() = !hasWorkout && !hasActivity
+        /** Есть ночной перерыв (подтверждённый или с неполными данными); «нет данных» не считается. */
+        val hasNight: Boolean get() = night != null && night.status != NightStatus.UNKNOWN
+
+        /** День пустой: ни тренировок, ни шагов, ни пробежек, ни ночного перерыва. */
+        val isEmpty: Boolean get() = !hasWorkout && !hasActivity && !hasNight
     }
 
     /**
@@ -287,6 +294,7 @@ internal object ProgressMath {
         runs: List<ComplexRun>,
         activity: ActivityDay? = null,
         activityRuns: List<ActivityRun> = emptyList(),
+        night: SleepNight? = null,
     ): DayDigest {
         val sorted = sets.sortedWith(compareBy({ it.timeMs }, { it.id }))
         val runIdsWithSets = sorted.mapNotNullTo(HashSet()) { it.runId }
@@ -300,8 +308,73 @@ internal object ProgressMath {
             looseSets = sorted.filter { it.runId == null },
             activity = activity,
             activityRuns = activityRuns.sortedWith(compareBy({ it.startMs }, { it.externalId })),
+            night = night,
         )
     }
+
+    // ---------- Ночной перерыв ----------
+    // Это перерыв в использовании телефона, а не сон: телефон не отличает сон от чтения книги.
+
+    /** Подпись: перерыв считается только по этому телефону. */
+    const val THIS_PHONE = "по этому телефону"
+
+    fun nightsWord(n: Int) = pluralRu(n, "ночь", "ночи", "ночей")
+
+    /** «7 ч 35 мин», «45 мин» — длительность перерыва с точностью до минуты. */
+    fun breakDuration(ms: Long): String {
+        val totalMin = ms.coerceAtLeast(0L) / 60_000
+        val h = totalMin / 60
+        val m = totalMin % 60
+        return when {
+            h > 0 && m > 0 -> "$h ч $m мин"
+            h > 0 -> "$h ч"
+            else -> "$m мин"
+        }
+    }
+
+    /** Часы в учётном поясе ночи (если пояс не читается — пояс телефона). */
+    private fun nightZone(n: SleepNight): ZoneId = runCatching { ZoneId.of(n.zoneId) }.getOrElse { ZoneId.systemDefault() }
+
+    /** «7 ч 35 мин · 23:20 → 07:00»; перерыва нет — null. */
+    fun nightLine(n: SleepNight): String? {
+        val d = n.durationMs ?: return null
+        val zone = nightZone(n)
+        return "${breakDuration(d)} · ${clock(n.startMs!!, zone)} → ${clock(n.endMs!!, zone)}"
+    }
+
+    /** «1 короткое обращение», «2 коротких обращения»; не было — null. */
+    fun interruptionsLine(count: Int): String? =
+        if (count <= 0) null else "$count ${pluralRu(count, "короткое обращение", "коротких обращения", "коротких обращений")}"
+
+    /**
+     * Что показать в карточке дня: главная строка и мелкая строка под ней.
+     * OK — «7 ч 35 мин · 23:20 → 07:00» и «2 коротких обращения · по этому телефону»;
+     * PARTIAL — «неполные данные» и «не меньше 5 ч 10 мин · …»; UNKNOWN — «нет данных».
+     * Ещё не окончательная ночь помечается «предварительно».
+     */
+    fun nightCells(n: SleepNight): Pair<String, String> {
+        val tail = buildList {
+            if (!n.final) add("предварительно")
+            add(THIS_PHONE)
+        }
+        return when (n.status) {
+            NightStatus.OK -> (nightLine(n) ?: "нет данных") to
+                (listOfNotNull(interruptionsLine(n.interruptionCount)) + tail).joinToString(" · ")
+            NightStatus.PARTIAL -> "неполные данные" to
+                (listOfNotNull(n.durationMs?.let { "не меньше ${breakDuration(it)}" }) + tail).joinToString(" · ")
+            NightStatus.UNKNOWN -> "нет данных" to tail.joinToString(" · ")
+        }
+    }
+
+    /** Строка карточки «Сегодня» на главной: «Ночь: 7 ч 35 мин 🌙»; без подтверждённого перерыва — null. */
+    fun nightTodayLine(n: SleepNight?): String? {
+        if (n == null || n.status != NightStatus.OK) return null
+        val d = n.durationMs ?: return null
+        return "Ночь: ${breakDuration(d)}" + if (n.phoneFree) " 🌙" else ""
+    }
+
+    /** Столбик «Перерыв, ч»: только подтверждённые ночи; неполные и без данных — разрыв (null). */
+    fun breakChartValue(n: SleepNight?): Long? = n?.takeIf { it.status == NightStatus.OK }?.durationMs
 
     // ---------- Шаги и пробежки ----------
 
@@ -324,13 +397,21 @@ internal object ProgressMath {
         REPS("Повторы"),
         STEPS("Шаги"),
         RUN_KM("Бег, км"),
+        BREAK_H("Перерыв, ч"),
     }
 
-    /** Значения столбиков: повторения, шаги или метры бега по дням (нет данных — 0). */
-    fun chartValues(metric: ChartMetric, reps: List<Int>, steps: List<Long?>, runMeters: List<Long>): List<Long> = when (metric) {
+    /**
+     * Значения столбиков: повторения, шаги или метры бега по дням (нет данных — 0), ночной перерыв
+     * в мс по дням пробуждения ([breakMs]; нет данных — null, на диаграмме это разрыв, а не ноль).
+     */
+    fun chartValues(
+        metric: ChartMetric, reps: List<Int>, steps: List<Long?>, runMeters: List<Long>,
+        breakMs: List<Long?> = emptyList(),
+    ): List<Long?> = when (metric) {
         ChartMetric.REPS -> reps.map { it.toLong() }
         ChartMetric.STEPS -> steps.map { it ?: 0L }
         ChartMetric.RUN_KM -> runMeters
+        ChartMetric.BREAK_H -> breakMs
     }
 
     /** Высоты столбиков для длинных значений (шаги, метры): как [barFractions]. */
@@ -340,21 +421,38 @@ internal object ProgressMath {
         return values.map { v -> if (v <= 0) 0f else (v.toDouble() / max).toFloat().coerceIn(minVisible, 1f) }
     }
 
+    /** Как [barFractionsLong], но null (нет данных) остаётся null — столбика нет совсем. */
+    fun barFractionsNullable(values: List<Long?>, minVisible: Float = 0.04f): List<Float?> {
+        val max = values.filterNotNull().maxOrNull() ?: return values.map { null }
+        return values.map { v ->
+            when {
+                v == null -> null
+                max <= 0 || v <= 0 -> 0f
+                else -> (v.toDouble() / max).toFloat().coerceIn(minVisible, 1f)
+            }
+        }
+    }
+
     /** Подпись под заголовком диаграммы: итог за [days] дней по выбранному показателю. */
-    fun chartSummary(metric: ChartMetric, days: Int, values: List<Long>, earnedMs: Long): String {
-        val total = values.sum()
+    fun chartSummary(metric: ChartMetric, days: Int, values: List<Long?>, earnedMs: Long): String {
+        val known = values.filterNotNull()
+        val total = known.sum()
         return when (metric) {
             ChartMetric.REPS -> "За $days ${daysWord(days)}: $total ${repsWord((total % 1000).toInt())}, +${formatEarned(earnedMs)}"
             ChartMetric.STEPS -> "За $days ${daysWord(days)}: ${ActivityMath.formatThousands(total)} ${ActivityMath.stepsWord(total)}"
             ChartMetric.RUN_KM -> "За $days ${daysWord(days)}: ${ActivityMath.formatKm(total)} бега"
+            ChartMetric.BREAK_H ->
+                if (known.isEmpty()) "Ночной перерыв: нет данных · $THIS_PHONE"
+                else "Ночной перерыв в среднем ${breakDuration(total / known.size)} · ${known.size} ${nightsWord(known.size)} · $THIS_PHONE"
         }
     }
 
-    /** Описание столбика для TalkBack: «12 ноя: 8 420 шагов». */
-    fun barDescription(metric: ChartMetric, day: Long, value: Long): String = "${shortDate(day)}: " + when (metric) {
-        ChartMetric.REPS -> "$value ${repsWord((value % 1000).toInt())}"
-        ChartMetric.STEPS -> "${ActivityMath.formatThousands(value)} ${ActivityMath.stepsWord(value)}"
-        ChartMetric.RUN_KM -> "${ActivityMath.formatKm(value)} бега"
+    /** Описание столбика для TalkBack: «12 ноя: 8 420 шагов», «12 ноя: перерыв 7 ч 35 мин». */
+    fun barDescription(metric: ChartMetric, day: Long, value: Long?): String = "${shortDate(day)}: " + when (metric) {
+        ChartMetric.REPS -> "${value ?: 0} ${repsWord(((value ?: 0) % 1000).toInt())}"
+        ChartMetric.STEPS -> "${ActivityMath.formatThousands(value ?: 0)} ${ActivityMath.stepsWord(value ?: 0)}"
+        ChartMetric.RUN_KM -> "${ActivityMath.formatKm(value ?: 0)} бега"
+        ChartMetric.BREAK_H -> if (value == null) "ночной перерыв — нет данных" else "ночной перерыв ${breakDuration(value)}"
     }
 
     // ---------- Диаграмма ----------

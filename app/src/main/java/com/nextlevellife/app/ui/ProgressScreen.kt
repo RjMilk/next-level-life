@@ -45,6 +45,9 @@ import com.nextlevellife.app.data.Weights
 import com.nextlevellife.app.health.ActivityMath
 import com.nextlevellife.app.health.ActivitySync
 import com.nextlevellife.app.health.HealthAvailability
+import com.nextlevellife.app.sleep.NightStatus
+import com.nextlevellife.app.sleep.SleepNight
+import com.nextlevellife.app.sleep.SleepRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -71,6 +74,9 @@ private data class Overview(
     val hasActivityData: Boolean = false,
     val bestStepsDay: Pair<Long, Long>? = null,
     val longestRun: ActivityRun? = null,
+    /** Ночной перерыв по дням диаграммы (мс; null — нет подтверждённых данных) и есть ли хоть какие-то ночи. */
+    val chartBreakMs: List<Long?> = emptyList(),
+    val hasNightData: Boolean = false,
 )
 
 /** День вместе с номером: пока грузится новый, на экране не перепутать даты. */
@@ -84,6 +90,7 @@ private data class DayData(val day: Long, val digest: ProgressMath.DayDigest)
 private object ProgressCache {
     var overview: Overview? = null
     var trained: Pair<Int, Set<Long>>? = null
+    var phoneFree: Pair<Int, Set<Long>>? = null
     var day: DayData? = null
     var history: Pair<String, List<Pair<Long, ExerciseTotal>>>? = null
 }
@@ -117,13 +124,21 @@ fun ProgressScreen(modifier: Modifier = Modifier) {
                 runCatching { Diary.runDays(from, to) }.getOrDefault(emptySet())
         }.also { ProgressCache.trained = month to it }
     }
+    // Ночи без телефона за месяц — точки в календаре.
+    val phoneFree by produceState(ProgressCache.phoneFree?.takeIf { it.first == month }?.second ?: emptySet(), version, month) {
+        value = withContext(Dispatchers.IO) {
+            SleepRepository.nights(ProgressMath.firstDayOfMonth(month), ProgressMath.lastDayOfMonth(month))
+                .values.filter { it.phoneFree }.mapTo(HashSet()) { it.wakeDay }
+        }.also { ProgressCache.phoneFree = month to it }
+    }
     val dayData by produceState(ProgressCache.day, version, selected) {
         value = withContext(Dispatchers.IO) {
             val sets = runCatching { Diary.setsForDay(selected) }.getOrDefault(emptyList<SetEntry>())
             val runs = runCatching { Diary.runsForDay(selected) }.getOrDefault(emptyList<ComplexRun>())
             val activity = runCatching { Diary.activityDay(selected) }.getOrNull()
             val activityRuns = runCatching { Diary.activityRunsForDay(selected) }.getOrDefault(emptyList())
-            DayData(selected, ProgressMath.digestDay(sets, runs, activity, activityRuns))
+            val night = SleepRepository.night(selected)
+            DayData(selected, ProgressMath.digestDay(sets, runs, activity, activityRuns, night))
         }.also { ProgressCache.day = it }
     }
     val history by produceState(ProgressCache.history, version, expanded) {
@@ -160,6 +175,7 @@ fun ProgressScreen(modifier: Modifier = Modifier) {
             trained = trained,
             onMonth = { savedMonth = it },
             onSelect = selectDay,
+            phoneFree = phoneFree,
         )
     }
     val details: @Composable () -> Unit = {
@@ -178,9 +194,17 @@ fun ProgressScreen(modifier: Modifier = Modifier) {
                     reps = o.chartReps,
                     steps = o.chartSteps,
                     runMeters = o.chartRunMeters,
+                    breakMs = o.chartBreakMs,
                     earnedMs = o.chartEarnedMs,
                     metric = chartMetric,
-                    showMetrics = o.hasActivityData || health.connected,
+                    metrics = buildList {
+                        add(ProgressMath.ChartMetric.REPS)
+                        if (o.hasActivityData || health.connected) {
+                            add(ProgressMath.ChartMetric.STEPS)
+                            add(ProgressMath.ChartMetric.RUN_KM)
+                        }
+                        if (o.hasNightData) add(ProgressMath.ChartMetric.BREAK_H)
+                    },
                     onMetric = { chartMetricName = it.name },
                     today = today,
                     selected = selected,
@@ -270,10 +294,13 @@ private fun loadOverview(today: Long): Overview {
     val activity = runCatching { Diary.activityDays(days.first(), days.last()) }.getOrDefault(emptyList())
         .associateBy { it.day }
     val (bestSteps, longestRun) = runCatching { Diary.activityRecords() }.getOrDefault(null to null)
+    // Ночи по дням пробуждения; сегодняшняя до 12:00 — предварительная (в базе её ещё нет).
+    val nights = SleepRepository.nights(days.first(), days.last())
+    val hasNight = nights.values.any { it.status != NightStatus.UNKNOWN }
     return Overview(
         xp = Store.xp(),
         streak = Store.streak(),
-        hasEntries = runCatching { Diary.hasEntries() }.getOrDefault(false),
+        hasEntries = runCatching { Diary.hasEntries() }.getOrDefault(false) || hasNight,
         chartDays = days,
         chartReps = days.map { byDay[it]?.reps ?: 0 },
         chartEarnedMs = summaries.sumOf { it.earnedMs },
@@ -285,6 +312,8 @@ private fun loadOverview(today: Long): Overview {
         hasActivityData = activity.values.any { it.steps != null || it.runsCount > 0 },
         bestStepsDay = bestSteps,
         longestRun = longestRun,
+        chartBreakMs = days.map { ProgressMath.breakChartValue(nights[it]) },
+        hasNightData = hasNight,
     )
 }
 
@@ -353,6 +382,9 @@ private fun DayCard(selected: Long, today: Long, data: DayData?, modifier: Modif
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(ProgressMath.dayTitle(selected, today), style = MaterialTheme.typography.titleMedium)
             val digest = data?.takeIf { it.day == selected }?.digest ?: return@Column
+            // Ночной перерыв перед этим днём — первым: день начинается с пробуждения.
+            val night = digest.night
+            if (night != null) NightSection(night)
             // Шаги и пробежки — перед подходами.
             val activity = digest.activity
             if (activity != null || digest.activityRuns.isNotEmpty()) {
@@ -366,13 +398,13 @@ private fun DayCard(selected: Long, today: Long, data: DayData?, modifier: Modif
             if (!digest.hasWorkout) {
                 Text(
                     if (digest.hasActivity) "Подходов не было" else "В этот день тренировок не было",
-                    modifier = Modifier.padding(top = if (activity != null) 6.dp else 0.dp),
+                    modifier = Modifier.padding(top = if (activity != null || night != null) 6.dp else 0.dp),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 return@Column
             }
-            if (activity != null) SectionLabel("Тренировка")
+            if (activity != null || night != null) SectionLabel("Тренировка")
             Text(
                 // Неразрывный пробел перед единицами: на узком экране «мин» не остаётся одно на строке.
                 ProgressMath.summaryLine(digest.sets, digest.reps, digest.earnedMs)
@@ -393,6 +425,33 @@ private fun DayCard(selected: Long, today: Long, data: DayData?, modifier: Modif
                 digest.looseSets.forEach { s -> StatRow(ProgressMath.setCells(s)) }
             }
         }
+    }
+}
+
+/**
+ * «Ночной перерыв»: «7 ч 35 мин · 23:20 → 07:00», под ним мелко короткие обращения и «по этому телефону»,
+ * значок «Ночь без телефона». Это оценка по экрану телефона, не сон — так и подписано.
+ */
+@Composable
+private fun NightSection(night: SleepNight) {
+    SectionLabel("Ночной перерыв")
+    val (main, note) = ProgressMath.nightCells(night)
+    Text(
+        main,
+        style = MaterialTheme.typography.titleSmall.merge(Tabular),
+        color = if (night.status == NightStatus.OK) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Text(
+        note,
+        style = MaterialTheme.typography.bodySmall.merge(Tabular),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    if (night.phoneFree) {
+        Text(
+            "🌙 Ночь без телефона",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.secondary,
+        )
     }
 }
 

@@ -186,7 +186,7 @@ object Backup {
                 val tables = db.rawQuery("SELECT name FROM sqlite_master WHERE type = 'table'", null).use { c ->
                     buildSet { while (c.moveToNext()) add(c.getString(0)) }
                 }
-                val missing = BackupMath.REQUIRED_TABLES - tables
+                val missing = BackupMath.requiredTables(db.version) - tables
                 if (missing.isNotEmpty()) return "В базе копии нет таблиц: ${missing.joinToString()}"
                 val accountRows = db.rawQuery("SELECT COUNT(*) FROM account", null).use { c -> c.moveToFirst(); c.getInt(0) }
                 if (accountRows != 1) return "В базе копии нет итога счёта"
@@ -310,6 +310,8 @@ object Backup {
             // Основной .restore-bak удаляется первым: без него запуск считает подмену завершённой.
             moved.forEach { (_, bak) -> bak.delete() }
             marker.delete()
+            // События экрана после снимка копии потеряны — это пропуск наблюдения для ночного перерыва.
+            runCatching { com.nextlevellife.app.sleep.PhoneEvents.onDatabaseReplaced() }
             Store.notifyChanged()
             null
         } catch (e: Exception) {
@@ -422,7 +424,7 @@ object Backup {
             }
             check == "ok" &&
                 db.version in BackupMath.MIN_DB_SCHEMA..Diary.SCHEMA_VERSION &&
-                tables.containsAll(BackupMath.REQUIRED_TABLES) &&
+                tables.containsAll(BackupMath.requiredTables(db.version)) &&
                 db.rawQuery("SELECT COUNT(*) FROM account", null).use { c -> c.moveToFirst() && c.getInt(0) == 1 }
         }
     } catch (e: Exception) {
@@ -475,6 +477,14 @@ object BackupMath {
     const val KEY_DB_SCHEMA = "db_schema_version"
 
     val REQUIRED_TABLES = setOf("sets", "complex_runs", "balance_ops", "account", "meta")
+
+    /** С версии 5 — таблицы ночного перерыва. */
+    const val SLEEP_SCHEMA = 5
+    val SLEEP_TABLES = setOf("phone_events", "observation_gaps", "sleep_nights")
+
+    /** Таблицы, которые обязаны быть в базе версии [schema]: более старые копии догоняют миграции. */
+    fun requiredTables(schema: Int): Set<String> =
+        if (schema >= SLEEP_SCHEMA) REQUIRED_TABLES + SLEEP_TABLES else REQUIRED_TABLES
 
     /** null — манифест годится; иначе причина отказа. */
     fun checkManifest(formatVersion: Int?, dbSchema: Int?, supportedSchema: Int, supportedFormat: Int = FORMAT_VERSION): String? = when {

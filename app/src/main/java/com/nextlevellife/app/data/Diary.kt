@@ -5,6 +5,11 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.nextlevellife.app.sleep.NightStatus
+import com.nextlevellife.app.sleep.ObservationGap
+import com.nextlevellife.app.sleep.PhoneEvent
+import com.nextlevellife.app.sleep.PhoneEventType
+import com.nextlevellife.app.sleep.SleepNight
 import java.time.Instant
 import java.time.ZoneId
 
@@ -186,6 +191,123 @@ object Diary {
         )
     }
 
+    // ---------- События экрана и ночной перерыв ----------
+
+    /**
+     * Записывает событие экрана. Повтор с тем же [dedupKey] молча пропускается.
+     * Только короткая вставка: вызывать с фонового потока ([com.nextlevellife.app.sleep.PhoneEvents]).
+     */
+    @Synchronized
+    internal fun addPhoneEvent(
+        deviceId: String, bootCount: Int?, elapsedMs: Long, utcMs: Long, zoneId: String,
+        type: PhoneEventType, source: String, interactive: Boolean?, locked: Boolean?, dedupKey: String,
+    ) {
+        val values = ContentValues().apply {
+            put("device_id", deviceId)
+            if (bootCount != null) put("boot_count", bootCount) else putNull("boot_count")
+            put("elapsed_ms", elapsedMs)
+            put("utc_ms", utcMs)
+            put("zone_id", zoneId)
+            put("type", type.name)
+            put("source", source)
+            if (interactive != null) put("interactive", if (interactive) 1 else 0) else putNull("interactive")
+            if (locked != null) put("locked", if (locked) 1 else 0) else putNull("locked")
+            put("dedup_key", dedupKey)
+        }
+        db().insertWithOnConflict("phone_events", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+    }
+
+    /** Последнее событие экрана устройства [deviceId] раньше [beforeMs] (null — без ограничения). */
+    @Synchronized
+    internal fun lastPhoneEvent(deviceId: String, beforeMs: Long? = null): PhoneEvent? = query(
+        "SELECT $PHONE_EVENT_COLS FROM phone_events WHERE device_id = ? AND utc_ms < ? ORDER BY utc_ms DESC, id DESC LIMIT 1",
+        deviceId, (beforeMs ?: Long.MAX_VALUE).toString(),
+    ) { it.toPhoneEvent() }.firstOrNull()
+
+    /** События экрана устройства [deviceId] в [fromMs, toMs), по времени. */
+    @Synchronized
+    internal fun phoneEvents(deviceId: String, fromMs: Long, toMs: Long): List<PhoneEvent> = query(
+        "SELECT $PHONE_EVENT_COLS FROM phone_events WHERE device_id = ? AND utc_ms >= ? AND utc_ms < ? ORDER BY utc_ms, id",
+        deviceId, fromMs.toString(), toMs.toString(),
+    ) { it.toPhoneEvent() }
+
+    /** Время самого раннего хранимого события экрана устройства; null — событий нет. */
+    @Synchronized
+    internal fun firstPhoneEventMs(deviceId: String): Long? = query(
+        "SELECT MIN(utc_ms) FROM phone_events WHERE device_id = ?", deviceId,
+    ) { if (it.isNull(0)) null else it.getLong(0) }.firstOrNull()
+
+    @Synchronized
+    internal fun addObservationGap(deviceId: String, startMs: Long, endMs: Long, reason: String) {
+        val values = ContentValues().apply {
+            put("device_id", deviceId)
+            put("start_ms", startMs)
+            put("end_ms", endMs)
+            put("reason", reason)
+        }
+        db().insertOrThrow("observation_gaps", null, values)
+    }
+
+    /** Пропуски наблюдения устройства [deviceId], пересекающие [fromMs, toMs). */
+    @Synchronized
+    internal fun observationGaps(deviceId: String, fromMs: Long, toMs: Long): List<ObservationGap> = query(
+        "SELECT start_ms, end_ms FROM observation_gaps WHERE device_id = ? AND end_ms > ? AND start_ms < ? ORDER BY start_ms",
+        deviceId, fromMs.toString(), toMs.toString(),
+    ) { ObservationGap(it.getLong(0), it.getLong(1)) }
+
+    /** Чистка сырых данных: события и пропуски старше [beforeMs]. Итоги ночей не трогаются. */
+    @Synchronized
+    internal fun prunePhoneData(beforeMs: Long) {
+        db().delete("phone_events", "utc_ms < ?", arrayOf(beforeMs.toString()))
+        db().delete("observation_gaps", "end_ms < ?", arrayOf(beforeMs.toString()))
+    }
+
+    /** Записывает итог ночи устройства [deviceId] (вставка или замена). */
+    @Synchronized
+    internal fun upsertSleepNight(deviceId: String, n: SleepNight) {
+        val values = ContentValues().apply {
+            put("device_id", deviceId)
+            put("wake_day", n.wakeDay)
+            if (n.startMs != null) put("start_ms", n.startMs) else putNull("start_ms")
+            if (n.endMs != null) put("end_ms", n.endMs) else putNull("end_ms")
+            put("interruption_ms", n.interruptionMs)
+            put("interruption_count", n.interruptionCount)
+            put("status", n.status.name)
+            put("phone_free", if (n.phoneFree) 1 else 0)
+            if (n.nightStartMin != null) put("night_start_min", n.nightStartMin) else putNull("night_start_min")
+            if (n.nightEndMin != null) put("night_end_min", n.nightEndMin) else putNull("night_end_min")
+            put("zone_id", n.zoneId)
+            put("rule_version", n.ruleVersion)
+        }
+        db().insertWithOnConflict("sleep_nights", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    /** Окончательные ночи устройства [deviceId] с днями пробуждения [fromDay]..[toDay]. */
+    @Synchronized
+    internal fun sleepNightsOf(deviceId: String, fromDay: Long, toDay: Long): List<SleepNight> = query(
+        "SELECT $SLEEP_COLS FROM sleep_nights WHERE device_id = ? AND wake_day BETWEEN ? AND ? ORDER BY wake_day",
+        deviceId, fromDay.toString(), toDay.toString(),
+    ) { it.toSleepNight() }
+
+    /**
+     * Окончательные ночные перерывы с днями пробуждения [fromDay]..[toDay] (учётные сутки), по дню.
+     * Берутся ночи этого телефона; день, за который у этого телефона записи нет, может прийти из копии
+     * другого телефона (история после восстановления). Ночь сегодняшнего утра появляется здесь после 12:00:
+     * до этого её считает [com.nextlevellife.app.sleep.SleepRepository] на лету. Чтобы досчитать
+     * пропущенные ночи, сначала вызвать [com.nextlevellife.app.sleep.SleepRepository.refresh] (с фонового потока).
+     */
+    @Synchronized
+    fun sleepNights(fromDay: Long, toDay: Long): List<SleepNight> {
+        val device = Ledger.deviceId()
+        return query(
+            "SELECT $SLEEP_COLS, device_id = ? FROM sleep_nights WHERE wake_day BETWEEN ? AND ? ORDER BY wake_day",
+            device, fromDay.toString(), toDay.toString(),
+        ) { it.toSleepNight() to (it.getInt(SLEEP_COL_COUNT) != 0) }
+            .groupBy { it.first.wakeDay }
+            .map { (_, rows) -> (rows.firstOrNull { it.second } ?: rows.first()).first }
+            .sortedBy { it.wakeDay }
+    }
+
     // ---------- Файл базы (для резервной копии) ----------
 
     internal fun dbFile(context: Context): java.io.File = context.applicationContext.getDatabasePath(NAME)
@@ -283,11 +405,15 @@ object Diary {
         ) { it.toRun() }
     }
 
-    /** Есть ли в дневнике хоть одна запись: подход, комплекс, день с шагами или пробежка. */
+    /**
+     * Есть ли в дневнике хоть одна запись: подход, комплекс, день с шагами или пробежка,
+     * ночной перерыв (подтверждённый или с неполными данными; «нет данных» не считается).
+     */
     @Synchronized
     fun hasEntries(): Boolean = query(
         "SELECT EXISTS(SELECT 1 FROM sets) OR EXISTS(SELECT 1 FROM complex_runs) " +
-            "OR EXISTS(SELECT 1 FROM activity_days WHERE steps > 0 OR runs_count > 0)",
+            "OR EXISTS(SELECT 1 FROM activity_days WHERE steps > 0 OR runs_count > 0) " +
+            "OR EXISTS(SELECT 1 FROM sleep_nights WHERE status <> 'UNKNOWN')",
     ) { it.getInt(0) != 0 }.firstOrNull() ?: false
 
     // ---------- Шаги и пробежки (Health Connect) ----------
@@ -551,6 +677,40 @@ object Diary {
         distanceM = getLong(4), steps = getLong(5), source = getString(6), exerciseType = getInt(7),
     )
 
+    private const val PHONE_EVENT_COLS = "utc_ms, type, interactive, locked, boot_count, source"
+
+    private fun Cursor.boolOrNull(i: Int): Boolean? = if (isNull(i)) null else getInt(i) != 0
+
+    private fun Cursor.toPhoneEvent() = PhoneEvent(
+        utcMs = getLong(0),
+        // Неизвестный тип (из более новой версии) читается как состояние «неизвестно».
+        type = PhoneEventType.entries.firstOrNull { it.name == getString(1) } ?: PhoneEventType.STATE,
+        interactive = boolOrNull(2),
+        locked = boolOrNull(3),
+        bootCount = intOrNull(4),
+        source = getString(5),
+    )
+
+    private const val SLEEP_COLS =
+        "wake_day, status, start_ms, end_ms, interruption_ms, interruption_count, phone_free, " +
+            "night_start_min, night_end_min, zone_id, rule_version"
+    private const val SLEEP_COL_COUNT = 11
+
+    private fun Cursor.toSleepNight() = SleepNight(
+        wakeDay = getLong(0),
+        status = NightStatus.entries.firstOrNull { it.name == getString(1) } ?: NightStatus.UNKNOWN,
+        startMs = longOrNull(2),
+        endMs = longOrNull(3),
+        interruptionMs = getLong(4),
+        interruptionCount = getInt(5),
+        phoneFree = getInt(6) != 0,
+        nightStartMin = intOrNull(7),
+        nightEndMin = intOrNull(8),
+        zoneId = getString(9),
+        ruleVersion = getInt(10),
+        final = true,
+    )
+
     private fun Cursor.toRun() = ComplexRun(
         id = getLong(0), timeMs = getLong(1), day = getLong(2), complexId = getString(3),
         weightKg = intOrNull(4), durationMs = getLong(5), rounds = intOrNull(6),
@@ -690,6 +850,50 @@ object Diary {
                 "trigger" TEXT NOT NULL
             )""",
             "CREATE INDEX idx_block_events_day ON block_events(accounting_day)",
+        ),
+        // 4 → 5: ночной перерыв в использовании телефона (версия 0.5).
+        // phone_events — сырые события экрана (хранятся 90 дней): utc_ms — доверенное время, type —
+        // SCREEN_ON / SCREEN_OFF / USER_PRESENT / STATE; interactive и locked — экран включён и показан ли экран
+        // блокировки в момент события (NULL — не известно). observation_gaps — когда служба не работала.
+        // sleep_nights — окончательные итоги ночей (хранятся всегда); status — OK / PARTIAL / UNKNOWN.
+        listOf(
+            """CREATE TABLE phone_events (
+                id INTEGER PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                boot_count INTEGER,
+                elapsed_ms INTEGER NOT NULL,
+                utc_ms INTEGER NOT NULL,
+                zone_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                source TEXT NOT NULL,
+                interactive INTEGER,
+                locked INTEGER,
+                dedup_key TEXT NOT NULL UNIQUE
+            )""",
+            "CREATE INDEX idx_phone_events_device_time ON phone_events(device_id, utc_ms)",
+            """CREATE TABLE observation_gaps (
+                id INTEGER PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                start_ms INTEGER NOT NULL,
+                end_ms INTEGER NOT NULL,
+                reason TEXT NOT NULL
+            )""",
+            "CREATE INDEX idx_observation_gaps_device_end ON observation_gaps(device_id, end_ms)",
+            """CREATE TABLE sleep_nights (
+                device_id TEXT NOT NULL,
+                wake_day INTEGER NOT NULL,
+                start_ms INTEGER,
+                end_ms INTEGER,
+                interruption_ms INTEGER NOT NULL DEFAULT 0,
+                interruption_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                phone_free INTEGER NOT NULL DEFAULT 0,
+                night_start_min INTEGER,
+                night_end_min INTEGER,
+                zone_id TEXT NOT NULL,
+                rule_version INTEGER NOT NULL,
+                PRIMARY KEY (device_id, wake_day)
+            )""",
         ),
     )
 }

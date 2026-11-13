@@ -261,7 +261,8 @@ class TrustedClockMathTest {
 
     @Test
     fun blockEventsMigrationIsAppended() {
-        assertEquals(4, Diary.SCHEMA_VERSION)
+        // block_events — шаг 3 → 4; более поздние шаги только дописываются после него (0.5 — ночной перерыв).
+        assertTrue(Diary.SCHEMA_VERSION >= 4)
         val m = Diary.MIGRATIONS[3]
         val table = m.first { it.contains("CREATE TABLE block_events") }
         for (col in listOf("id INTEGER PRIMARY KEY", "utc_ms", "accounting_day", "package_name", "reason", "\"trigger\"")) {
