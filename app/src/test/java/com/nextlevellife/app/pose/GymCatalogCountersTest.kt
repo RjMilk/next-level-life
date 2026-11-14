@@ -66,6 +66,13 @@ class GymCatalogCountersTest(private val id: String) {
         assertEquals(id, 0, m.c.state.count)
     }
 
+    @Test fun designTempoWithShortEndpointHoldsStillCounts() {
+        // 3.5 s cycle, 200 ms at the far endpoint: >= 2–2.5 s and 150–250 ms in the design.
+        val m = Motion(counter()).hold(start)
+        m.move(start, far, 1_650).hold(far, 200).move(far, start, 1_650).hold(start)
+        assertEquals(id, 1, m.c.state.count)
+    }
+
     @Test fun losingPersonDiscardsUnfinishedCycle() {
         val m = Motion(counter()).rep().hold(start).move(start, far).hold(far)
         m.hold(null, 2_000).hold(start)
@@ -168,7 +175,8 @@ class GymCatalogPostureTest {
     @Test fun briefExtremeCannotCompleteAnAngularCycle() {
         val c = RepCounters.forExercise("machine_chest_press")!!
         val start = Key(0f, 90f, 180f, 180f, 90f)
-        val middle = Key(0f, 90f, 180f, 115f, 90f)
+        // 140° at the elbow, below the 150° far threshold (115/90 would be 155°).
+        val middle = Key(0f, 90f, 180f, 130f, 90f)
         val top = Key(0f, 90f, 180f, 90f, 90f)
         c.feed(Timeline().hold(start, 1000).move(start, middle, 1800).hold(top, 66)
             .hold(middle, 300).move(middle, start, 1800).hold(start, 1000).frames)

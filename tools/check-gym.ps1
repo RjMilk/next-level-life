@@ -65,18 +65,25 @@ $pureStats = Join-Path $output 'PureStats.kt'
 $complexScreen = Get-Content app/src/main/java/com/nextlevellife/app/ui/ComplexScreen.kt -Encoding UTF8 -Raw
 $plural = Extract-Required $complexScreen '(?ms)^internal fun pluralRu\(.*?^\}'
 $pureUi = Join-Path $output 'PureUi.kt'
-[IO.File]::WriteAllText($pureUi, "package com.nextlevellife.app.ui`n$plural`n", $utf8)
+$cameraPanel = Get-Content app/src/main/java/com/nextlevellife/app/ui/CameraRepPanel.kt -Encoding UTF8 -Raw
+$panelTiming = Extract-Required $cameraPanel '(?ms)^internal object PanelTiming \{.*?^\}'
+$panelHints = [regex]::Matches($cameraPanel, '(?m)^internal const val HINT_(?:LOST|RETURN_TO_START) =.*$')
+if ($panelHints.Count -ne 2) { throw 'Panel hint extraction failed' }
+[IO.File]::WriteAllText($pureUi, "package com.nextlevellife.app.ui`n$plural`n$panelTiming`n" + (($panelHints | ForEach-Object Value) -join "`n"), $utf8)
 
 $sources = @(Get-ChildItem app/src/main/java/com/nextlevellife/app/pose -Filter '*.kt' | Where-Object Name -notin @('PoseCamera.kt', 'PoseLog.kt', 'RepSound.kt') | Select-Object -ExpandProperty FullName)
 $sources += @('app/src/main/java/com/nextlevellife/app/data/Exercises.kt', 'app/src/main/java/com/nextlevellife/app/data/Gym.kt', 'app/src/main/java/com/nextlevellife/app/data/Routines.kt', 'app/src/main/java/com/nextlevellife/app/data/RoutineMath.kt', $pureData)
 $sources += @($pureStats, $pureUi, 'app/src/main/java/com/nextlevellife/app/ui/ExpandableText.kt', 'app/src/test/java/com/nextlevellife/app/ui/ExpandableTextTest.kt')
-# Log tests and HoldCounterTest's replay case need Android logging. Preserve its shared pose fixtures.
-$holdTest = Get-Content app/src/test/java/com/nextlevellife/app/pose/HoldCounterTest.kt -Encoding UTF8 -Raw
-$holdFixtures = $holdTest.Substring(0, $holdTest.IndexOf('class HoldCounterTest'))
-$fixtureFile = Join-Path $output 'PlankFixtures.kt'
-[IO.File]::WriteAllText($fixtureFile, $holdFixtures, $utf8)
-$sources += $fixtureFile
-$poseTests = @(Get-ChildItem app/src/test/java/com/nextlevellife/app/pose -Filter '*.kt' | Where-Object Name -notin @('PoseLogFormatTest.kt', 'PoseLogReplayTest.kt', 'HoldCounterTest.kt'))
+# Compile the actual log format/parser without the Android-only background file writer.
+# This enables every pose test, including hold replay and panel logic, without Android stubs.
+$poseLog = Get-Content app/src/main/java/com/nextlevellife/app/pose/PoseLog.kt -Encoding UTF8 -Raw
+$writerStart = $poseLog.IndexOf('class PoseLogWriter(')
+if ($writerStart -lt 0) { throw 'PoseLog writer boundary missing' }
+$pureLog = [regex]::Replace($poseLog.Substring(0, $writerStart), '(?m)^import android\..*\r?\n', '')
+$logFile = Join-Path $output 'PurePoseLog.kt'
+[IO.File]::WriteAllText($logFile, $pureLog, $utf8)
+$sources += $logFile
+$poseTests = @(Get-ChildItem app/src/test/java/com/nextlevellife/app/pose -Filter '*.kt')
 $dataTests = @(Get-ChildItem app/src/test/java/com/nextlevellife/app/data -Filter '*Test.kt' | Where-Object { $_.Name -like 'Gym*Test.kt' -or $_.Name -eq 'RoutinesTest.kt' })
 $sources += $poseTests.FullName
 $sources += $dataTests.FullName
@@ -84,7 +91,13 @@ $sources += $dataTests.FullName
 Write-Host "Compiling gym JVM verification with Kotlin $version..."
 & $java -cp $compilerClasspath org.jetbrains.kotlin.cli.jvm.K2JVMCompiler -no-stdlib -no-reflect -jvm-target 17 -classpath $testClasspath -d $classes @sources
 if ($LASTEXITCODE -ne 0) { throw "Kotlin compilation failed ($LASTEXITCODE)" }
-$tests = @($poseTests | Where-Object Name -like '*Test.kt' | ForEach-Object { 'com.nextlevellife.app.pose.' + $_.BaseName })
+$tests = @($poseTests | ForEach-Object {
+    # A file may contain several test classes (e.g. GymCatalogPostureTest).
+    $text = Get-Content -LiteralPath $_.FullName -Encoding UTF8 -Raw
+    [regex]::Matches($text, '(?m)^class (\w+Test)\b') | ForEach-Object {
+        'com.nextlevellife.app.pose.' + $_.Groups[1].Value
+    }
+})
 $tests += @($dataTests | ForEach-Object { 'com.nextlevellife.app.data.' + $_.BaseName })
 $tests += 'com.nextlevellife.app.ui.ExpandableTextTest'
 & $java '-Dfile.encoding=UTF-8' -cp "$classes;$testClasspath" org.junit.runner.JUnitCore @tests

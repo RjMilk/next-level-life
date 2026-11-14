@@ -64,6 +64,15 @@ class AngularProfileTest {
     }
 
     @Test
+    fun defaultEndpointDwellRejectsTwoFramesButAcceptsSustainedEndpoint() {
+        val motion = Motion(profile().counter()).hold(170f).move(170f, 110f)
+        motion.hold(80f, duration = 100L).hold(110f).move(110f, 170f).hold(170f)
+        assertEquals(0, motion.counter.state.count)
+        motion.rep()
+        assertEquals(1, motion.counter.state.count)
+    }
+
+    @Test
     fun fullCyclesCountAndHalfCyclesDoNot() {
         val motion = Motion(profile().counter())
         repeat(3) { motion.rep() }

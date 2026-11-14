@@ -22,7 +22,7 @@ internal object GymAngularProfiles {
         farChecks: List<Cond> = emptyList(),
     ) = AngularProfile(
         id = id, signal = signal, startThreshold = start, farThreshold = far,
-        positions = positions, minCycleMs = minMs, extremeConfirmMs = 150L, side = side, farChecks = farChecks,
+        positions = positions, minCycleMs = minMs, side = side, farChecks = farChecks,
         postureHint = postureHint, startHint = startHint, farHint = farHint, finishHint = "Вернись в исходное положение",
     )
 

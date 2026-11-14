@@ -22,6 +22,16 @@ class GuideBiomechanicsTest {
         assertTrue(p[L_ELBOW].x > p[L_SHOULDER].x + 0.03f)
         assertTrue(p[R_ELBOW].y < p[R_WRIST].y - 0.01f)
         assertTrue(p[L_ELBOW].y < p[L_WRIST].y - 0.01f)
+        for ((elbow, shoulder) in listOf(R_ELBOW to R_SHOULDER, L_ELBOW to L_SHOULDER)) {
+            assertTrue("elbow below eye level", p[elbow].y >= p[HEAD].y)
+            assertTrue("elbow near shoulder height", abs(p[elbow].y - p[shoulder].y) < 0.035f)
+            assertEquals("relaxed shoulder", p[NECK].y + GuideScene.SHOULDER_DROP, p[shoulder].y, 0.001f)
+        }
+        val chinY = p[HEAD].y + 0.046f
+        val gripY = (p[R_WRIST].y + p[L_WRIST].y) / 2f
+        assertTrue("bell handle below chin", gripY - 0.009f >= chinY)
+        val bellCenterY = gripY + GuideScene.BELL_RADIUS * 1.45f
+        assertTrue("bell at upper chest", bellCenterY < (p[NECK].y + p[PELVIS].y) / 2f + 0.04f)
         for (f in guide("sumo_pull").frames) {
             assertTrue(f.pose[R_KNEE].x <= f.pose[R_HIP].x)
             assertTrue(f.pose[L_KNEE].x >= f.pose[L_HIP].x)

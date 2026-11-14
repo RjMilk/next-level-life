@@ -54,7 +54,8 @@ internal data class AngularProfile(
     /** Дополнительные условия дальней точки: например, кисть над головой в жиме. */
     val farChecks: List<Cond> = emptyList(),
     val minCycleMs: Long = 300L,
-    val extremeConfirmMs: Long = 0L,
+    /** Непрерывное наблюдение крайней точки; короткий пик не завершает цикл. */
+    val extremeConfirmMs: Long = 150L,
     val postureHint: String,
     val startHint: String,
     val farHint: String,

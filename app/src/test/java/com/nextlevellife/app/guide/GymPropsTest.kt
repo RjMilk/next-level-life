@@ -48,7 +48,7 @@ class GymPropsTest {
         for (pose in poses) for (grip in BarbellGrip.entries) {
             val offset = Pt(-0.015f, -0.025f)
             val props = GuideProps(barbell = Barbell(grip, offset))
-            val scene = GuideGeometry.scene(guide(props, pose), pose)
+            val scene = GuideGeometry.scene(guide(props, pose, GuideView.FRONT), pose)
             val right = pose[if (grip == BarbellGrip.HANDS) R_WRIST else R_SHOULDER]
             val left = pose[if (grip == BarbellGrip.HANDS) L_WRIST else L_SHOULDER]
             assertPoint(Pt((right.x + left.x) / 2f + offset.x, (right.y + left.y) / 2f + offset.y),
@@ -57,6 +57,45 @@ class GymPropsTest {
             val bar = scene.indexOf(shaft(scene, 0.009f))
             if (grip == BarbellGrip.SHOULDERS) assertTrue("rack bar behind body", bar < body)
             else assertTrue("hand-held bar in front of body", bar > body)
+        }
+    }
+
+    @Test
+    fun sideWeightsAreCircularAndCenteredAtTheGripInEveryGymKeyframe() {
+        fun diskCenter(shape: GuideShape, radius: Float): Pt {
+            val right = (shape.path[0] as GuidePathOp.Move).point
+            val bottom = (shape.path[1] as GuidePathOp.Cubic).end
+            val left = (shape.path[2] as GuidePathOp.Cubic).end
+            val top = (shape.path[3] as GuidePathOp.Cubic).end
+            assertEquals("circular plate", radius * 2f, right.x - left.x, 0.00001f)
+            assertEquals("circular plate", radius * 2f, bottom.y - top.y, 0.00001f)
+            return Pt((right.x + left.x) / 2f, (bottom.y + top.y) / 2f)
+        }
+        for (g in GymGuides.guides.filter { it.view == GuideView.SIDE }) for (frame in g.frames) {
+            val bar = g.props.barbell
+            val db = g.props.dumbbells
+            if (bar == null && (db == null || db.grip == DumbbellGrip.GOBLET)) continue
+            val p = frame.pose
+            val scene = GuideGeometry.scene(g, p)
+            assertTrue("${g.exerciseId}: no shaft in image plane", scene.none {
+                it.paint == GuidePaint.METAL && it.strokeWidth == 0.009f
+            })
+            val disks = scene.filter { it.paint == GuidePaint.METAL && it.strokeWidth == 0f &&
+                it.path.size == 6 && (it.path[0] as GuidePathOp.Move).point.x -
+                (it.path[2] as GuidePathOp.Cubic).end.x > 0.04f }
+            if (bar != null) {
+                assertEquals(g.exerciseId, 1, disks.size)
+                val joint = if (bar.grip == BarbellGrip.HANDS) R_WRIST else R_SHOULDER
+                val other = if (bar.grip == BarbellGrip.HANDS) L_WRIST else L_SHOULDER
+                assertPoint(Pt((p[joint].x + p[other].x) / 2f + bar.offset.x,
+                    (p[joint].y + p[other].y) / 2f + bar.offset.y), diskCenter(disks.single(), bar.plateRadius))
+            } else {
+                val joints = if (db!!.grip == DumbbellGrip.EACH_HAND) listOf(L_WRIST, R_WRIST) else listOf(R_WRIST)
+                assertEquals(g.exerciseId, joints.size, disks.size)
+                for ((disk, joint) in disks.zip(joints)) {
+                    assertPoint(Pt(p[joint].x - if (joint == L_WRIST) 0.008f else 0f, p[joint].y), diskCenter(disk, 0.034f))
+                }
+            }
         }
     }
 

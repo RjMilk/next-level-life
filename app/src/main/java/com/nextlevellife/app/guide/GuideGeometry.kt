@@ -147,7 +147,7 @@ object GuideGeometry {
             val weight = Pt(machine.towerX, 0.82f - (knees.y - 0.55f))
             b.capsule(weight - Pt(0.028f, 0f), weight + Pt(0.028f, 0f), 0.04f, 0.04f, GuidePaint.METAL)
         }
-        if (guide.props.barbell?.grip == BarbellGrip.SHOULDERS) barbell(b, guide.props.barbell, pose)
+        if (!side && guide.props.barbell?.grip == BarbellGrip.SHOULDERS) barbell(b, guide.props.barbell, pose, side)
 
         fun limb(a: Pt, end: Pt, ra: Float, rb: Float, far: Boolean, highlight: Boolean) {
             b.capsule(a, end, ra, rb, if (far) GuidePaint.BODY_SHADE else GuidePaint.BODY)
@@ -267,22 +267,23 @@ object GuideGeometry {
 
         if (side) {
             leg(false, true)
-            dumbbell(b, guide.props.dumbbells, pose, right = false, far = true)
+            dumbbell(b, guide.props.dumbbells, pose, right = false, far = true, side = true)
             arm(false, true)
             torso()
             leg(true, false)
             bell(b, guide, pose)
-            if (guide.props.barbell != null && guide.props.barbell.grip != BarbellGrip.SHOULDERS) barbell(b, guide.props.barbell, pose)
-            dumbbell(b, guide.props.dumbbells, pose, right = true, far = false)
             arm(true, false)
+            // The near plate/sleeve faces the camera and occludes the gripping hand.
+            guide.props.barbell?.let { barbell(b, it, pose, side = true) }
+            dumbbell(b, guide.props.dumbbells, pose, right = true, far = false, side = true)
         } else {
             leg(false, false)
             leg(true, false)
             torso()
             bell(b, guide, pose)
-            if (guide.props.barbell != null && guide.props.barbell.grip != BarbellGrip.SHOULDERS) barbell(b, guide.props.barbell, pose)
-            dumbbell(b, guide.props.dumbbells, pose, right = false, far = false)
-            dumbbell(b, guide.props.dumbbells, pose, right = true, far = false)
+            if (guide.props.barbell != null && guide.props.barbell.grip != BarbellGrip.SHOULDERS) barbell(b, guide.props.barbell, pose, side = false)
+            dumbbell(b, guide.props.dumbbells, pose, right = false, far = false, side = false)
+            dumbbell(b, guide.props.dumbbells, pose, right = true, far = false, side = false)
             arm(false, false)
             arm(true, false)
         }
@@ -342,11 +343,25 @@ object GuideGeometry {
         b.line(grip - axis * halfLength, grip + axis * halfLength, GuidePaint.METAL, 0.012f)
     }
 
-    private fun barbell(b: Builder, barbell: Barbell, pose: GuidePose) {
+    /** End-on plate and sleeve: the shaft points towards the viewer in SIDE projection. */
+    private fun endOnWeight(b: Builder, grip: Pt, radius: Float, alpha: Float = 1f) {
+        b.ellipse(grip + Pt(-0.009f, -0.004f), Pt(radius, 0f), Pt(0f, radius), GuidePaint.DETAIL, alpha)
+        b.ellipse(grip, Pt(radius, 0f), Pt(0f, radius), GuidePaint.METAL, alpha)
+        b.ellipse(grip, Pt(radius * 0.76f, 0f), Pt(0f, radius * 0.76f), GuidePaint.DETAIL, alpha * 0.55f)
+        b.ellipse(grip, Pt(0.012f, 0f), Pt(0f, 0.012f), GuidePaint.DETAIL, alpha)
+        b.ellipse(grip, Pt(0.007f, 0f), Pt(0f, 0.007f), GuidePaint.METAL, alpha)
+        b.ellipse(grip + Pt(-0.002f, -0.002f), Pt(0.003f, 0f), Pt(0f, 0.003f), GuidePaint.BODY, alpha)
+    }
+
+    private fun barbell(b: Builder, barbell: Barbell, pose: GuidePose, side: Boolean) {
         val grip = when (barbell.grip) {
             BarbellGrip.HANDS -> mix(pose[R_WRIST], pose[L_WRIST], 0.5f)
             BarbellGrip.SHOULDERS, BarbellGrip.FRONT_RACK -> mix(pose[R_SHOULDER], pose[L_SHOULDER], 0.5f)
         } + barbell.offset
+        if (side) {
+            endOnWeight(b, grip, barbell.plateRadius)
+            return
+        }
         val half = barbell.halfLength
         b.line(grip - Pt(half, 0f), grip + Pt(half, 0f), GuidePaint.METAL, 0.009f)
         b.line(grip - Pt(half, 0.002f), grip + Pt(half, -0.002f), GuidePaint.BODY, 0.002f, 0.6f)
@@ -361,7 +376,7 @@ object GuideGeometry {
         }
     }
 
-    private fun dumbbell(b: Builder, dumbbells: Dumbbells?, pose: GuidePose, right: Boolean, far: Boolean) {
+    private fun dumbbell(b: Builder, dumbbells: Dumbbells?, pose: GuidePose, right: Boolean, far: Boolean, side: Boolean) {
         if (dumbbells == null) return
         val draw = when (dumbbells.grip) {
             DumbbellGrip.EACH_HAND -> true
@@ -380,6 +395,11 @@ object GuideGeometry {
         val axis = if (dumbbells.grip == DumbbellGrip.GOBLET) Pt(0f, 1f) else normal(unit(wrist - elbow))
         val cross = normal(axis)
         val alpha = if (far) 0.65f else 1f
+        // Goblet is held vertically: its shaft stays in the image plane even from the side.
+        if (side && dumbbells.grip != DumbbellGrip.GOBLET) {
+            endOnWeight(b, grip, 0.034f, alpha)
+            return
+        }
         b.line(grip - axis * 0.043f, grip + axis * 0.043f, GuidePaint.METAL, 0.009f, alpha)
         for (sign in listOf(-1f, 1f)) {
             val center = grip + axis * (sign * 0.032f)

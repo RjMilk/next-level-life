@@ -83,24 +83,34 @@ object KettlebellGuides : GuidePack {
     private val sumoPull = run {
         val rightFoot = Reach(0.30f, ANKLE_Y, bend = 270f)
         val leftFoot = Reach(0.70f, ANKLE_Y, bend = 90f)
+        fun pullPose(pelvisY: Float, handY: Float, halfGrip: Float): GuidePose {
+            val p = front(pin = Pin(GuideJoint.PELVIS, 0.5f, pelvisY),
+                rightFoot = rightFoot, leftFoot = leftFoot).points.toMutableMap()
+            // Upper arms angle towards the viewer: use the same shortened frontal projection
+            // in both keyframes, so the elbows can stay at shoulder height with a narrow grip.
+            for ((shoulder, elbow, wrist) in listOf(
+                Triple(GuideJoint.R_SHOULDER, GuideJoint.R_ELBOW, GuideJoint.R_WRIST),
+                Triple(GuideJoint.L_SHOULDER, GuideJoint.L_ELBOW, GuideJoint.L_WRIST),
+            )) {
+                val sign = if (shoulder == GuideJoint.R_SHOULDER) -1f else 1f
+                val root = p.getValue(shoulder)
+                val hand = Pt(0.5f + sign * halfGrip, handY)
+                p[elbow] = GuideMath.twoBone(root, hand, 0.08f, GuideScene.FOREARM,
+                    Pt(root.x + sign * 0.2f, root.y))
+                p[wrist] = hand
+            }
+            return GuidePose(p)
+        }
         ExerciseGuide(
             exerciseId = "sumo_pull",
             view = GuideView.FRONT,
             frames = listOf(
                 GuideFrame(
-                    front(
-                        pin = Pin(GuideJoint.PELVIS, 0.5f, 0.61f),
-                        rightFoot = rightFoot, leftFoot = leftFoot,
-                        rightHand = Reach(0.49f, 0.675f, bend = 270f), leftHand = Reach(0.51f, 0.675f, bend = 90f),
-                    ),
+                    pullPose(0.61f, 0.62f, 0.01f),
                     1100, 500,
                 ),
                 GuideFrame(
-                    front(
-                        pin = Pin(GuideJoint.PELVIS, 0.5f, 0.525f),
-                        rightFoot = rightFoot, leftFoot = leftFoot,
-                        rightHand = Reach(0.485f, 0.275f, bend = 270f), leftHand = Reach(0.515f, 0.275f, bend = 90f),
-                    ),
+                    pullPose(0.525f, 0.37f, 0.02f),
                     1100, 500,
                 ),
             ),
