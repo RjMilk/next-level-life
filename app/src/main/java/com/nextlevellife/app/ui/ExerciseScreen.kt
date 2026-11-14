@@ -33,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextAlign
@@ -42,6 +43,8 @@ import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.Weights
 import com.nextlevellife.app.data.Workouts
+import com.nextlevellife.app.guide.GuidePrefs
+import com.nextlevellife.app.guide.Guides
 import com.nextlevellife.app.pose.CountKind
 import com.nextlevellife.app.pose.RepCounters
 import com.nextlevellife.app.pose.rememberRepSound
@@ -49,15 +52,35 @@ import com.nextlevellife.app.stats.StatsText
 import kotlinx.coroutines.delay
 import java.util.UUID
 
-/** Одиночное упражнение: повторения считает только камера, ручного ввода нет. */
+/**
+ * Одиночное упражнение: повторения считает только камера, ручного ввода нет.
+ * Сначала — показ техники ([GuideSheet]), если он есть и не отключён галочкой: камера и счёт
+ * ещё не запущены, время подхода не идёт — оно начинается с «Начать».
+ */
 @Composable
 fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
     val ex = remember(exerciseId) { Exercises.byId(exerciseId) }
+    var intro by rememberSaveable(exerciseId) { mutableStateOf(GuidePrefs.showBeforeStart(exerciseId)) }
+    if (intro) {
+        BackHandler { onDone() }
+        GuideSheet(exerciseId, onStart = { intro = false }, onClose = onDone)
+        return
+    }
     // Удержание (планка) считается временем: свой экран без повторений и без reset() по исходной позе.
     if (ex.hold) {
         HoldExerciseScreen(ex, onDone)
         return
     }
+    RepExerciseScreen(ex, onDone)
+}
+
+/**
+ * Подход на повторения. Кнопка ▶ открывает показ техники поверх в любой момент: пока он открыт,
+ * камера не считает (как на диалоге выхода) — засчитанные повторения сохраняются, после закрытия
+ * панель снова ждёт исходное положение. Время подхода при этом идёт.
+ */
+@Composable
+private fun RepExerciseScreen(ex: Exercise, onDone: () -> Unit) {
     val haptics = rememberHaptics()
     val sound = rememberRepSound()
     KeepScreenOn()
@@ -82,6 +105,8 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
     var frontCamera by rememberSaveable { mutableStateOf(true) }
     // Идёт ли счёт (для цвета счётчика в панели на широком экране); после пересоздания придёт заново.
     var counting by remember { mutableStateOf(false) }
+    var showGuide by rememberSaveable { mutableStateOf(false) }
+    val hasGuide = remember(ex.id) { Guides.of(ex.id) != null }
 
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     LaunchedEffect(Unit) {
@@ -119,6 +144,9 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
     BackHandler(enabled = !recorded) { requestExit() }
 
     val widthClass = currentWidthClass()
+    // ▶ «Как выполнять»: гид поверх, счёт на паузе (active = false), засчитанное сохраняется.
+    val onGuide: (() -> Unit)? = if (hasGuide && !recorded) ({ showGuide = true }) else null
+    if (showGuide && !recorded) GuideDialog(ex.id, onClose = { showGuide = false })
     // На широком экране счётчик — в панели слева, на камере остаётся только человек.
     val counterInPanel = widthClass == WidthClass.EXPANDED
     val canFinish = count > 0 && !recorded
@@ -136,8 +164,8 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
             count = count,
             target = null,
             sessionKey = Unit,
-            // На диалоге выхода счёт на паузе: человек смотрит в экран, а не делает повторения.
-            active = !recorded && !showExit && !saveFailed,
+            // На диалоге выхода и показе техники счёт на паузе: человек смотрит в экран, а не делает повторения.
+            active = !recorded && !showExit && !saveFailed && !showGuide,
             sound = sound,
             frontCamera = frontCamera,
             onFrontCameraChange = { frontCamera = it },
@@ -157,7 +185,7 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
                 .padding(widthClass.outerPadding),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            ExerciseTitle(ex, widthClass)
+            ExerciseTitle(ex, widthClass, onGuide)
             ExerciseTimer(elapsedMs, widthClass)
             weightChips()
             RewardInfo(ex, weight, count, stacked = false)
@@ -171,7 +199,7 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
     } else {
         WorkoutSideLayout(widthClass, panelWidth, camera) {
             if (counterInPanel) {
-                ExerciseTitle(ex, widthClass)
+                ExerciseTitle(ex, widthClass, onGuide)
                 ExerciseTimer(elapsedMs, widthClass)
                 FittedRepCounter(
                     count = count,
@@ -196,7 +224,7 @@ fun ExerciseScreen(exerciseId: String, onDone: () -> Unit) {
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    ExerciseTitle(ex, widthClass)
+                    ExerciseTitle(ex, widthClass, onGuide)
                     ExerciseTimer(elapsedMs, widthClass)
                     weightChips()
                     RewardInfo(ex, weight, count, stacked = true)
@@ -282,6 +310,8 @@ private fun HoldExerciseScreen(ex: Exercise, onDone: () -> Unit) {
     var saveFailed by rememberSaveable { mutableStateOf(false) }
     val sessionId = rememberSaveable { UUID.randomUUID().toString() }
     var frontCamera by rememberSaveable { mutableStateOf(true) }
+    var showGuide by rememberSaveable { mutableStateOf(false) }
+    val hasGuide = remember(ex.id) { Guides.of(ex.id) != null }
 
     // Счётчик — один на экран. creditedMs на момент создания — засчитанное до пересоздания.
     val tracker = remember(ex.id) {
@@ -337,6 +367,9 @@ private fun HoldExerciseScreen(ex: Exercise, onDone: () -> Unit) {
     BackHandler(enabled = !recorded) { requestExit() }
 
     val widthClass = currentWidthClass()
+    // ▶ «Как выполнять»: гид поверх, счёт на паузе (active = false), засчитанное сохраняется.
+    val onGuide: (() -> Unit)? = if (hasGuide && !recorded) ({ showGuide = true }) else null
+    if (showGuide && !recorded) GuideDialog(ex.id, onClose = { showGuide = false })
     val scoreInPanel = widthClass == WidthClass.EXPANDED
     val canFinish = creditedMs > 0L && !recorded
     val canRestart = !recorded && !saveFailed
@@ -354,7 +387,7 @@ private fun HoldExerciseScreen(ex: Exercise, onDone: () -> Unit) {
             exercise = ex,
             tracker = tracker,
             // На диалогах время не считается: человек смотрит в экран, а не стоит в планке.
-            active = !recorded && !showExit && !saveFailed && !showRestart,
+            active = !recorded && !showExit && !saveFailed && !showRestart && !showGuide,
             sound = sound,
             frontCamera = frontCamera,
             onFrontCameraChange = { frontCamera = it },
@@ -371,7 +404,7 @@ private fun HoldExerciseScreen(ex: Exercise, onDone: () -> Unit) {
                 .padding(widthClass.outerPadding),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            ExerciseTitle(ex, widthClass)
+            ExerciseTitle(ex, widthClass, onGuide)
             ExerciseTimer(elapsedMs, widthClass)
             HoldRewardInfo(ex, creditedMs, stacked = false)
             camera(
@@ -387,7 +420,7 @@ private fun HoldExerciseScreen(ex: Exercise, onDone: () -> Unit) {
     } else {
         WorkoutSideLayout(widthClass, panelWidth, camera) {
             if (scoreInPanel) {
-                ExerciseTitle(ex, widthClass)
+                ExerciseTitle(ex, widthClass, onGuide)
                 ExerciseTimer(elapsedMs, widthClass)
                 if (tracker != null) {
                     HoldScore(
@@ -410,7 +443,7 @@ private fun HoldExerciseScreen(ex: Exercise, onDone: () -> Unit) {
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    ExerciseTitle(ex, widthClass)
+                    ExerciseTitle(ex, widthClass, onGuide)
                     ExerciseTimer(elapsedMs, widthClass)
                     HoldRewardInfo(ex, creditedMs, stacked = true)
                 }
@@ -552,19 +585,26 @@ private fun HoldBottomBar(
     }
 }
 
-/** Название упражнения — отдельной строкой: длинное название не теснит таймер. */
+/**
+ * Название упражнения — отдельной строкой: длинное название не теснит таймер.
+ * Справа — кнопка ▶ «Как выполнять» ([onGuide]; null — кнопки нет).
+ */
 @Composable
-private fun ExerciseTitle(ex: Exercise, widthClass: WidthClass) {
-    Text(
-        ex.name,
-        style = if (widthClass == WidthClass.MEDIUM) {
-            MaterialTheme.typography.headlineSmall
-        } else {
-            MaterialTheme.typography.headlineMedium
-        },
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
-    )
+private fun ExerciseTitle(ex: Exercise, widthClass: WidthClass, onGuide: (() -> Unit)? = null) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            ex.name,
+            style = if (widthClass == WidthClass.MEDIUM) {
+                MaterialTheme.typography.headlineSmall
+            } else {
+                MaterialTheme.typography.headlineMedium
+            },
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (onGuide != null) GuideButton(onGuide)
+    }
 }
 
 @Composable
