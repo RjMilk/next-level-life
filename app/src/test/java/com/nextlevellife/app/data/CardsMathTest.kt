@@ -248,7 +248,7 @@ class CardsMathTest {
 
     @Test
     fun migration10AddsCardAttempts() {
-        assertEquals(10, Diary.SCHEMA_VERSION)
+        assertTrue(Diary.SCHEMA_VERSION >= 10)
         val sql = Diary.MIGRATIONS[9].joinToString("\n")
         for (part in listOf(
             "CREATE TABLE card_attempts", "uid TEXT PRIMARY KEY NOT NULL", "author TEXT NOT NULL", "epoch TEXT NOT NULL",

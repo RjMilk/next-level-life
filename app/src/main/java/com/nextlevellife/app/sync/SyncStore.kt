@@ -4,6 +4,7 @@ import com.nextlevellife.app.data.CardsMath
 import com.nextlevellife.app.data.LedgerMath
 import com.nextlevellife.app.data.NutritionMath
 import com.nextlevellife.app.data.OpKind
+import com.nextlevellife.app.data.ProductsMath
 import com.nextlevellife.app.data.SharedWalletMath
 import com.nextlevellife.app.data.TrustedClockMath
 
@@ -125,7 +126,34 @@ object SyncRules {
             f.utcMs > 0L && TrustedClockMath.isValidZoneId(f.zoneId) &&
             f.paidMs in 0L..CardsMath.REWARD_MS && (f.firstCorrect || f.paidMs == 0L) &&
             dayMatches(f.utcMs, f.zoneId, f.day)
+        // Свои продукты и позиции приёмов — как приёмы пищи (только этой пары, свои — только прежних поколений,
+        // безопасные uid), плюс пределы всех чисел и строк, день по моменту записи. Штрихкод — только цифры нужной
+        // длины с верной контрольной цифрой.
+        is ProductVersionFact -> ownPair(f, me, myFactsEpoch, peer) && NutritionMath.isSafeUid(f.productUid) &&
+            moment(f.utcMs, f.zoneId, f.day) && ProductsMath.isValidName(f.name) &&
+            (f.barcode == null || ProductsMath.isValidBarcode(f.barcode)) &&
+            inRange(f.kcal, 0, ProductsMath.KCAL_MAX) && inRange(f.proteinDg, 0, ProductsMath.MACRO_MAX_DG) &&
+            inRange(f.fatDg, 0, ProductsMath.MACRO_MAX_DG) && inRange(f.carbsDg, 0, ProductsMath.MACRO_MAX_DG) &&
+            inRange(f.portionG, ProductsMath.GRAMS_MIN, ProductsMath.GRAMS_MAX)
+        is ProductDeleteFact -> ownPair(f, me, myFactsEpoch, peer) && NutritionMath.isSafeUid(f.productUid) &&
+            moment(f.utcMs, f.zoneId, f.day)
+        is MealEntryFact -> ownPair(f, me, myFactsEpoch, peer) && NutritionMath.isSafeUid(f.mealUid) &&
+            NutritionMath.isSafeUid(f.versionUid) && inRange(f.grams, ProductsMath.GRAMS_MIN, ProductsMath.GRAMS_MAX) &&
+            moment(f.utcMs, f.zoneId, f.day)
+        is MealEntryDeleteFact -> ownPair(f, me, myFactsEpoch, peer) && NutritionMath.isSafeUid(f.entryUid) &&
+            moment(f.utcMs, f.zoneId, f.day)
     }
+
+    /** Факт этой пары (автор — я или второй телефон), свой — только прежнего поколения, uid безопасен. */
+    private fun ownPair(f: FactRecord, me: String, myFactsEpoch: String, peer: String): Boolean =
+        (f.author == me || f.author == peer) && !(f.author == me && f.epoch == myFactsEpoch) && NutritionMath.isSafeUid(f.uid)
+
+    /** Момент записи: положительный, пояс известен, сутки согласуются с ним. */
+    private fun moment(utcMs: Long, zoneId: String, day: Long): Boolean =
+        utcMs > 0L && TrustedClockMath.isValidZoneId(zoneId) && dayMatches(utcMs, zoneId, day)
+
+    /** Необязательное число: null или в пределах [min]..[max]. */
+    private fun inRange(v: Int?, min: Int, max: Int): Boolean = v == null || v in min..max
 
     /**
      * Учётные сутки [day] согласуются с моментом [utcMs] в поясе [zoneId] (допуск — сутки): чужой факт с днём

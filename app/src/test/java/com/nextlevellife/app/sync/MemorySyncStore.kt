@@ -7,7 +7,11 @@ import com.nextlevellife.app.data.CardReward
 import com.nextlevellife.app.data.CardRewardReason
 import com.nextlevellife.app.data.CardsMath
 import com.nextlevellife.app.data.LedgerMath
+import com.nextlevellife.app.data.MealEntry
+import com.nextlevellife.app.data.MealEntryLine
 import com.nextlevellife.app.data.OpKind
+import com.nextlevellife.app.data.ProductVersion
+import com.nextlevellife.app.data.ProductsMath
 import com.nextlevellife.app.data.SharedWalletMath
 import java.io.IOException
 import java.util.UUID
@@ -156,6 +160,76 @@ class MemorySyncStore(
         return reward
     }
 
+    /**
+     * Момент записи своих фактов питания: полдень учётных суток (UTC) плюс общий для всех хранилищ счётчик —
+     * у двух телефонов время идёт одно, и поздняя правка на втором телефоне действительно позже.
+     */
+    private fun nowMs(): Long = day * 86_400_000L + 12 * 3_600_000L + CLOCK.incrementAndGet()
+
+    private companion object {
+        val CLOCK = java.util.concurrent.atomic.AtomicLong()
+    }
+
+    /** Своя версия карточки (как Products.save): новый продукт при [productUid] null. */
+    fun saveProduct(
+        name: String, productUid: String? = null, barcode: String? = null, kcal: Int? = null, proteinDg: Int? = null,
+        fatDg: Int? = null, carbsDg: Int? = null, portionG: Int? = null,
+    ): ProductVersionFact {
+        val f = ProductVersionFact(
+            uid = UUID.randomUUID().toString(), author = deviceId, epoch = factsEpoch, aseq = ++factSeq,
+            productUid = productUid ?: UUID.randomUUID().toString(), utcMs = nowMs(), day = day, zoneId = "UTC",
+            name = name, barcode = barcode, kcal = kcal, proteinDg = proteinDg, fatDg = fatDg, carbsDg = carbsDg,
+            portionG = portionG,
+        )
+        facts[f.uid] = f
+        return f
+    }
+
+    /** Своё удаление продукта (как Products.delete). */
+    fun deleteProduct(productUid: String): ProductDeleteFact {
+        val f = ProductDeleteFact(UUID.randomUUID().toString(), deviceId, factsEpoch, ++factSeq, productUid, nowMs(), day, "UTC")
+        facts[f.uid] = f
+        return f
+    }
+
+    /** Своя позиция приёма (как Products.addEntry): вес — указанный или порция по умолчанию версии. */
+    fun addEntry(mealUid: String, version: ProductVersionFact, grams: Int? = null): MealEntryFact {
+        val f = MealEntryFact(
+            UUID.randomUUID().toString(), deviceId, factsEpoch, ++factSeq, mealUid, version.uid,
+            ProductsMath.entryGrams(grams, version.toVersion()), nowMs(), day, "UTC",
+        )
+        facts[f.uid] = f
+        return f
+    }
+
+    /** Своё удаление позиции (как Products.deleteEntry). */
+    fun deleteEntry(entryUid: String): MealEntryDeleteFact {
+        val f = MealEntryDeleteFact(UUID.randomUUID().toString(), deviceId, factsEpoch, ++factSeq, entryUid, nowMs(), day, "UTC")
+        facts[f.uid] = f
+        return f
+    }
+
+    /** Неудалённые продукты (актуальные версии) — как Products.live. */
+    fun liveProducts(): List<ProductVersion> = ProductsMath.live(
+        facts.values.filterIsInstance<ProductVersionFact>().map { it.toVersion() },
+        facts.values.filterIsInstance<ProductDeleteFact>().mapTo(HashSet()) { it.productUid },
+    )
+
+    /** Неудалённые позиции видимых приёмов с их версиями — как Products.entriesForDay (все сутки). */
+    fun visibleEntries(): List<MealEntryLine> {
+        val meals = visibleMeals().mapTo(HashSet()) { it.uid }
+        val deleted = facts.values.filterIsInstance<MealEntryDeleteFact>().mapTo(HashSet()) { it.entryUid }
+        val versions = facts.values.filterIsInstance<ProductVersionFact>().associateBy { it.uid }
+        return facts.values.filterIsInstance<MealEntryFact>()
+            .filter { it.mealUid in meals && it.uid !in deleted }
+            .sortedWith(compareBy({ it.utcMs }, { it.uid }))
+            .map { MealEntryLine(MealEntry(it.uid, it.author, it.mealUid, it.versionUid, it.grams, it.utcMs), versions[it.versionUid]?.toVersion()) }
+    }
+
+    private fun ProductVersionFact.toVersion() = ProductVersion(
+        uid, productUid, author, utcMs, name, barcode, kcal, proteinDg, fatDg, carbsDg, portionG,
+    )
+
     /** Видимые приёмы: без удалённых (удаление могло прийти раньше приёма). */
     fun visibleMeals(): List<MealFact> {
         val deleted = facts.values.filterIsInstance<MealDeleteFact>().mapTo(HashSet()) { it.mealUid }
@@ -169,8 +243,12 @@ class MemorySyncStore(
     fun restoreFrom(backup: MemorySyncStore) {
         val current = ops.values.toList()
         val currentMoves = facts.values.filterIsInstance<LimitMoveFact>()
-        // Приёмы пищи, удаления и ответы на карточки текущей базы переносятся в восстановленную (как в Backup.swap).
-        val currentMeals = facts.values.filter { it is MealFact || it is MealDeleteFact || it is CardAttemptFact }
+        // Приёмы пищи, удаления, ответы на карточки, продукты и позиции текущей базы переносятся в восстановленную
+        // (как в Backup.swap).
+        val currentMeals = facts.values.filter {
+            it is MealFact || it is MealDeleteFact || it is CardAttemptFact || it is ProductVersionFact ||
+                it is ProductDeleteFact || it is MealEntryFact || it is MealEntryDeleteFact
+        }
         ops.clear()
         ops.putAll(backup.ops)
         rev = maxOf(rev, backup.rev)

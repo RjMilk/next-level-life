@@ -390,6 +390,16 @@ object Backup {
             Log.e(TAG, "Не удалось прочитать ответы на карточки", e)
             emptyList()
         }
+        // Свои продукты, позиции приёмов и их удаления — как приёмы пищи: наград не дают, а удаление после копии не
+        // должно воскресить продукт или позицию. Свои факты с провода текущего поколения не принимаются — только так.
+        val currentProductRows = BackupMath.PRODUCT_TABLES.associateWith { table ->
+            try {
+                synchronized(Diary) { Diary.query("SELECT * FROM $table") { c -> c.toContentValues() } }
+            } catch (e: Exception) {
+                Log.e(TAG, "Не удалось прочитать $table", e)
+                emptyList()
+            }
+        }
         var carriedMs = 0L
         val oldPrefsJson = Store.exportPrefs()
         val oldPrefs = Store.parsePrefs(oldPrefsJson)
@@ -432,6 +442,9 @@ object Backup {
                 for (del in currentMealDeletes) db.insertWithOnConflict("meal_deletes", null, del, SQLiteDatabase.CONFLICT_IGNORE)
                 db.execSQL("UPDATE meals SET deleted = 1 WHERE uid IN (SELECT meal_uid FROM meal_deletes)")
                 for (a in currentCardAttempts) db.insertWithOnConflict("card_attempts", null, a, SQLiteDatabase.CONFLICT_IGNORE)
+                for ((table, rows) in currentProductRows) {
+                    for (row in rows) db.insertWithOnConflict(table, null, row, SQLiteDatabase.CONFLICT_IGNORE)
+                }
                 if (localPeer != null) putMeta(Ledger.KEY_SYNC_PEER, localPeer) else db.delete("meta", "key = ?", arrayOf(Ledger.KEY_SYNC_PEER))
                 db.delete("shared_settings", "key = ?", arrayOf(SharedSettings.ACTIVITY_SOURCE))
                 if (localSource != null) db.insertWithOnConflict("shared_settings", null, localSource, SQLiteDatabase.CONFLICT_REPLACE)
@@ -687,6 +700,21 @@ object Backup {
         }
     }
 
+    /** Строка курсора как есть (все столбцы, с их типами) — для переноса строк в восстановленную базу. */
+    private fun android.database.Cursor.toContentValues(): android.content.ContentValues =
+        android.content.ContentValues().also { v ->
+            for (i in 0 until columnCount) {
+                val name = getColumnName(i)
+                when (getType(i)) {
+                    android.database.Cursor.FIELD_TYPE_NULL -> v.putNull(name)
+                    android.database.Cursor.FIELD_TYPE_INTEGER -> v.put(name, getLong(i))
+                    android.database.Cursor.FIELD_TYPE_FLOAT -> v.put(name, getDouble(i))
+                    android.database.Cursor.FIELD_TYPE_BLOB -> v.put(name, getBlob(i))
+                    else -> v.put(name, getString(i))
+                }
+            }
+        }
+
     private fun appVersionName(context: Context): String =
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "?"
 
@@ -721,6 +749,10 @@ object BackupMath {
     const val CARDS_SCHEMA = 10
     val CARD_TABLES = setOf("card_attempts")
 
+    /** С версии 11 — свои продукты, позиции приёмов и их удаления. */
+    const val PRODUCTS_SCHEMA = 11
+    val PRODUCT_TABLES = setOf("product_versions", "product_deletes", "meal_entries", "meal_entry_deletes")
+
     /** Предел одного фото и всех фото в копии (байт). */
     const val MAX_PHOTO_BYTES = 16L * 1024 * 1024
     const val MAX_PHOTOS_TOTAL_BYTES = 8L * 1024 * 1024 * 1024
@@ -731,6 +763,7 @@ object BackupMath {
         if (schema >= SLEEP_SCHEMA) t = t + SLEEP_TABLES
         if (schema >= MEALS_SCHEMA) t = t + MEAL_TABLES
         if (schema >= CARDS_SCHEMA) t = t + CARD_TABLES
+        if (schema >= PRODUCTS_SCHEMA) t = t + PRODUCT_TABLES
         return t
     }
 

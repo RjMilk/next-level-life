@@ -10,6 +10,8 @@ import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.Nutrition
 import com.nextlevellife.app.data.OpKind
+import com.nextlevellife.app.data.ProductVersion
+import com.nextlevellife.app.data.Products
 import com.nextlevellife.app.data.SharedSettings
 import com.nextlevellife.app.data.SharedWalletMath
 import com.nextlevellife.app.data.Store
@@ -60,7 +62,9 @@ class DiarySyncStore : SyncStore {
             "SELECT author, epoch, MAX(aseq) FROM (" +
                 "SELECT author, epoch, aseq FROM sets UNION ALL SELECT author, epoch, aseq FROM complex_runs " +
                 "UNION ALL SELECT author, epoch, aseq FROM limit_moves UNION ALL SELECT author, epoch, aseq FROM meals " +
-                "UNION ALL SELECT author, epoch, aseq FROM meal_deletes UNION ALL SELECT author, epoch, aseq FROM card_attempts) " +
+                "UNION ALL SELECT author, epoch, aseq FROM meal_deletes UNION ALL SELECT author, epoch, aseq FROM card_attempts " +
+                "UNION ALL SELECT author, epoch, aseq FROM product_versions UNION ALL SELECT author, epoch, aseq FROM product_deletes " +
+                "UNION ALL SELECT author, epoch, aseq FROM meal_entries UNION ALL SELECT author, epoch, aseq FROM meal_entry_deletes) " +
                 "WHERE author IS NOT NULL AND epoch IS NOT NULL AND aseq IS NOT NULL GROUP BY author, epoch",
         ) { LogCursor(LogCursor.FACTS, it.getString(0), it.getString(1), it.getLong(2)) }
         val stored = Diary.query("SELECT log, author, epoch, pos FROM sync_cursors WHERE log = ?", LogCursor.FACTS) {
@@ -142,7 +146,51 @@ class DiarySyncStore : SyncStore {
                 firstCorrect = it.getInt(9) != 0, paidMs = it.getLong(10),
             )
         }
-        (runs + sets + moves + meals + mealDeletes + cardAttempts).sortedBy { it.aseq }.take(limit)
+        val productVersions = Diary.query(
+            "SELECT uid, author, epoch, aseq, product_uid, utc_ms, day, zone_id, name, barcode, kcal, protein_dg, fat_dg, " +
+                "carbs_dg, portion_g FROM product_versions WHERE author = ? AND epoch = ? AND aseq > ? ORDER BY aseq LIMIT $limit",
+            *args,
+        ) {
+            ProductVersionFact(
+                it.getString(0), it.getString(1), it.getString(2), it.getLong(3), productUid = it.getString(4),
+                utcMs = it.getLong(5), day = it.getLong(6), zoneId = it.getString(7), name = it.getString(8),
+                barcode = if (it.isNull(9)) null else it.getString(9), kcal = it.intOrNull(10), proteinDg = it.intOrNull(11),
+                fatDg = it.intOrNull(12), carbsDg = it.intOrNull(13), portionG = it.intOrNull(14),
+            )
+        }
+        val productDeletes = Diary.query(
+            "SELECT uid, author, epoch, aseq, product_uid, utc_ms, day, zone_id FROM product_deletes " +
+                "WHERE author = ? AND epoch = ? AND aseq > ? ORDER BY aseq LIMIT $limit",
+            *args,
+        ) {
+            ProductDeleteFact(
+                it.getString(0), it.getString(1), it.getString(2), it.getLong(3), productUid = it.getString(4),
+                utcMs = it.getLong(5), day = it.getLong(6), zoneId = it.getString(7),
+            )
+        }
+        val mealEntries = Diary.query(
+            "SELECT uid, author, epoch, aseq, meal_uid, version_uid, grams, utc_ms, day, zone_id FROM meal_entries " +
+                "WHERE author = ? AND epoch = ? AND aseq > ? ORDER BY aseq LIMIT $limit",
+            *args,
+        ) {
+            MealEntryFact(
+                it.getString(0), it.getString(1), it.getString(2), it.getLong(3), mealUid = it.getString(4),
+                versionUid = it.getString(5), grams = it.intOrNull(6), utcMs = it.getLong(7), day = it.getLong(8),
+                zoneId = it.getString(9),
+            )
+        }
+        val mealEntryDeletes = Diary.query(
+            "SELECT uid, author, epoch, aseq, entry_uid, utc_ms, day, zone_id FROM meal_entry_deletes " +
+                "WHERE author = ? AND epoch = ? AND aseq > ? ORDER BY aseq LIMIT $limit",
+            *args,
+        ) {
+            MealEntryDeleteFact(
+                it.getString(0), it.getString(1), it.getString(2), it.getLong(3), entryUid = it.getString(4),
+                utcMs = it.getLong(5), day = it.getLong(6), zoneId = it.getString(7),
+            )
+        }
+        (runs + sets + moves + meals + mealDeletes + cardAttempts + productVersions + productDeletes + mealEntries + mealEntryDeletes)
+            .sortedBy { it.aseq }.take(limit)
     }
 
     override fun applyOps(peerId: String, epoch: String, reset: Boolean, rows: List<OpRecord>): Long {
@@ -208,9 +256,9 @@ class DiarySyncStore : SyncStore {
                     Log.w(TAG, "Отклонён факт ${f.uid} автора ${f.author}")
                     continue
                 }
-                // Приёмы пищи на характеристики и серию не влияют: их сутки не пересчитываются. Ответы на карточки
-                // влияют на «Знание»: их сутки пересчитываются.
-                if (insertFact(db, f) && f !is MealFact && f !is MealDeleteFact) days += f.day
+                // Питание (приёмы, продукты, позиции и их удаления) на характеристики и серию не влияет: его сутки
+                // не пересчитываются. Ответы на карточки влияют на «Знание»: их сутки пересчитываются.
+                if (insertFact(db, f) && !isNutrition(f)) days += f.day
             }
             for ((k, pos) in maxByGroup) {
                 val old = Diary.query(
@@ -273,8 +321,31 @@ class DiarySyncStore : SyncStore {
             is CardAttemptFact -> Cards.insertAttemptCopy(
                 db, f.uid, f.author, f.epoch, f.aseq, f.cardId, f.deck, f.utcMs, f.day, f.zoneId, f.firstCorrect, f.paidMs,
             )
+            is ProductVersionFact -> Products.insertVersionCopy(
+                db,
+                ProductVersion(
+                    versionUid = f.uid, productUid = f.productUid, author = f.author, utcMs = f.utcMs, name = f.name,
+                    barcode = f.barcode, kcal = f.kcal, proteinDg = f.proteinDg, fatDg = f.fatDg, carbsDg = f.carbsDg,
+                    portionG = f.portionG,
+                ),
+                f.epoch, f.aseq, f.day, f.zoneId,
+            )
+            is ProductDeleteFact -> Products.insertProductDeleteCopy(
+                db, f.uid, f.productUid, f.author, f.epoch, f.aseq, f.utcMs, f.day, f.zoneId,
+            )
+            is MealEntryFact -> Products.insertEntryCopy(
+                db, f.uid, f.mealUid, f.versionUid, f.grams, f.author, f.epoch, f.aseq, f.utcMs, f.day, f.zoneId,
+            )
+            is MealEntryDeleteFact -> Products.insertEntryDeleteCopy(
+                db, f.uid, f.entryUid, f.author, f.epoch, f.aseq, f.utcMs, f.day, f.zoneId,
+            )
         }
     }
+
+    /** Факт дневника питания: наград и характеристик не касается. */
+    private fun isNutrition(f: FactRecord): Boolean =
+        f is MealFact || f is MealDeleteFact || f is ProductVersionFact || f is ProductDeleteFact ||
+            f is MealEntryFact || f is MealEntryDeleteFact
 
     private fun exists(table: String, uid: String): Boolean =
         Diary.query("SELECT 1 FROM $table WHERE uid = ? LIMIT 1", uid) { true }.isNotEmpty()

@@ -1266,6 +1266,72 @@ object Diary {
             "CREATE INDEX idx_card_attempts_card ON card_attempts(card_id, utc_ms)",
             "CREATE INDEX idx_card_attempts_author ON card_attempts(author, epoch, aseq)",
         ),
+        // 10 → 11: свои продукты и позиции приёмов ([Products]). Все четыре таблицы — факты (author, epoch, aseq из
+        // общего счётчика facts_seq, uid; utc_ms, day, zone_id — момент записи). product_versions — версии карточек:
+        // uid — версия, product_uid — продукт (актуальная версия — наибольшие utc_ms, uid); на 100 г: kcal, белки,
+        // жиры, углеводы в десятых долях грамма; portion_g — порция по умолчанию. product_deletes — удаления
+        // продуктов. meal_entries — позиции приёмов: ссылка на конкретную версию карточки (правка карточки не меняет
+        // прошлые приёмы), grams — вес (NULL — «без веса»); позиция может прийти раньше приёма и карточки.
+        // meal_entry_deletes — удаления позиций. Прежние таблицы шаг не трогает.
+        listOf(
+            """CREATE TABLE product_versions (
+                uid TEXT PRIMARY KEY NOT NULL,
+                product_uid TEXT NOT NULL,
+                author TEXT NOT NULL,
+                epoch TEXT NOT NULL,
+                aseq INTEGER NOT NULL,
+                utc_ms INTEGER NOT NULL,
+                day INTEGER NOT NULL,
+                zone_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                barcode TEXT,
+                kcal INTEGER,
+                protein_dg INTEGER,
+                fat_dg INTEGER,
+                carbs_dg INTEGER,
+                portion_g INTEGER
+            )""",
+            "CREATE INDEX idx_product_versions_product ON product_versions(product_uid, utc_ms)",
+            "CREATE INDEX idx_product_versions_author ON product_versions(author, epoch, aseq)",
+            """CREATE TABLE product_deletes (
+                uid TEXT PRIMARY KEY NOT NULL,
+                product_uid TEXT NOT NULL,
+                author TEXT NOT NULL,
+                epoch TEXT NOT NULL,
+                aseq INTEGER NOT NULL,
+                utc_ms INTEGER NOT NULL,
+                day INTEGER NOT NULL,
+                zone_id TEXT NOT NULL
+            )""",
+            "CREATE INDEX idx_product_deletes_product ON product_deletes(product_uid)",
+            "CREATE INDEX idx_product_deletes_author ON product_deletes(author, epoch, aseq)",
+            """CREATE TABLE meal_entries (
+                uid TEXT PRIMARY KEY NOT NULL,
+                meal_uid TEXT NOT NULL,
+                version_uid TEXT NOT NULL,
+                grams INTEGER,
+                author TEXT NOT NULL,
+                epoch TEXT NOT NULL,
+                aseq INTEGER NOT NULL,
+                utc_ms INTEGER NOT NULL,
+                day INTEGER NOT NULL,
+                zone_id TEXT NOT NULL
+            )""",
+            "CREATE INDEX idx_meal_entries_meal ON meal_entries(meal_uid, utc_ms)",
+            "CREATE INDEX idx_meal_entries_author ON meal_entries(author, epoch, aseq)",
+            """CREATE TABLE meal_entry_deletes (
+                uid TEXT PRIMARY KEY NOT NULL,
+                entry_uid TEXT NOT NULL,
+                author TEXT NOT NULL,
+                epoch TEXT NOT NULL,
+                aseq INTEGER NOT NULL,
+                utc_ms INTEGER NOT NULL,
+                day INTEGER NOT NULL,
+                zone_id TEXT NOT NULL
+            )""",
+            "CREATE INDEX idx_meal_entry_deletes_entry ON meal_entry_deletes(entry_uid)",
+            "CREATE INDEX idx_meal_entry_deletes_author ON meal_entry_deletes(author, epoch, aseq)",
+        ),
     )
 }
 

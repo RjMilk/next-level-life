@@ -158,7 +158,7 @@ class CardSyncTest {
 
     @Test
     fun codecRoundTripAndVersion() {
-        assertEquals(3, SyncCodec.PROTOCOL_VERSION)
+        assertTrue(SyncCodec.PROTOCOL_VERSION >= 3)
         val m = SyncMessage.Facts(
             listOf(
                 CardAttemptFact("a1", "a", "e", 1, "en:apple", "en", 1_700_000_000_000, 19_700, "Europe/Moscow", true, 10_000),

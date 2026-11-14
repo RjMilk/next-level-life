@@ -37,7 +37,8 @@ data class OpRecord(
 
 /**
  * «Факт» — запись, которая не меняется и не удаляется: подход, прохождение комплекса, перенос доли лимита,
- * приём пищи и его удаление (удаление — тоже факт, сам приём остаётся в журнале), ответ на карточку.
+ * приём пищи и его удаление (удаление — тоже факт, сам приём остаётся в журнале), ответ на карточку, версия карточки
+ * продукта и позиция приёма (и их удаления).
  * Объединяется по (автор, поколение, номер); [uid] — постоянный идентификатор (повтор не дублирует).
  */
 sealed interface FactRecord {
@@ -150,6 +151,71 @@ data class CardAttemptFact(
 ) : FactRecord
 
 /**
+ * Версия карточки своего продукта ([com.nextlevellife.app.data.Products]): [uid] — uid версии, [productUid] — продукт.
+ * Правка карточки — новая версия; актуальная — с наибольшими ([utcMs], [uid]). [utcMs] — доверенное время записи,
+ * [day] — учётные сутки, [zoneId] — учётный пояс. На 100 г: [kcal], белки/жиры/углеводы в десятых долях грамма;
+ * [portionG] — порция по умолчанию. null — не указано.
+ */
+data class ProductVersionFact(
+    override val uid: String,
+    override val author: String,
+    override val epoch: String,
+    override val aseq: Long,
+    val productUid: String,
+    val utcMs: Long,
+    override val day: Long,
+    val zoneId: String,
+    val name: String,
+    val barcode: String?,
+    val kcal: Int?,
+    val proteinDg: Int?,
+    val fatDg: Int?,
+    val carbsDg: Int?,
+    val portionG: Int?,
+) : FactRecord
+
+/** Удаление продукта [productUid] — отдельный факт: может прийти раньше карточки; старые приёмы остаются подписанными. */
+data class ProductDeleteFact(
+    override val uid: String,
+    override val author: String,
+    override val epoch: String,
+    override val aseq: Long,
+    val productUid: String,
+    val utcMs: Long,
+    override val day: Long,
+    val zoneId: String,
+) : FactRecord
+
+/**
+ * Позиция приёма пищи: приём [mealUid], конкретная версия карточки [versionUid], вес [grams] (null — «без веса»).
+ * Может прийти раньше приёма и карточки — показывается, когда они придут.
+ */
+data class MealEntryFact(
+    override val uid: String,
+    override val author: String,
+    override val epoch: String,
+    override val aseq: Long,
+    val mealUid: String,
+    val versionUid: String,
+    val grams: Int?,
+    val utcMs: Long,
+    override val day: Long,
+    val zoneId: String,
+) : FactRecord
+
+/** Удаление позиции [entryUid] — отдельный факт: может прийти раньше самой позиции. */
+data class MealEntryDeleteFact(
+    override val uid: String,
+    override val author: String,
+    override val epoch: String,
+    override val aseq: Long,
+    val entryUid: String,
+    val utcMs: Long,
+    override val day: Long,
+    val zoneId: String,
+) : FactRecord
+
+/**
  * Докуда принят журнал [log] автора [author] в поколении [epoch]: [pos] — последний принятый номер
  * (rev у операций, aseq у фактов).
  */
@@ -215,8 +281,12 @@ class SyncProtocolException(message: String) : IOException(message)
  * необязательные поля — байт-признак. Неизвестный тип или обрезанное сообщение — [SyncProtocolException].
  */
 object SyncCodec {
-    /** 2 — приёмы пищи и их удаления ([MealFact], [MealDeleteFact]); 3 — ответы на карточки ([CardAttemptFact]). */
-    const val PROTOCOL_VERSION = 3
+    /**
+     * 2 — приёмы пищи и их удаления ([MealFact], [MealDeleteFact]); 3 — ответы на карточки ([CardAttemptFact]);
+     * 4 — свои продукты и позиции приёмов ([ProductVersionFact], [ProductDeleteFact], [MealEntryFact],
+     * [MealEntryDeleteFact]).
+     */
+    const val PROTOCOL_VERSION = 4
     private const val MAGIC = 0x4E // 'N'
 
     private const val T_HELLO = 1
@@ -233,6 +303,10 @@ object SyncCodec {
     private const val F_MEAL = 4
     private const val F_MEAL_DELETE = 5
     private const val F_CARD = 6
+    private const val F_PRODUCT = 7
+    private const val F_PRODUCT_DELETE = 8
+    private const val F_MEAL_ENTRY = 9
+    private const val F_MEAL_ENTRY_DELETE = 10
 
     fun encode(m: SyncMessage): ByteArray {
         val bytes = ByteArrayOutputStream()
@@ -382,6 +456,24 @@ object SyncCodec {
                 o.str(f.cardId); o.str(f.deck); o.writeLong(f.utcMs); o.writeLong(f.day); o.str(f.zoneId)
                 o.writeBoolean(f.firstCorrect); o.writeLong(f.paidMs)
             }
+            is ProductVersionFact -> {
+                o.writeByte(F_PRODUCT); head(o, f)
+                o.str(f.productUid); o.writeLong(f.utcMs); o.writeLong(f.day); o.str(f.zoneId); o.str(f.name)
+                o.optStr(f.barcode); o.optInt(f.kcal); o.optInt(f.proteinDg); o.optInt(f.fatDg); o.optInt(f.carbsDg)
+                o.optInt(f.portionG)
+            }
+            is ProductDeleteFact -> {
+                o.writeByte(F_PRODUCT_DELETE); head(o, f)
+                o.str(f.productUid); o.writeLong(f.utcMs); o.writeLong(f.day); o.str(f.zoneId)
+            }
+            is MealEntryFact -> {
+                o.writeByte(F_MEAL_ENTRY); head(o, f)
+                o.str(f.mealUid); o.str(f.versionUid); o.optInt(f.grams); o.writeLong(f.utcMs); o.writeLong(f.day); o.str(f.zoneId)
+            }
+            is MealEntryDeleteFact -> {
+                o.writeByte(F_MEAL_ENTRY_DELETE); head(o, f)
+                o.str(f.entryUid); o.writeLong(f.utcMs); o.writeLong(f.day); o.str(f.zoneId)
+            }
         }
     }
 
@@ -415,6 +507,21 @@ object SyncCodec {
             F_CARD -> CardAttemptFact(
                 uid, author, epoch, aseq, cardId = i.str(), deck = i.str(), utcMs = i.readLong(), day = i.readLong(),
                 zoneId = i.str(), firstCorrect = i.readBoolean(), paidMs = i.readLong(),
+            )
+            F_PRODUCT -> ProductVersionFact(
+                uid, author, epoch, aseq, productUid = i.str(), utcMs = i.readLong(), day = i.readLong(), zoneId = i.str(),
+                name = i.str(), barcode = i.optStr(), kcal = i.optInt(), proteinDg = i.optInt(), fatDg = i.optInt(),
+                carbsDg = i.optInt(), portionG = i.optInt(),
+            )
+            F_PRODUCT_DELETE -> ProductDeleteFact(
+                uid, author, epoch, aseq, productUid = i.str(), utcMs = i.readLong(), day = i.readLong(), zoneId = i.str(),
+            )
+            F_MEAL_ENTRY -> MealEntryFact(
+                uid, author, epoch, aseq, mealUid = i.str(), versionUid = i.str(), grams = i.optInt(), utcMs = i.readLong(),
+                day = i.readLong(), zoneId = i.str(),
+            )
+            F_MEAL_ENTRY_DELETE -> MealEntryDeleteFact(
+                uid, author, epoch, aseq, entryUid = i.str(), utcMs = i.readLong(), day = i.readLong(), zoneId = i.str(),
             )
             else -> throw SyncProtocolException("Неизвестный вид факта $kind")
         }
