@@ -49,10 +49,10 @@ object RoutineGuides : GuidePack {
 
     private fun lie(
         torso: Float = 270f, thigh: Float = 40f, shin: Float = 150f, farThigh: Float = thigh, farShin: Float = shin,
-        upperArm: Float = 90f, forearm: Float = 90f, head: Float = 272f, hands: Reach? = null, feet: Reach? = null,
+        upperArm: Float = 90f, forearm: Float = 90f, head: Float = 272f, hands: Reach? = null, feet: Reach? = null, farFeet: Reach? = feet,
     ) = side(
         torso = torso, thigh = thigh, shin = shin, farThigh = farThigh, farShin = farShin,
-        upperArm = upperArm, forearm = forearm, head = head, pin = LIE, hands = hands, feet = feet,
+        upperArm = upperArm, forearm = forearm, head = head, pin = LIE, hands = hands, feet = feet, farFeet = farFeet,
     )
 
     private val table = side(torso = 73f, thigh = 180f, shin = 270f, head = 80f, pin = KNEE, hands = HANDS_UNDER)
@@ -162,11 +162,11 @@ object RoutineGuides : GuidePack {
             distance = FLOOR_DIST, camera = SIDE_FLOOR, focus = "Голени на сиденье, дыши спокойно",
             tips = listOf("Стул устойчивый, голени лежат на сиденье", "Колени примерно под прямым углом", "Расслабься, время не оплачивается"),
             mistakes = listOf("Ноги не на стуле или корпус приподнят"),
-            props = GuideProps(mat = true, chair = Chair(0.47f, 0.66f, 0.69f, backLeft = false)), anchor = R_SHOULDER,
+            props = GuideProps(mat = true, chair = Chair(0.42f, 0.66f, 0.678f, backLeft = false)), anchor = R_SHOULDER,
         ),
         reps(
             "elbow_flex", "Сгибание и разгибание локтей", GuideView.FRONT,
-            start = front(), end = front(upperArm = 5f, forearm = 100f),
+            start = front(), end = front(upperArm = 5f, forearm = 160f),
             distance = NEAR_25_3, camera = FRONT_HIGH, focus = "Плечи неподвижны",
             tips = listOf("Локти у корпуса, сгибай и выпрямляй руки", "Внизу руки полностью прямые", SMOOTH),
             mistakes = listOf("Руки не выпрямились до конца или почти не согнулись"),
@@ -216,7 +216,8 @@ object RoutineGuides : GuidePack {
         ),
         reps(
             "heel_slide", "Сгибание ноги лёжа", GuideView.SIDE,
-            start = lie(thigh = 90f, shin = 90f), end = lie(thigh = 40f, shin = 150f, farThigh = 90f, farShin = 90f),
+            start = lie(feet = Reach(0.824f, ANKLE_Y, bend = 0f)),
+            end = lie(feet = Reach(0.659f, ANKLE_Y, bend = 0f), farFeet = Reach(0.824f, ANKLE_Y, bend = 0f)),
             distance = FLOOR_DIST, camera = "$SIDE_FLOOR, рабочая нога ближе", focus = "Пятка скользит к тазу",
             tips = listOf("Рабочая нога ближе к телефону", "Поясница спокойно на полу", SMOOTH),
             mistakes = listOf("Колено почти не согнулось или нога не выпрямилась"),
@@ -226,7 +227,7 @@ object RoutineGuides : GuidePack {
 
     // ---------- Йога ----------
 
-    private val warriorFeet = Pair(Reach(0.225f, ANKLE_Y, bend = 270f), Reach(0.773f, ANKLE_Y, bend = 45f))
+    private val warriorFeet = Pair(Reach(0.23f, ANKLE_Y, bend = 270f), Reach(0.84f, ANKLE_Y, bend = 90f))
 
     private val yoga = listOf(
         hold(
@@ -248,9 +249,9 @@ object RoutineGuides : GuidePack {
         ),
         hold(
             "warrior2", "Воин II", GuideView.FRONT,
-            entry = front(pin = Pin(PELVIS, 0.55f, 0.617f), rightFoot = warriorFeet.first, leftFoot = warriorFeet.second),
+            entry = front(pin = Pin(PELVIS, 0.465f, 0.685f), rightFoot = warriorFeet.first, leftFoot = warriorFeet.second),
             pose = front(
-                upperArm = 90f, forearm = 90f, pin = Pin(PELVIS, 0.55f, 0.625f),
+                upperArm = 90f, forearm = 90f, pin = Pin(PELVIS, 0.465f, 0.685f),
                 rightFoot = warriorFeet.first, leftFoot = warriorFeet.second,
             ),
             distance = NEAR_25_3, camera = FRONT_HIGH, focus = "Переднее колено согнуто, руки в стороны",
@@ -269,7 +270,7 @@ object RoutineGuides : GuidePack {
         hold(
             "puppy", "Вытянутый щенок", GuideView.SIDE,
             entry = table,
-            pose = side(torso = 128f, thigh = 180f, shin = 270f, head = 115f, pin = KNEE, hands = Reach(0.86f, 0.88f, bend = 0f)),
+            pose = side(torso = 138f, thigh = 180f, shin = 270f, head = 110f, pin = KNEE, hands = Reach(0.75f, 0.88f, bend = 0f)),
             distance = FLOOR_DIST, camera = SIDE_FLOOR, focus = "Таз над коленями, руки вперёд",
             tips = listOf("Из стола пройди руками вперёд", "Грудь мягко вниз, без боли в плечах", "Таз остаётся над коленями"),
             mistakes = listOf("Таз ушёл к пяткам — это уже поза ребёнка"),
@@ -278,7 +279,7 @@ object RoutineGuides : GuidePack {
         hold(
             "sphinx", "Сфинкс", GuideView.SIDE,
             entry = side(torso = 88f, thigh = 268f, shin = 270f, upperArm = 92f, forearm = 90f, head = 90f, pin = Pin(PELVIS, 0.45f, 0.855f)),
-            pose = side(torso = 60f, thigh = 268f, shin = 270f, upperArm = 160f, forearm = 90f, head = 70f, pin = Pin(PELVIS, 0.45f, 0.855f)),
+            pose = side(torso = 53f, thigh = 268f, shin = 270f, upperArm = 180f, forearm = 90f, head = 40f, pin = Pin(PELVIS, 0.45f, 0.855f)),
             distance = FLOOR_DIST, camera = SIDE_FLOOR, focus = "Локти под плечами",
             tips = listOf("Лёжа на животе, ноги прямые", "Подъём невысокий, предплечья на полу", "Не прогибай поясницу сильнее"),
             mistakes = listOf("Локти далеко впереди плеч или корпус не поднят"),
@@ -287,7 +288,7 @@ object RoutineGuides : GuidePack {
         hold(
             "child", "Поза ребёнка", GuideView.SIDE,
             entry = side(torso = 73f, thigh = 180f, shin = 270f, head = 80f, pin = Pin(R_KNEE, 0.55f, 0.875f), hands = Reach(0.727f, 0.88f, bend = 0f)),
-            pose = side(torso = 100f, thigh = 115f, shin = 270f, head = 100f, pin = Pin(R_KNEE, 0.55f, 0.875f), hands = Reach(0.86f, 0.88f, bend = 0f)),
+            pose = side(torso = 100f, thigh = 115f, shin = 270f, head = 100f, pin = Pin(R_KNEE, 0.55f, 0.875f), hands = Reach(0.80f, 0.88f, bend = 0f)),
             distance = FLOOR_DIST, camera = SIDE_FLOOR, focus = "Таз к пяткам, руки вперёд",
             tips = listOf("Из стола опусти таз к пяткам", "Лоб к коврику, руки вытянуты вперёд", "Дыши спокойно"),
             mistakes = listOf("Колени или рука не видны камере — время не идёт"),
@@ -316,10 +317,10 @@ object RoutineGuides : GuidePack {
             ),
             pose = side(
                 torso = 62f, thigh = 115f, shin = 130f, farThigh = 180f, farShin = 270f, head = 70f,
-                pin = Pin(L_KNEE, 0.38f, 0.875f), hands = Reach(0.6f, 0.86f, bend = 0f),
+                pin = Pin(L_KNEE, 0.38f, 0.875f), hands = Reach(0.05f, 0.02f, bend = 90f, joint = R_KNEE),
             ),
             distance = FLOOR_DIST, camera = "$SIDE_FLOOR, рабочая сторона ближе", focus = "Колено передней ноги мягкое",
-            tips = listOf("Таз над задним коленом, передняя нога вперёд", "Можно опереться руками на блоки", "Глубину наклона ради зачёта не увеличивай"),
+            tips = listOf("Таз над задним коленом, передняя нога вперёд", "Опрись руками на переднюю ногу или блоки", "Глубину наклона ради зачёта не увеличивай"),
             mistakes = listOf("Передняя нога сильно согнута или таз ушёл вперёд"),
             highlight = setOf(GuideHighlight.LEGS), anchor = L_KNEE,
         ),

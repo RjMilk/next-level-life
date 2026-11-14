@@ -12,6 +12,7 @@ import kotlin.math.sqrt
 object GuideMath {
     private const val EPS = 1e-5f
     private const val TWO_PI = (2 * PI).toFloat()
+    private const val CONTACT_EPS = 1e-4f
 
     /** Кисти и стопы, которые при переходе не должны скользить, если стоят на месте в обоих кадрах. */
     private val PINNABLE = setOf(GuideJoint.R_WRIST, GuideJoint.L_WRIST, GuideJoint.R_ANKLE, GuideJoint.L_ANKLE)
@@ -88,14 +89,20 @@ object GuideMath {
      * поворачивается по кратчайшей дуге и плавно меняет длину (при равных длинах — сохраняет её),
      * поэтому руки и ноги не «складываются» посреди перехода. Кисть или стопа, стоящая в [a] и [b]
      * на одном месте, остаётся на месте: средний сустав (локоть, колено) ставится по двум костям.
+     * Если опоры конфликтуют в промежуточной позе, вторичная опора ограничивается досягаемостью:
+     * приоритет имеют длины костей и основная опора, а не растяжение предплечья или голени.
      */
     fun lerp(a: GuidePose, b: GuidePose, k: Float, root: GuideJoint = GuideJoint.R_ANKLE): GuidePose {
         if (k <= 0f) return a
         if (k >= 1f) return b
         val out = HashMap<GuideJoint, Pt>(GuideJoint.entries.size)
-        out[root] = mix(a[root], b[root], k)
+        // Вис: интерполировать корпус от кисти через свободно вращающийся локоть нельзя —
+        // грудь описывает боковую дугу и перелетает перекладину. Корпус ведёт шея, обе руки
+        // замыкаются на опоры через IK; заданная кисть остаётся основной опорой.
+        val bodyRoot = if (root == GuideJoint.R_WRIST || root == GuideJoint.L_WRIST) GuideJoint.NECK else root
+        out[bodyRoot] = mix(a[bodyRoot], b[bodyRoot], k)
         val parents = HashMap<GuideJoint, GuideJoint>()
-        for ((child, parent) in cachedTree(root)) {
+        for ((child, parent) in cachedTree(bodyRoot)) {
             parents[child] = parent
             val pa = a[parent]
             val pb = b[parent]
@@ -115,17 +122,32 @@ object GuideMath {
             val p = out.getValue(parent)
             out[child] = Pt(p.x + cos(ang) * len, p.y + sin(ang) * len)
         }
+        if (bodyRoot != root) {
+            // При недостижимой основной опоре переносим целый корпус, сохраняя его геометрию.
+            val mid = parents.getValue(root)
+            val top = parents.getValue(mid)
+            val target = mix(a[root], b[root], k)
+            val reached = reachableEnd(out.getValue(top), target, mixLen(a, b, top, mid, k), mixLen(a, b, mid, root, k), out.getValue(root))
+            val shift = Pt(target.x - reached.x, target.y - reached.y)
+            for (j in GuideJoint.entries) {
+                val p = out.getValue(j)
+                out[j] = Pt(p.x + shift.x, p.y + shift.y)
+            }
+        }
         // Неподвижные кисти и стопы: не скользят, локоть/колено — по двум костям.
         for (j in PINNABLE) {
-            if (j == root) continue
+            if (j == bodyRoot) continue
             val pa = a[j]
-            if (abs(pa.x - b[j].x) > EPS || abs(pa.y - b[j].y) > EPS) continue
+            // Округление IK в почти прямой конечности не должно отпускать опору.
+            if (j != root && (abs(pa.x - b[j].x) > CONTACT_EPS || abs(pa.y - b[j].y) > CONTACT_EPS)) continue
             val mid = parents[j] ?: continue
             val top = parents[mid] ?: continue
             val l1 = mixLen(a, b, top, mid, k)
             val l2 = mixLen(a, b, mid, j, k)
-            out[mid] = twoBone(out.getValue(top), pa, l1, l2, out.getValue(mid))
-            out[j] = pa
+            val base = out.getValue(top)
+            val target = reachableEnd(base, mix(pa, b[j], k), l1, l2, out.getValue(j))
+            out[mid] = twoBone(base, target, l1, l2, out.getValue(mid))
+            out[j] = target
         }
         return GuidePose(out)
     }
@@ -138,8 +160,14 @@ object GuideMath {
         val dx = target.x - root.x
         val dy = target.y - root.y
         val d0 = hypot(dx, dy)
-        if (d0 < EPS) return Pt(root.x + l1, root.y)
-        val d = d0.coerceIn(abs(l1 - l2) + EPS, l1 + l2 - EPS)
+        if (d0 < EPS) {
+            val hx = hint.x - root.x
+            val hy = hint.y - root.y
+            val h = hypot(hx, hy)
+            return if (h > EPS) Pt(root.x + hx / h * l1, root.y + hy / h * l1)
+            else Pt(root.x + l1, root.y)
+        }
+        val d = d0.coerceIn(abs(l1 - l2).coerceAtLeast(EPS), (l1 + l2).coerceAtLeast(EPS))
         val ux = dx / d0
         val uy = dy / d0
         val along = (l1 * l1 - l2 * l2 + d * d) / (2 * d)
@@ -151,6 +179,21 @@ object GuideMath {
         val d1 = hypot(p1.x - hint.x, p1.y - hint.y)
         val d2 = hypot(p2.x - hint.x, p2.y - hint.y)
         return if (d1 <= d2) p1 else p2
+    }
+
+    /** Конец цепочки в достижимом кольце: обе кости сохраняют длину даже при конфликте опор. */
+    private fun reachableEnd(root: Pt, target: Pt, l1: Float, l2: Float, hint: Pt): Pt {
+        val dx = target.x - root.x
+        val dy = target.y - root.y
+        val distance = hypot(dx, dy)
+        val reach = distance.coerceIn(abs(l1 - l2), l1 + l2)
+        if (distance > EPS) return Pt(root.x + dx / distance * reach, root.y + dy / distance * reach)
+        if (reach < EPS) return root
+        val hx = hint.x - root.x
+        val hy = hint.y - root.y
+        val h = hypot(hx, hy)
+        return if (h > EPS) Pt(root.x + hx / h * reach, root.y + hy / h * reach)
+        else Pt(root.x + reach, root.y)
     }
 
     private fun mixLen(a: GuidePose, b: GuidePose, from: GuideJoint, to: GuideJoint, k: Float): Float {

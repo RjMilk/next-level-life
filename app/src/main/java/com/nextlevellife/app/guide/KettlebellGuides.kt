@@ -11,16 +11,26 @@ import com.nextlevellife.app.guide.GuideScene.ANKLE_Y
 object KettlebellGuides : GuidePack {
     private val inHands = Bell(BellGrip.HANDS)
 
+    // Рожки перед грудиной; цель поворачивается вместе с корпусом, локти вниз.
+    private fun rackHands(torso: Float): Reach {
+        val a = Math.toRadians(torso.toDouble())
+        return Reach(
+            (0.07 * kotlin.math.cos(a) - 0.015 * kotlin.math.sin(a)).toFloat(),
+            (0.07 * kotlin.math.sin(a) + 0.015 * kotlin.math.cos(a)).toFloat(),
+            bend = 180f, joint = GuideJoint.R_SHOULDER,
+        )
+    }
+
     private val thruster = run {
         val feet = onFloor(0.52f)
-        val rack = side(torso = 0f, upperArm = 160f, forearm = 20f, pin = feet)
+        val rack = side(torso = 0f, pin = feet, hands = rackHands(0f))
         ExerciseGuide(
             exerciseId = "thruster",
             view = GuideView.SIDE,
             frames = listOf(
                 GuideFrame(rack, 900, 500),
                 GuideFrame(
-                    side(torso = 25f, thigh = 95f, shin = 200f, upperArm = 165f, forearm = 25f, head = 15f, pin = feet),
+                    side(torso = 25f, thigh = 90f, shin = 200f, head = 25f, pin = feet, hands = rackHands(25f)),
                     1000, 300,
                 ),
                 GuideFrame(rack, 800, 0),
@@ -49,11 +59,11 @@ object KettlebellGuides : GuidePack {
             view = GuideView.SIDE,
             frames = listOf(
                 GuideFrame(
-                    side(torso = 55f, thigh = 150f, shin = 195f, upperArm = 205f, forearm = 210f, head = 45f, pin = feet),
+                    side(torso = 55f, thigh = 150f, shin = 195f, upperArm = 220f, forearm = 220f, head = 55f, pin = feet),
                     1000, 300,
                 ),
-                GuideFrame(side(torso = 15f, thigh = 175f, shin = 183f, upperArm = 160f, forearm = 150f, pin = feet), 600, 0),
-                GuideFrame(side(torso = 0f, upperArm = 95f, forearm = 95f, pin = feet), 500, 500),
+                GuideFrame(side(torso = 15f, thigh = 175f, shin = 183f, upperArm = 150f, forearm = 150f, pin = feet), 600, 0),
+                GuideFrame(side(torso = 0f, upperArm = 90f, forearm = 90f, pin = feet), 500, 500),
             ),
             props = GuideProps(bell = Bell(BellGrip.HANDS, BellHang.ALONG_FOREARM)),
             highlight = setOf(GuideHighlight.TORSO),
@@ -71,25 +81,25 @@ object KettlebellGuides : GuidePack {
     }
 
     private val sumoPull = run {
-        val rightFoot = Reach(0.37f, ANKLE_Y, bend = 270f)
-        val leftFoot = Reach(0.63f, ANKLE_Y, bend = 90f)
+        val rightFoot = Reach(0.30f, ANKLE_Y, bend = 270f)
+        val leftFoot = Reach(0.70f, ANKLE_Y, bend = 90f)
         ExerciseGuide(
             exerciseId = "sumo_pull",
             view = GuideView.FRONT,
             frames = listOf(
                 GuideFrame(
                     front(
-                        pin = Pin(GuideJoint.PELVIS, 0.5f, 0.6f),
+                        pin = Pin(GuideJoint.PELVIS, 0.5f, 0.61f),
                         rightFoot = rightFoot, leftFoot = leftFoot,
-                        rightHand = Reach(0.49f, 0.665f, bend = 270f), leftHand = Reach(0.51f, 0.665f, bend = 90f),
+                        rightHand = Reach(0.49f, 0.675f, bend = 270f), leftHand = Reach(0.51f, 0.675f, bend = 90f),
                     ),
                     1100, 500,
                 ),
                 GuideFrame(
                     front(
-                        pin = Pin(GuideJoint.PELVIS, 0.5f, 0.5f),
+                        pin = Pin(GuideJoint.PELVIS, 0.5f, 0.525f),
                         rightFoot = rightFoot, leftFoot = leftFoot,
-                        rightHand = Reach(0.485f, 0.3f, bend = 300f), leftHand = Reach(0.515f, 0.3f, bend = 60f),
+                        rightHand = Reach(0.485f, 0.275f, bend = 270f), leftHand = Reach(0.515f, 0.275f, bend = 90f),
                     ),
                     1100, 500,
                 ),
@@ -100,7 +110,7 @@ object KettlebellGuides : GuidePack {
             distance = "2–3 м",
             angle = "спереди или в пол-оборота",
             camera = "В кадре обе руки, таз и стопы",
-            focus = "Локти идут вверх",
+            focus = "Локти в стороны и выше кистей",
             tips = listOf(
                 "Широкая стойка, начни с опущенными руками: гиря ниже таза",
                 "Вставая, тяни гирю к подбородку, локти выше кистей",
@@ -119,14 +129,17 @@ object KettlebellGuides : GuidePack {
                 GuideFrame(
                     side(
                         torso = 72f, thigh = 165f, shin = 190f, upperArm = 180f, forearm = 180f,
-                        farUpperArm = 200f, farForearm = 200f, head = 78f, pin = feet,
+                        head = 72f, pin = feet,
+                        farHands = Reach(-0.005f, -0.025f, bend = 270f, joint = GuideJoint.L_KNEE),
                     ),
                     1100, 500,
                 ),
                 GuideFrame(
                     side(
-                        torso = 72f, thigh = 165f, shin = 190f, upperArm = 265f, forearm = 185f,
-                        farUpperArm = 200f, farForearm = 200f, head = 78f, pin = feet,
+                        torso = 72f, thigh = 165f, shin = 190f,
+                        hands = Reach(0.065f, 0.015f, bend = 270f, joint = GuideJoint.PELVIS),
+                        head = 72f, pin = feet,
+                        farHands = Reach(-0.005f, -0.025f, bend = 270f, joint = GuideJoint.L_KNEE),
                     ),
                     900, 500,
                 ),
@@ -154,7 +167,7 @@ object KettlebellGuides : GuidePack {
             frames = listOf(
                 GuideFrame(side(torso = 0f, upperArm = 180f, forearm = 178f, pin = feet), 1100, 500),
                 GuideFrame(
-                    side(torso = 75f, thigh = 130f, shin = 195f, upperArm = 180f, forearm = 180f, head = 70f, pin = feet),
+                    side(torso = 75f, thigh = 130f, shin = 195f, upperArm = 180f, forearm = 180f, head = 75f, pin = feet),
                     1100, 400,
                 ),
             ),
@@ -179,9 +192,9 @@ object KettlebellGuides : GuidePack {
             exerciseId = "goblet_squat",
             view = GuideView.SIDE,
             frames = listOf(
-                GuideFrame(side(torso = 0f, upperArm = 160f, forearm = 20f, pin = feet), 1100, 600),
+                GuideFrame(side(torso = 0f, pin = feet, hands = rackHands(0f)), 1100, 600),
                 GuideFrame(
-                    side(torso = 25f, thigh = 95f, shin = 200f, upperArm = 165f, forearm = 25f, head = 15f, pin = feet),
+                    side(torso = 25f, thigh = 90f, shin = 200f, head = 25f, pin = feet, hands = rackHands(25f)),
                     1100, 500,
                 ),
             ),
@@ -205,13 +218,13 @@ object KettlebellGuides : GuidePack {
 
     /** Жим одной рукой: рисуется правой (слева на экране), считается любая рука. */
     private val press = run {
-        val rack = front(upperArm = -5f, forearm = 175f, leftUpperArm = 8f, leftForearm = 4f)
+        val rack = front(rightHand = Reach(-0.005f, 0.005f, bend = 180f, joint = GuideJoint.R_SHOULDER))
         ExerciseGuide(
             exerciseId = "press",
             view = GuideView.FRONT,
             frames = listOf(
                 GuideFrame(rack, 1100, 600),
-                GuideFrame(front(upperArm = 178f, forearm = 180f, leftUpperArm = 8f, leftForearm = 4f), 1000, 500),
+                GuideFrame(front(upperArm = 180f, forearm = 180f, leftUpperArm = 8f, leftForearm = 4f), 1000, 500),
             ),
             props = GuideProps(bell = Bell(BellGrip.RIGHT_HAND)),
             highlight = setOf(GuideHighlight.WORKING_ARM),
@@ -238,11 +251,11 @@ object KettlebellGuides : GuidePack {
             exerciseId = "reverse_lunge",
             view = GuideView.SIDE,
             frames = listOf(
-                GuideFrame(side(torso = 0f, upperArm = 160f, forearm = 20f, pin = front), 1200, 600),
+                GuideFrame(side(torso = 0f, pin = front, hands = rackHands(0f)), 1200, 600),
                 GuideFrame(
                     side(
                         torso = 3f, thigh = 95f, shin = 180f, farThigh = 195f, farShin = 275f,
-                        upperArm = 162f, forearm = 22f, pin = front,
+                        pin = front, hands = rackHands(3f),
                     ),
                     1200, 500,
                 ),
@@ -290,14 +303,14 @@ object KettlebellGuides : GuidePack {
     /** Мост: плечи и стопы на месте, таз поднимается. Опора — плечо на полу. */
     private val bridge = run {
         val shoulder = Pin(GuideJoint.R_SHOULDER, 0.3f, 0.858f)
-        val feet = Reach(0.705f, ANKLE_Y, bend = 0f)
+        val feet = Reach(0.645f, ANKLE_Y, bend = 0f)
         val hands = Reach(0f, -0.065f, bend = 180f, joint = GuideJoint.PELVIS)
         ExerciseGuide(
             exerciseId = "glute_bridge",
             view = GuideView.SIDE,
             frames = listOf(
                 GuideFrame(side(torso = 270f, head = 272f, pin = shoulder, hands = hands, feet = feet), 1100, 600),
-                GuideFrame(side(torso = 235f, head = 285f, pin = shoulder, hands = hands, feet = feet), 1000, 600),
+                GuideFrame(side(torso = 243f, head = 285f, pin = shoulder, hands = hands, feet = feet), 1000, 600),
             ),
             props = GuideProps(bell = Bell(BellGrip.PELVIS), mat = true),
             highlight = setOf(GuideHighlight.TORSO),

@@ -89,6 +89,7 @@ object GuidePoses {
         hands: Reach? = null,
         farHands: Reach? = hands,
         feet: Reach? = null,
+        farFeet: Reach? = feet,
     ): GuidePose {
         val p = HashMap<GuideJoint, Pt>()
         val pelvis = Pt(0f, 0f)
@@ -113,8 +114,8 @@ object GuidePoses {
         farHands?.let { reach(p, L_SHOULDER, L_ELBOW, L_WRIST, UPPER_ARM, FOREARM, it) }
         feet?.let {
             reach(p, R_HIP, R_KNEE, R_ANKLE, THIGH, SHIN, it)
-            reach(p, L_HIP, L_KNEE, L_ANKLE, THIGH, SHIN, it)
         }
+        farFeet?.let { reach(p, L_HIP, L_KNEE, L_ANKLE, THIGH, SHIN, it) }
         return GuidePose(p)
     }
 

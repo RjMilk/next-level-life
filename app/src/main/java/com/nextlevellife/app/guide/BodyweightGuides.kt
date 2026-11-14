@@ -29,7 +29,7 @@ object BodyweightGuides : GuidePack {
             tips = listOf(
                 "Опустись, пока локти не согнутся сильнее прямого угла",
                 "Вернись на полностью выпрямленные руки",
-                "Корпус — одна прямая от плеч до стоп",
+                "Корпус — одна прямая, локти примерно под 45° к нему",
             ),
             mistakes = listOf("Полуповтор: локти мало согнулись или руки не выпрямились до конца"),
         )
@@ -43,7 +43,7 @@ object BodyweightGuides : GuidePack {
             frames = listOf(
                 GuideFrame(side(torso = 0f, upperArm = 176f, forearm = 172f, pin = feet), 1100, 600),
                 GuideFrame(
-                    side(torso = 40f, thigh = 95f, shin = 200f, upperArm = 88f, forearm = 88f, head = 25f, pin = feet),
+                    side(torso = 40f, thigh = 90f, shin = 200f, upperArm = 88f, forearm = 88f, head = 25f, pin = feet),
                     1100, 500,
                 ),
             ),
@@ -68,11 +68,11 @@ object BodyweightGuides : GuidePack {
             view = GuideView.SIDE,
             frames = listOf(
                 GuideFrame(
-                    side(torso = 270f, thigh = 40f, shin = 150f, upperArm = 65f, forearm = 290f, head = 276f, pin = feet),
+                    side(torso = 270f, thigh = 40f, shin = 150f, head = 270f, pin = feet, hands = Reach(0.075f, -0.01f, bend = 0f, joint = GuideJoint.R_SHOULDER)),
                     1000, 600,
                 ),
                 GuideFrame(
-                    side(torso = 335f, thigh = 40f, shin = 150f, upperArm = 130f, forearm = 355f, head = 345f, pin = feet),
+                    side(torso = 335f, thigh = 40f, shin = 150f, head = 335f, pin = feet, hands = Reach(0.03f, 0.07f, bend = 90f, joint = GuideJoint.R_SHOULDER)),
                     1000, 500,
                 ),
             ),
@@ -100,7 +100,7 @@ object BodyweightGuides : GuidePack {
             view = GuideView.FRONT,
             frames = listOf(
                 GuideFrame(
-                    front(thigh = 3f, shin = 1f, pin = Pin(GuideJoint.PELVIS, 0.5f, 0.54f), rightHand = rightGrip, leftHand = leftGrip),
+                    front(thigh = 3f, shin = 1f, pin = Pin(GuideJoint.PELVIS, 0.5f, 0.543f), rightHand = rightGrip, leftHand = leftGrip),
                     1300, 600,
                 ),
                 GuideFrame(
