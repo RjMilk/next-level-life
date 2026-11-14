@@ -42,7 +42,8 @@ class DiarySyncStore : SyncStore {
             zoneId = time.zone.id,
             spending = settled?.spending ?: true,
             walletMs = wallet,
-            shareLeftMs = Ledger.shareLeftMs(time.day),
+            // Неоплаченный расход (долг) ещё ляжет в эти сутки: он уже израсходовал часть доли.
+            shareLeftMs = Ledger.shareLeftMs(time.day)?.let { it - (settled?.unpaidMs ?: 0L) },
             healthConnected = ActivitySync.state.value.access?.availability == HealthAvailability.CONNECTED,
         )
     }
@@ -170,8 +171,8 @@ class DiarySyncStore : SyncStore {
             val maxByGroup = HashMap<Pair<String, String>, Long>()
             for (f in rows) {
                 maxByGroup[f.author to f.epoch] = maxOf(maxByGroup[f.author to f.epoch] ?: 0L, f.aseq)
-                if (!SyncRules.acceptFact(f, me, myEpoch)) {
-                    Log.w(TAG, "Отклонён факт ${f.uid}: «свой» текущего поколения с другого телефона")
+                if (!SyncRules.acceptFact(f, me, myEpoch, peerId)) {
+                    Log.w(TAG, "Отклонён факт ${f.uid} автора ${f.author}")
                     continue
                 }
                 if (insertFact(db, f)) days += f.day
@@ -277,6 +278,8 @@ class DiarySyncStore : SyncStore {
     override fun ensureActivitySource(peerId: String, myHealth: Boolean, peerHealth: Boolean) =
         SharedSettings.ensureActivitySource(peerId, myHealth, peerHealth)
 
+    override fun peerShareLeftMs(peerId: String): Long? = Ledger.peerShareLeftMs(TrustedClock.today())
+
     override fun peerWalletMs(peerId: String): Long = synchronized(Diary) {
         Diary.query("SELECT COALESCE(SUM(delta_ms), 0) FROM peer_ops WHERE device_id = ?", peerId) { it.getLong(0) }.firstOrNull() ?: 0L
     }
@@ -289,7 +292,9 @@ class DiarySyncStore : SyncStore {
     override fun giveLimit(peerId: String, day: Long, ms: Long): Long = Diary.write { db ->
         val time = TrustedClock.snapshot()
         if (time.day != day || ms <= 0L) return@write 0L
-        val share = Ledger.shareLeftMs(day) ?: return@write 0L
+        if (settleFailed) return@write 0L
+        // Долг ещё не списан, но доля под него уже израсходована: отдаётся только то, что останется после него.
+        val share = (Ledger.shareLeftMs(day) ?: return@write 0L) - reserveMs
         val amount = minOf(ms, share)
         if (amount <= 0L) return@write 0L
         db.insertOrThrow("limit_moves", null, ContentValues().apply {

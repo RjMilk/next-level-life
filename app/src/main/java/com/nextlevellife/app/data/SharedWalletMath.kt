@@ -28,14 +28,24 @@ object SharedWalletMath {
      * Сколько ещё этот телефон может потратить в учётные сутки по своей доле лимита; null — лимита нет ([limitMs] ≤ 0).
      * [peer] = null — пары нет: весь лимит. Может быть отрицательной (потрачено больше доли), блокировка тогда
      * видит ноль. [incomingMs] — получено переносами доли за эти сутки, [outgoingMs] — отдано, [ownSpentMs] — свой расход.
+     *
+     * Связанный телефон: доля = min(половина + полученное − отданное − свой расход, лимит − свой расход − расход
+     * второго телефона по копии [peerSpentMs]). Второе ограничение срабатывает, только когда второй телефон потратил
+     * больше своей доли — в сутки сопряжения, когда он тратил до пары без ограничения половиной: так израсходованный
+     * до пары лимит не выдаётся снова (иначе 120 из 120 у одного и 0 у другого дали бы ещё 60). В обычные сутки
+     * (переносы дошли) первое значение не больше второго. [peerSpentMs] = null — копии журнала второго телефона ещё
+     * нет (после сопряжения не было ни одного обмена): его расход неизвестен, доля не больше нуля до первого обмена.
      */
     fun shareLeftMs(
         limitMs: Long, me: String, peer: String?, incomingMs: Long, outgoingMs: Long, ownSpentMs: Long,
+        peerSpentMs: Long? = 0L,
     ): Long? {
         if (limitMs <= 0L) return null
         val spent = ownSpentMs.coerceAtLeast(0L)
         if (peer == null) return limitMs - spent
-        return halfLimitMs(limitMs, me, peer) + incomingMs.coerceAtLeast(0L) - outgoingMs.coerceAtLeast(0L) - spent
+        val share = halfLimitMs(limitMs, me, peer) + incomingMs.coerceAtLeast(0L) - outgoingMs.coerceAtLeast(0L) - spent
+        if (peerSpentMs == null) return minOf(share, 0L)
+        return minOf(share, limitMs - spent - peerSpentMs.coerceAtLeast(0L))
     }
 
     /**
@@ -147,6 +157,14 @@ object SharedWalletMath {
      * Источник активности по умолчанию при появлении пары: телефон с доступом к Health Connect; у обоих или
      * ни у кого — с меньшим device_id. Одинаков на обоих телефонах.
      */
+    /**
+     * Начисляет ли телефон [me] за активность: без пары ([peer] = null) — да; в паре — только выбранный источник
+     * [source], и только если здешняя смена источника уже подтверждена обменом ([pendingChange] = false). Источник
+     * не выбран — никто: два телефона никогда не начисляют за одни шаги одновременно.
+     */
+    fun isActivitySource(me: String, peer: String?, source: String?, pendingChange: Boolean): Boolean =
+        peer == null || (source == me && !pendingChange)
+
     fun defaultActivitySource(me: String, meHealth: Boolean, peer: String, peerHealth: Boolean): String = when {
         meHealth && !peerHealth -> me
         peerHealth && !meHealth -> peer

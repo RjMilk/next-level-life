@@ -171,6 +171,84 @@ class SharedWalletMathTest {
         }
     }
 
+    /**
+     * Свойство для суток сопряжения: телефоны тратили до пары без ограничения половиной ([sA0], [sB0] ≤ лимита),
+     * дальше — по доле с ограничением расходом второго телефона по копии (копия обновляется только обменом, до первого
+     * обмена её нет). Общий расход за сутки не больше max(лимит, потраченного до пары).
+     */
+    @Test
+    fun pairingDayNeverReissuesSpentLimit() {
+        val rnd = Random(7)
+        repeat(400) {
+            val limit = rnd.nextInt(1, 241) * min
+            val ids = arrayOf(a, b)
+            val spent = longArrayOf(rnd.nextLong(0, limit + 1), rnd.nextLong(0, limit + 1))
+            val before = spent.sum()
+            val incoming = longArrayOf(0, 0)
+            val outgoing = longArrayOf(0, 0)
+            val copy = arrayOf<Long?>(null, null) // расход второго телефона по копии у телефона i
+            val inFlight = ArrayList<Pair<Int, Long>>()
+            fun share(i: Int) = SharedWalletMath.shareLeftMs(limit, ids[i], ids[1 - i], incoming[i], outgoing[i], spent[i], copy[i])!!
+            repeat(50) {
+                val i = rnd.nextInt(2)
+                when (rnd.nextInt(3)) {
+                    0 -> spent[i] += minOf(rnd.nextLong(0, 40 * min), share(i)).coerceAtLeast(0L)
+                    1 -> { // обмен: копии обновляются, затем переносы «от себя»
+                        copy[0] = spent[1]
+                        copy[1] = spent[0]
+                        val flags = booleanArrayOf(rnd.nextBoolean(), rnd.nextBoolean())
+                        for (me in 0..1) {
+                            val g = SharedWalletMath.plan(
+                                Side(flags[me], 0, share(me), 1),
+                                Side(flags[1 - me], 0, share(1 - me), 1),
+                            )
+                            val l = minOf(g.limitMs, share(me)).coerceAtLeast(0L)
+                            outgoing[me] += l
+                            inFlight += (1 - me) to l
+                        }
+                        val (arrived, still) = inFlight.partition { rnd.nextBoolean() }
+                        inFlight.clear()
+                        inFlight.addAll(still)
+                        for ((to, l) in arrived) incoming[to] += l
+                    }
+                    else -> {
+                        for ((to, l) in inFlight) incoming[to] += l
+                        inFlight.clear()
+                    }
+                }
+                assertTrue("расход ${spent.sum()} при лимите $limit и ${before} до пары", spent.sum() <= maxOf(limit, before))
+            }
+        }
+    }
+
+    @Test
+    fun pairingDayExample() {
+        // A потратил 120 из 120 до пары, B — 0; после первого обмена вместе больше выдать нечего.
+        val l = 120 * min
+        assertEquals(-60 * min, SharedWalletMath.shareLeftMs(l, a, b, 0, 0, 120 * min, 0))
+        assertEquals(0L, SharedWalletMath.shareLeftMs(l, b, a, 0, 0, 0, 120 * min))
+        // До первого обмена (копии нет) — не больше нуля.
+        assertEquals(0L, SharedWalletMath.shareLeftMs(l, b, a, 0, 0, 0, null))
+        assertEquals(-10 * min, SharedWalletMath.shareLeftMs(l, b, a, 0, 0, 70 * min, null))
+        // Обычные сутки: второе ограничение не мешает.
+        assertEquals(40 * min, SharedWalletMath.shareLeftMs(l, a, b, 0, 0, 20 * min, 30 * min))
+    }
+
+    @Test
+    fun activitySourceNeverTwoAtOnce() {
+        assertTrue(SharedWalletMath.isActivitySource(a, null, null, false))
+        assertFalse(SharedWalletMath.isActivitySource(a, b, null, false))
+        assertTrue(SharedWalletMath.isActivitySource(a, b, a, false))
+        assertFalse(SharedWalletMath.isActivitySource(a, b, a, true))
+        assertFalse(SharedWalletMath.isActivitySource(a, b, b, false))
+        // Смена источника с A на B на телефоне B: B ждёт подтверждения, A ещё не знает — источник ровно один (A).
+        val onA = SharedWalletMath.isActivitySource(a, b, a, false)
+        val onB = SharedWalletMath.isActivitySource(b, a, b, true)
+        assertTrue(onA && !onB)
+        // Смена на телефоне A (с A на B): A ждёт, B ещё видит A — источника нет ни у кого, но не два.
+        assertFalse(SharedWalletMath.isActivitySource(a, b, b, true) && SharedWalletMath.isActivitySource(b, a, a, false))
+    }
+
     // ---------- Общие настройки ----------
 
     @Test

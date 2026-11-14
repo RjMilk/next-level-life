@@ -249,25 +249,17 @@ object LedgerMath {
     /**
      * Перенос расхода при восстановлении копии. [current] — строки расхода текущего журнала (до подмены),
      * [backup] — расход по ключам в журнале копии. Переносится всё, чего в копии нет или меньше
-     * (расход после копии, в том числе прежние переносы), по суткам и приложениям. Всего — не больше
-     * баланса копии [restoredBalanceMs] (баланс не уходит ниже нуля); не хватает — сначала поздние сутки
-     * (сегодняшний расход важнее для лимита). Результат — по возрастанию суток, затем приложения.
+     * (расход после копии, в том числе прежние переносы), по суткам и приложениям — целиком, без ограничения
+     * балансом копии: баланс может уйти в минус (иначе «копия → получил перенос со второго телефона → потратил →
+     * восстановил» дало бы потратить те же минуты ещё раз). Результат — по возрастанию суток, затем приложения.
      */
-    fun restoreCarry(current: List<SpentRow>, backup: Map<String, Long>, restoredBalanceMs: Long): List<CarryPart> {
+    fun restoreCarry(current: List<SpentRow>, backup: Map<String, Long>): List<CarryPart> {
         val acc = LinkedHashMap<Pair<Long, String>, Long>()
         for (r in current) {
             val diff = r.spentMs - (backup[r.key] ?: 0L).coerceAtLeast(0L)
             if (diff > 0L) acc[r.day to r.packageName] = (acc[r.day to r.packageName] ?: 0L) + diff
         }
-        var left = restoredBalanceMs.coerceAtLeast(0L)
-        val out = ArrayList<CarryPart>()
-        val latestFirst = acc.entries.sortedWith(compareBy({ -it.key.first }, { it.key.second }))
-        for ((k, ms) in latestFirst) {
-            val c = minOf(ms, left)
-            if (c <= 0L) break
-            out += CarryPart(k.first, k.second, c)
-            left -= c
-        }
-        return out.sortedWith(compareBy({ it.day }, { it.packageName }))
+        return acc.map { (k, ms) -> CarryPart(k.first, k.second, ms) }
+            .sortedWith(compareBy({ it.day }, { it.packageName }))
     }
 }

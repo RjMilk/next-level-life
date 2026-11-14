@@ -294,8 +294,9 @@ object Ledger {
     /**
      * Дописывает в базу копии [db] (ещё не установленную) перенос расхода: всё, что потрачено в текущем
      * журнале [current] и чего нет в журнале копии ([LedgerMath.restoreCarry]), — операциями
-     * [OpKind.RESTORE_CARRY] по своим суткам и приложениям, не больше баланса копии. Account меняется
-     * той же транзакцией. Возвращает сколько перенесено (мс).
+     * [OpKind.RESTORE_CARRY] по своим суткам и приложениям, целиком (баланс может уйти в минус). Переносы со вторым
+     * телефоном ([transfers]), которых нет в копии, возвращаются той же операцией. Account меняется
+     * той же транзакцией. Возвращает сколько перенесено расхода и исходящих переносов (мс).
      */
     internal fun appendRestoreCarry(
         db: SQLiteDatabase, current: List<SpentRow>, deviceId: String, zone: ZoneId, nowMs: Long,
@@ -305,14 +306,18 @@ object Ledger {
         db.rawQuery("SELECT idempotency_key, -delta_ms FROM balance_ops WHERE kind IN ($SPENDING_KINDS_SQL)", null).use { c ->
             while (c.moveToNext()) backupSpent[c.getString(0)] = c.getLong(1)
         }
-        // Исходящие переносы, которых нет в копии: второй телефон их уже получил (или получит), поэтому они
-        // возвращаются в журнал как есть — та же операция (id и ключ), без ограничения балансом: иначе
-        // восстановление вернуло бы отданные минуты. Входящий перенос второй телефон по тому же id не повторит.
+        // Переносы, которых нет в копии, возвращаются в журнал как есть — та же операция (id и ключ), без ограничения
+        // балансом. Исходящие: второй телефон их уже получил (или получит) — иначе восстановление вернуло бы отданные
+        // минуты. Входящие: без своего ключа transfer_in:<id> телефон принял бы тот же исходящий второго телефона ещё
+        // раз и потратил бы те же минуты дважды.
         val backupKeys = HashSet<String>()
-        db.rawQuery("SELECT idempotency_key FROM balance_ops WHERE kind = ?", arrayOf(OpKind.TRANSFER_OUT.name)).use { c ->
+        db.rawQuery(
+            "SELECT idempotency_key FROM balance_ops WHERE kind IN (?, ?)",
+            arrayOf(OpKind.TRANSFER_OUT.name, OpKind.TRANSFER_IN.name),
+        ).use { c ->
             while (c.moveToNext()) backupKeys += c.getString(0)
         }
-        val missingTransfers = transfers.filter { it.kind == OpKind.TRANSFER_OUT && it.idempotencyKey !in backupKeys }
+        val missingTransfers = transfers.filter { it.kind in OpKind.TRANSFERS && it.idempotencyKey !in backupKeys }
         var carriedTransfers = 0L
         if (missingTransfers.isNotEmpty()) {
             db.beginTransaction()
@@ -339,14 +344,14 @@ object Ledger {
                     db.insertWithOnConflict("balance_ops", null, values, SQLiteDatabase.CONFLICT_IGNORE)
                         .takeIf { it != -1L } ?: continue
                     addToAccount(db, t.deltaMs, 0L, nowMs)
-                    carriedTransfers += -t.deltaMs
+                    if (t.deltaMs < 0L) carriedTransfers += -t.deltaMs
                 }
                 db.setTransactionSuccessful()
             } finally {
                 db.endTransaction()
             }
         }
-        val parts = LedgerMath.restoreCarry(current, backupSpent, readAccount(db).first)
+        val parts = LedgerMath.restoreCarry(current, backupSpent)
         if (parts.isEmpty()) return carriedTransfers
         val restoreId = UUID.randomUUID().toString()
         db.beginTransaction()
@@ -382,9 +387,29 @@ object Ledger {
         return carriedTransfers + parts.sumOf { it.ms }
     }
 
-    /** Исходящие переносы текущего журнала — для переноса при восстановлении копии. */
+    /** Переносы текущего журнала (исходящие и входящие) — для переноса при восстановлении копии. */
     internal fun transfersForCarry(): List<BalanceOp> = synchronized(Diary) {
-        Diary.query("SELECT $OP_COLS FROM balance_ops WHERE kind = ?", OpKind.TRANSFER_OUT.name) { it.toOp() }
+        Diary.query(
+            "SELECT $OP_COLS FROM balance_ops WHERE kind IN (?, ?)", OpKind.TRANSFER_OUT.name, OpKind.TRANSFER_IN.name,
+        ) { it.toOp() }
+    }
+
+    /** Есть ли копия журнала второго телефона [peer] (был хоть один принятый пакет его операций). */
+    private fun hasPeerCopy(peer: String): Boolean =
+        Diary.query("SELECT 1 FROM sync_cursors WHERE log = 'ops' AND author = ? LIMIT 1", peer) { true }.isNotEmpty()
+
+    /** Есть ли операция с ключом [key] в копии журнала второго телефона (идемпотентность общих начислений). */
+    fun peerHasKey(key: String): Boolean = synchronized(Diary) {
+        Diary.query("SELECT 1 FROM peer_ops WHERE idempotency_key = ? LIMIT 1", key) { true }.isNotEmpty()
+    }
+
+    /** Сколько начислено за шаги и бег за учётные сутки [day] на обоих телефонах (свой журнал и копия второго). */
+    fun stepsPaidBothMs(day: Long): Long = synchronized(Diary) {
+        Diary.query(
+            "SELECT (SELECT COALESCE(SUM(delta_ms), 0) FROM balance_ops WHERE kind = ? AND source_id = ?) + " +
+                "(SELECT COALESCE(SUM(delta_ms), 0) FROM peer_ops WHERE kind = ? AND source_id = ?)",
+            OpKind.STEPS_REWARD.name, day.toString(), OpKind.STEPS_REWARD.name, day.toString(),
+        ) { it.getLong(0) }.firstOrNull() ?: 0L
     }
 
     // ---------- Синхронизация ----------
@@ -516,7 +541,7 @@ object Ledger {
         val (mineIn, mineOut) = limitMoves(day)
         return SharedWalletMath.shareLeftMs(
             limitMs = limitMin * 60_000L, me = peer, peer = deviceId(),
-            incomingMs = mineOut, outgoingMs = mineIn, ownSpentMs = peerSpentMs(day),
+            incomingMs = mineOut, outgoingMs = mineIn, ownSpentMs = peerSpentMs(day), peerSpentMs = ownSpentMs(day),
         )
     }
 
@@ -527,9 +552,11 @@ object Ledger {
     fun shareLeftMs(day: Long, limitMin: Int = Settings.dailyLimitMin): Long? {
         val peer = peerId()
         val (incoming, outgoing) = if (peer == null) 0L to 0L else limitMoves(day)
+        // Расход второго телефона за сутки по копии; копии ещё нет (не было обмена после сопряжения) — null.
+        val peerSpent = if (peer == null) 0L else synchronized(Diary) { if (hasPeerCopy(peer)) peerSpentMs(day) else null }
         return SharedWalletMath.shareLeftMs(
             limitMs = limitMin * 60_000L, me = deviceId(), peer = peer,
-            incomingMs = incoming, outgoingMs = outgoing, ownSpentMs = ownSpentMs(day),
+            incomingMs = incoming, outgoingMs = outgoing, ownSpentMs = ownSpentMs(day), peerSpentMs = peerSpent,
         )
     }
 

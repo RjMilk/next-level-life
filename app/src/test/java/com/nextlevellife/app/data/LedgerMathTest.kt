@@ -218,23 +218,21 @@ class LedgerMathTest {
             SpentRow("usage:t:0", d14, "app.b", 45_000),
             SpentRow("restore_carry:r:$d14:app.b", d14, "app.b", 10_000), // перенос прошлого восстановления тоже переносится
         )
-        val carry = LedgerMath.restoreCarry(current, backup, restoredBalanceMs = 10 * min)
+        val carry = LedgerMath.restoreCarry(current, backup)
         assertEquals(listOf(CarryPart(d13, "app.a", 70_000), CarryPart(d14, "app.b", 55_000)), carry)
 
         // Расход после копии весь в копии (ничего не тратили) — переносить нечего.
-        assertTrue(LedgerMath.restoreCarry(current.take(1), backup, 10 * min).isEmpty())
+        assertTrue(LedgerMath.restoreCarry(current.take(1), backup).isEmpty())
     }
 
     @Test
-    fun restoreCarryNeverTakesBalanceBelowZeroAndPrefersLatestDays() {
+    fun restoreCarryIsNotCappedByBalance() {
         val d13 = day(2026, 11, 13)
         val d14 = day(2026, 11, 14)
         val current = listOf(SpentRow("usage:a:0", d13, "x", 60_000), SpentRow("usage:b:0", d14, "y", 40_000))
-        // В копии баланс 50 с: сегодняшние 40 с — целиком, из вчерашних — остаток 10 с.
-        assertEquals(listOf(CarryPart(d13, "x", 10_000), CarryPart(d14, "y", 40_000)),
-            LedgerMath.restoreCarry(current, emptyMap(), restoredBalanceMs = 50_000))
-        assertTrue(LedgerMath.restoreCarry(current, emptyMap(), restoredBalanceMs = 0).isEmpty())
-        assertTrue(LedgerMath.restoreCarry(current, emptyMap(), restoredBalanceMs = -5).isEmpty())
+        // Переносится весь расход после копии: баланс восстановленного журнала может уйти в минус.
+        assertEquals(listOf(CarryPart(d13, "x", 60_000), CarryPart(d14, "y", 40_000)),
+            LedgerMath.restoreCarry(current, emptyMap()))
     }
 
     @Test

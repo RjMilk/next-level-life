@@ -90,13 +90,66 @@ object SharedSettings {
     fun activitySource(): String? = value(ACTIVITY_SOURCE)
 
     /**
-     * Этот телефон читает Health Connect и оплачивает активность: без пары — да; в паре — если он выбран источником
-     * (пока не выбран — да, выбор делает первый обмен).
+     * Этот телефон читает Health Connect и оплачивает активность: без пары — да; в паре — только если он выбран
+     * источником, и выбор подтверждён обменом. Пока источник не выбран (первого обмена после сопряжения не было) или
+     * смена источника, сделанная здесь, ещё не дошла до второго телефона ([changeActivitySource]) — нет: так два
+     * телефона никогда не считают себя источником одновременно (прежний перестаёт, только увидев новое значение,
+     * новый начинает только после удачного обмена). Звать внутри транзакции начисления.
      */
     fun isActivitySource(): Boolean {
-        if (Ledger.peerId() == null) return true
-        val src = activitySource() ?: return true
-        return src == Ledger.deviceId()
+        val peer = Ledger.peerId() ?: return true
+        val pending = runCatching { Diary.metaGet(KEY_SOURCE_PENDING) }.getOrElse { "?" } != null
+        return SharedWalletMath.isActivitySource(Ledger.deviceId(), peer, activitySource(), pending)
+    }
+
+    /** meta: смена источника активности, сделанная здесь и ещё не подтверждённая обменом. */
+    private const val KEY_SOURCE_PENDING = "activity_source_pending"
+
+    /** Пользователь выбрал источник активности: общая настройка и отметка «ждёт подтверждения» — одной транзакцией. */
+    fun changeActivitySource(deviceId: String) {
+        try {
+            Diary.write { db ->
+                put(db, SharedWalletMath.Setting(ACTIVITY_SOURCE, deviceId, SharedWalletMath.nextVersion(rows(db).values, ACTIVITY_SOURCE), Ledger.deviceId()))
+                Diary.metaPut(KEY_SOURCE_PENDING, deviceId)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось сменить источник активности", e)
+        }
+    }
+
+    /** Обмен прошёл: второй телефон видел здешние настройки — смена источника подтверждена. */
+    fun confirmAfterSync() {
+        try {
+            Diary.write { Diary.metaDelete(KEY_SOURCE_PENDING) }
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось подтвердить смену источника", e)
+        }
+    }
+
+    /**
+     * Записать действующие значения общих настроек в prefs и meta, если они там другие (при запуске и после слияния):
+     * строка shared_settings могла записаться, а prefs — нет (процесс остановился между записями).
+     */
+    fun applyAll() {
+        val rows = try {
+            Diary.write { db -> rows(db) }
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось прочитать общие настройки", e)
+            return
+        }
+        var applied = false
+        for (s in rows.values) {
+            val current = currentValue(s.key)
+            val differs = when (s.key) {
+                in SharedWalletMath.MIN_KEYS -> {
+                    val v = s.value.toLongOrNull()
+                    v != null && (current?.toLongOrNull()?.let { v < it } ?: true)
+                }
+                else -> current != null && current != s.value
+            }
+            if (differs && apply(s.key, s.value)) applied = true
+        }
+        if (applied) Store.notifyChanged()
     }
 
     /** Локальное изменение (сеттер настроек): версия больше всех известных, автор — этот телефон. */
@@ -128,11 +181,8 @@ object SharedSettings {
         val changedRows = merged.values.filter { localByKey[it.key] != it }
         if (changedRows.isEmpty()) return false
         Diary.write { db -> for (s in changedRows) put(db, s) }
-        var applied = false
-        for (s in changedRows) {
-            if (currentValue(s.key) != s.value && apply(s.key, s.value)) applied = true
-        }
-        if (applied || changedRows.any { it.key == ACTIVITY_SOURCE }) Store.notifyChanged()
+        applyAll()
+        if (changedRows.any { it.key == ACTIVITY_SOURCE }) Store.notifyChanged()
         return true
     }
 

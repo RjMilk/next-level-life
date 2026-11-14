@@ -47,34 +47,32 @@ object Settings {
     val activityLastSyncMs: Long?
         get() = Store.prefs().getLong(KEY_ACTIVITY_LAST_SYNC, -1L).takeIf { it > 0L }
 
-    // Сеттеры пишут prefs и общую настройку пары (SharedSettings, версия +1); слияние со вторым телефоном
-    // возвращает победителя через applyShared… — читатели не меняются.
+    // Сеттеры сначала пишут общую настройку пары (SharedSettings, версия +1), затем prefs; слияние со вторым
+    // телефоном возвращает победителя через applyShared… — читатели не меняются. Процесс умер между записями —
+    // при запуске действующие значения из shared_settings снова записываются в prefs (SharedSettings.applyAll).
 
     fun setDailyLimitMin(minutes: Int) {
         require(minutes in BlockRules.LIMIT_RANGE) { "Дневной лимит вне диапазона ${BlockRules.LIMIT_RANGE}: $minutes" }
-        applySharedLimit(minutes)
         SharedSettings.localChange(SharedSettings.DAILY_LIMIT, minutes.toString())
+        applySharedLimit(minutes)
     }
 
-    fun setNightEnabled(enabled: Boolean) {
-        applySharedNight(enabled, nightStartMin, nightEndMin)
-        shareNight()
-    }
+    fun setNightEnabled(enabled: Boolean) = setNight(enabled, nightStartMin, nightEndMin)
 
     fun setNightStartMin(minuteOfDay: Int) {
         require(minuteOfDay in BlockRules.MINUTE_RANGE) { "Начало ночи вне суток: $minuteOfDay" }
-        applySharedNight(nightEnabled, minuteOfDay, nightEndMin)
-        shareNight()
+        setNight(nightEnabled, minuteOfDay, nightEndMin)
     }
 
     fun setNightEndMin(minuteOfDay: Int) {
         require(minuteOfDay in BlockRules.MINUTE_RANGE) { "Конец ночи вне суток: $minuteOfDay" }
-        applySharedNight(nightEnabled, nightStartMin, minuteOfDay)
-        shareNight()
+        setNight(nightEnabled, nightStartMin, minuteOfDay)
     }
 
-    private fun shareNight() =
-        SharedSettings.localChange(SharedSettings.NIGHT, SharedSettingsCodec.night(nightEnabled, nightStartMin, nightEndMin))
+    private fun setNight(enabled: Boolean, startMin: Int, endMin: Int) {
+        SharedSettings.localChange(SharedSettings.NIGHT, SharedSettingsCodec.night(enabled, startMin, endMin))
+        applySharedNight(enabled, startMin, endMin)
+    }
 
     /**
      * Включение запоминает день [today]: дни раньше него не оплачиваются. Повторное включение
@@ -86,13 +84,16 @@ object Settings {
             stepsRewardEnabled -> stepsRewardSinceDay
             else -> today
         }
-        applySharedSteps(since)
         SharedSettings.localChange(SharedSettings.STEPS_REWARD, SharedSettingsCodec.steps(since))
+        applySharedSteps(since)
     }
 
-    /** Источник активности пары (device_id): общая настройка, сам телефон её только показывает. */
+    /**
+     * Источник активности пары (device_id): общая настройка. Смена вступает в силу на этом телефоне только после
+     * удачного обмена ([SharedSettings.changeActivitySource]): до этого ни один из двух не начисляет дважды.
+     */
     fun setActivitySource(deviceId: String) {
-        SharedSettings.localChange(SharedSettings.ACTIVITY_SOURCE, deviceId)
+        SharedSettings.changeActivitySource(deviceId)
         Store.notifyChanged()
     }
 

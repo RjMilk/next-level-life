@@ -51,14 +51,24 @@ class MemorySyncStore(
 
     fun peerBalance(peer: String): Long = peerOps[peer]?.values?.sumOf { it.deltaMs } ?: 0L
 
+    private val spendKinds = setOf(OpKind.USAGE.name, OpKind.RESTORE_CARRY.name)
+
     fun ownSpent(d: Long = day): Long =
-        -ops.values.filter { it.kind == OpKind.USAGE.name && it.accountingDay == d }.sumOf { it.deltaMs }
+        -ops.values.filter { it.kind in spendKinds && it.accountingDay == d }.sumOf { it.deltaMs }
+
+    /** Расход второго телефона по копии; копии нет — null. */
+    fun peerSpent(peer: String, d: Long = day): Long? {
+        if (opsCursors[peer] == null) return null
+        return -peerOps[peer].orEmpty().values.filter { it.kind in spendKinds && it.accountingDay == d }.sumOf { it.deltaMs }
+    }
 
     fun shareLeft(peer: String?, d: Long = day): Long? {
         val incoming = if (peer == null) 0L else facts.values.filterIsInstance<LimitMoveFact>()
             .filter { it.author == peer && it.toDevice == deviceId && it.day == d }.sumOf { it.ms }
         val outgoing = facts.values.filterIsInstance<LimitMoveFact>().filter { it.author == deviceId && it.day == d }.sumOf { it.ms }
-        return SharedWalletMath.shareLeftMs(limitMs, deviceId, peer, incoming, outgoing, ownSpent(d))
+        return SharedWalletMath.shareLeftMs(
+            limitMs, deviceId, peer, incoming, outgoing, ownSpent(d), if (peer == null) 0L else peerSpent(peer, d),
+        )
     }
 
     private fun addOp(kind: OpKind, deltaMs: Long, key: String = "${kind.name.lowercase()}:${UUID.randomUUID()}", sourceId: String = "", id: String = UUID.randomUUID().toString()): OpRecord {
@@ -106,13 +116,28 @@ class MemorySyncStore(
      * текущего журнала, которых нет в копии, возвращаются той же операцией (как Ledger.appendRestoreCarry).
      */
     fun restoreFrom(backup: MemorySyncStore) {
-        val outs = ops.values.filter { it.kind == OpKind.TRANSFER_OUT.name }
+        val current = ops.values.toList()
+        val currentMoves = facts.values.filterIsInstance<LimitMoveFact>()
         ops.clear()
         ops.putAll(backup.ops)
         rev = maxOf(rev, backup.rev)
-        for (o in outs) if (backup.ops.values.none { it.idempotencyKey == o.idempotencyKey }) ops[o.id] = o.copy(rev = ++rev)
+        val backupKeys = backup.ops.values.associateBy { it.idempotencyKey }
+        for (o in current) {
+            when (o.kind) {
+                // Переносы (оба направления) — той же операцией.
+                OpKind.TRANSFER_OUT.name, OpKind.TRANSFER_IN.name ->
+                    if (o.idempotencyKey !in backupKeys) ops[o.id] = o.copy(rev = ++rev)
+                // Расход после копии — целиком, без ограничения балансом.
+                in spendKinds -> {
+                    val diff = -o.deltaMs - (backupKeys[o.idempotencyKey]?.let { -it.deltaMs } ?: 0L)
+                    if (diff > 0L) addOp(OpKind.RESTORE_CARRY, -diff)
+                }
+            }
+        }
         facts.clear()
         facts.putAll(backup.facts)
+        // Переносы доли лимита — локально (с провода свои не принимаются).
+        for (m in currentMoves) facts.putIfAbsent(m.uid, m)
         peerOps.clear()
         opsCursors.clear()
         opsEpoch = "ops-$deviceId-${UUID.randomUUID()}"
@@ -133,7 +158,7 @@ class MemorySyncStore(
 
     override fun localState(peerId: String) = LocalState(
         opsEpoch = opsEpoch, factsEpoch = factsEpoch, day = day, zoneId = "UTC", spending = spending,
-        walletMs = balance() - debtMs, shareLeftMs = shareLeft(peerId), healthConnected = healthConnected,
+        walletMs = balance() - debtMs, shareLeftMs = shareLeft(peerId)?.let { it - debtMs }, healthConnected = healthConnected,
     )
 
     override fun opsCursor(peerId: String): LogCursor? = opsCursors[peerId]
@@ -179,7 +204,7 @@ class MemorySyncStore(
         checkFail()
         val days = HashSet<Long>()
         for (f in rows) {
-            if (!SyncRules.acceptFact(f, deviceId, factsEpoch)) continue
+            if (!SyncRules.acceptFact(f, deviceId, factsEpoch, peerId)) continue
             if (f.uid in facts) continue
             facts[f.uid] = f
             days += f.day
@@ -221,6 +246,13 @@ class MemorySyncStore(
 
     override fun peerWalletMs(peerId: String): Long = peerBalance(peerId)
 
+    override fun peerShareLeftMs(peerId: String): Long? {
+        val moves = facts.values.filterIsInstance<LimitMoveFact>().filter { it.day == day }
+        val mineOut = moves.filter { it.author == deviceId }.sumOf { it.ms }
+        val mineIn = moves.filter { it.author == peerId && it.toDevice == deviceId }.sumOf { it.ms }
+        return SharedWalletMath.shareLeftMs(limitMs, peerId, deviceId, mineOut, mineIn, peerSpent(peerId) ?: 0L, ownSpent())
+    }
+
     override fun giveWallet(peerId: String, ms: Long): Long {
         val amount = minOf(ms, balance() - debtMs)
         if (amount <= 0L) return 0L
@@ -230,7 +262,7 @@ class MemorySyncStore(
 
     override fun giveLimit(peerId: String, day: Long, ms: Long): Long {
         if (day != this.day) return 0L
-        val amount = minOf(ms, shareLeft(peerId) ?: 0L)
+        val amount = minOf(ms, (shareLeft(peerId) ?: 0L) - debtMs)
         if (amount <= 0L) return 0L
         val f = LimitMoveFact(UUID.randomUUID().toString(), deviceId, factsEpoch, ++factSeq, peerId, day, amount, 0L)
         facts[f.uid] = f

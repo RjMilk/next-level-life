@@ -1146,13 +1146,18 @@ object Diary {
             "ALTER TABLE sets ADD COLUMN aseq INTEGER",
             "ALTER TABLE sets ADD COLUMN uid TEXT",
             "ALTER TABLE sets ADD COLUMN run_uid TEXT",
+            // uid старых строк — детерминированный (device_id, таблица, id, время): одна и та же история, мигрированная
+            // дважды (обновление, затем восстановление копии схемы 7), даёт те же uid, и второй телефон не получит
+            // одни подходы под двумя идентификаторами.
             // Прохождения нумеруются первыми (aseq = id), подходы — после всех прохождений: подходы комплекса
             // всегда идут после своего прохождения, и копия сначала получает прохождение.
             "UPDATE complex_runs SET author = (SELECT value FROM meta WHERE key = 'device_id'), " +
-                "epoch = (SELECT value FROM meta WHERE key = 'facts_epoch'), aseq = id, uid = $SQL_UUID",
+                "epoch = (SELECT value FROM meta WHERE key = 'facts_epoch'), aseq = id, " +
+                "uid = 'm7-' || (SELECT value FROM meta WHERE key = 'device_id') || '-run-' || id || '-' || time_ms",
             "UPDATE sets SET author = (SELECT value FROM meta WHERE key = 'device_id'), " +
                 "epoch = (SELECT value FROM meta WHERE key = 'facts_epoch'), " +
-                "aseq = id + (SELECT COALESCE(MAX(id), 0) FROM complex_runs), uid = $SQL_UUID",
+                "aseq = id + (SELECT COALESCE(MAX(id), 0) FROM complex_runs), " +
+                "uid = 'm7-' || (SELECT value FROM meta WHERE key = 'device_id') || '-set-' || id || '-' || time_ms",
             "UPDATE sets SET run_uid = (SELECT r.uid FROM complex_runs r WHERE r.id = sets.run_id) WHERE run_id IS NOT NULL",
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('facts_seq', " +
                 "(SELECT CAST((SELECT COALESCE(MAX(id), 0) FROM complex_runs) + (SELECT COALESCE(MAX(id), 0) FROM sets) AS TEXT)))",

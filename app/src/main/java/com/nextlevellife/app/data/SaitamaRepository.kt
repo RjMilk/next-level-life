@@ -85,7 +85,8 @@ object SaitamaRepository {
         var paid = 0L
         for (d in SaitamaMath.bonusDays(days, since, today)) {
             val key = Saitama.bonusKey(d)
-            if (Ledger.opByKey(key) != null) continue
+            // Бонус за день один на пару: и в своём журнале, и в копии журнала второго телефона (прежний источник).
+            if (Ledger.opByKey(key) != null || Ledger.peerHasKey(key)) continue
             val p = days.getValue(d)
             val inserted = Ledger.reward(
                 kind = OpKind.COMPLEX_REWARD,
@@ -131,7 +132,8 @@ object SaitamaRepository {
         days[today] = todayDay
 
         val full = days.values.filter { it.full && it.day >= since }.map { it.day }.toSet()
-        val bonusPaid = todayDay.full && today >= since && Ledger.opByKey(Saitama.bonusKey(today)) != null
+        val bonusPaid = todayDay.full && today >= since &&
+            (Ledger.opByKey(Saitama.bonusKey(today)) != null || Ledger.peerHasKey(Saitama.bonusKey(today)))
         return SaitamaState(
             today = today,
             since = since,

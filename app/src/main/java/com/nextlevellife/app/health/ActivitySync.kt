@@ -148,6 +148,9 @@ object ActivitySync {
         val from = days.first()
         val to = days.last()
         return Diary.write { db ->
+            // Источник проверяется в той же транзакции, что и начисление: смена источника посреди чтения не даёт
+            // заплатить второму телефону за то, что уже оплатил первый.
+            if (!SharedSettings.isActivitySource()) return@write false
             // После смены учётного пояса сутки по день смены не оплачиваются (только показываются).
             val frozenThrough = TrustedClock.stepsFrozenThroughDay()
             val oldDays = Diary.activityDays(from, to).associateBy { it.day }
@@ -157,7 +160,8 @@ object ActivitySync {
 
             for (t in totals) {
                 val old = oldDays[t.day]
-                val rewarded = old?.rewardedMs ?: 0L
+                // Уже оплачено за день — и здесь, и вторым телефоном (прежним источником, по копии его журнала).
+                val rewarded = maxOf(old?.rewardedMs ?: 0L, Ledger.stepsPaidBothMs(t.day))
                 val due = ActivityMath.due(t)
                 val delta = ActivityMath.rewardDelta(due.totalMs, rewarded, enabled, t.day, since, frozenThrough)
                 var newRewarded = rewarded

@@ -44,6 +44,12 @@ object Store {
                 Log.e("Store", "Не удалось подготовить журнал баланса", e)
             }
             syncLegacyHistory()
+            // Общие настройки пары: действующие значения — в prefs (запись могла прерваться между таблицей и prefs).
+            try {
+                SharedSettings.applyAll()
+            } catch (e: Exception) {
+                Log.e("Store", "Не удалось применить общие настройки", e)
+            }
         }
     }
 

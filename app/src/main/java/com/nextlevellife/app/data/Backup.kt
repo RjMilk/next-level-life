@@ -273,6 +273,22 @@ object Backup {
         }
         // Связь с вторым телефоном — здешняя: копия её не переносит.
         val localPeer = runCatching { Ledger.peerId() }.getOrNull()
+        // Переносы доли дневного лимита (отданные и полученные) — тоже: без них восстановление вернуло бы отданную
+        // долю (свои переносы с другого телефона не принимаются) или потеряло полученную.
+        val currentMoves = try {
+            synchronized(Diary) {
+                Diary.query("SELECT uid, author, epoch, aseq, to_device, day, ms, created_utc_ms FROM limit_moves") { c ->
+                    android.content.ContentValues().apply {
+                        put("uid", c.getString(0)); put("author", c.getString(1)); put("epoch", c.getString(2))
+                        put("aseq", c.getLong(3)); put("to_device", c.getString(4)); put("day", c.getLong(5))
+                        put("ms", c.getLong(6)); put("created_utc_ms", c.getLong(7))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось прочитать переносы доли лимита", e)
+            emptyList()
+        }
         var carriedMs = 0L
         val oldPrefsJson = Store.exportPrefs()
         val oldPrefs = Store.parsePrefs(oldPrefsJson)
@@ -310,6 +326,7 @@ object Backup {
                 putMeta(Diary.KEY_FACTS_SEQ, "0")
                 db.delete("sync_cursors", null, null)
                 db.delete("peer_ops", null, null)
+                for (move in currentMoves) db.insertWithOnConflict("limit_moves", null, move, SQLiteDatabase.CONFLICT_IGNORE)
                 if (localPeer != null) putMeta(Ledger.KEY_SYNC_PEER, localPeer) else db.delete("meta", "key = ?", arrayOf(Ledger.KEY_SYNC_PEER))
                 val backupMeta = HashMap<String, String>()
                 db.rawQuery("SELECT key, value FROM meta", null).use { c ->

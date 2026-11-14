@@ -135,6 +135,8 @@ object SyncEngine {
             if (Ledger.peerId() != peer.deviceId) onPairingChanged(peer)
             val outcome = SyncSession(store, channel).run()
             lastFailureElapsed = null
+            // Второй телефон получил здешние настройки: смена источника активности, сделанная здесь, вступает в силу.
+            com.nextlevellife.app.data.SharedSettings.confirmAfterSync()
             _state.update { it.copy(lastSuccessMs = System.currentTimeMillis(), notFound = false, error = null) }
             if (outcome.receivedMs > 0 || outcome.givenWalletMs > 0 || outcome.givenLimitMs > 0) {
                 Log.i(TAG, "Перенос: получено ${outcome.receivedMs}, отдано ${outcome.givenWalletMs} мин. и ${outcome.givenLimitMs} лимита (мс)")

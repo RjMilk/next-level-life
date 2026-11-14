@@ -236,6 +236,9 @@ class SyncSessionTest {
         val (a, b) = pair(limit = 120 * min)
         a.earn(200 * min)
         b.earn(10 * min)
+        // Первый обмен после сопряжения: без копии журнала второго телефона доля не больше нуля.
+        assertEquals(0L, b.spend(10 * min, "aaa"))
+        ok(exchange(a, b))
         b.spend(10 * min, "aaa")
         b.spending = true
         a.spending = false
@@ -247,6 +250,107 @@ class SyncSessionTest {
         assertEquals(50 * min + 40 * min, b.shareLeft("aaa"))
         // Сумма долей и расхода — ровно лимит.
         assertEquals(120 * min, a.shareLeft("bbb")!! + b.shareLeft("aaa")!! + a.ownSpent() + b.ownSpent())
+    }
+
+    // ---------- Ревью Codex: восстановление, сопряжение, подделка, долги ----------
+
+    @Test
+    fun restoreKeepsTransferInSoItCannotBeSpentTwice() {
+        val (a, b) = pair()
+        val backupB = b.snapshot() // копия с нулём
+        a.earn(10 * min)
+        b.spending = true
+        ok(exchange(a, b))
+        assertEquals(10 * min, b.balance())
+        assertEquals(10 * min, b.spend(10 * min, null))
+        // Восстановление копии: входящий перенос и расход возвращаются в журнал — баланс 0, а не 10.
+        b.restoreFrom(backupB)
+        assertEquals(0L, b.balance())
+        b.spending = false
+        ok(exchange(a, b))
+        ok(exchange(a, b))
+        assertEquals(0L, b.balance())
+        assertEquals(1, countKind(b, OpKind.TRANSFER_IN))
+        assertEquals(10 * min, a.ownSpent() + b.ownSpent() + a.balance() + b.balance())
+    }
+
+    @Test
+    fun restoreUncappedCarryCanGoNegative() {
+        val (a, _) = pair()
+        val backup = a.snapshot()
+        a.earn(10 * min)
+        a.spend(10 * min, null)
+        a.restoreFrom(backup)
+        // Заработок после копии пропал, расход — нет: баланс уходит в минус.
+        assertEquals(-10 * min, a.balance())
+    }
+
+    @Test
+    fun restoreDoesNotReturnGivenLimitShare() {
+        val (a, b) = pair(limit = 120 * min)
+        ok(exchange(a, b))
+        val backupA = a.snapshot()
+        b.spending = true
+        val r = ok(exchange(a, b))
+        assertEquals(60 * min, r.a.outcome!!.givenLimitMs)
+        assertEquals(0L, a.shareLeft("bbb"))
+        a.restoreFrom(backupA)
+        assertEquals(0L, a.shareLeft("bbb"))
+        ok(exchange(a, b))
+        assertEquals(0L, a.shareLeft("bbb"))
+        assertEquals(120 * min, a.shareLeft("bbb")!! + b.shareLeft("aaa")!!)
+    }
+
+    @Test
+    fun pairingDayDoesNotReissueSpentLimit() {
+        val (a, b) = pair(limit = 120 * min)
+        a.earn(300 * min)
+        b.earn(300 * min)
+        // До пары A потратил весь лимит.
+        assertEquals(120 * min, a.spend(120 * min, null))
+        // Сопряжение: до первого обмена у обоих доля не больше нуля.
+        assertEquals(0L, b.spend(10 * min, "aaa"))
+        ok(exchange(a, b))
+        // После обмена расход A известен: выдать больше нечего ни A, ни B.
+        assertEquals(0L, a.spend(10 * min, "bbb"))
+        assertEquals(0L, b.spend(10 * min, "aaa"))
+        b.spending = true
+        ok(exchange(a, b))
+        assertEquals(0L, b.spend(10 * min, "aaa"))
+        assertEquals(120 * min, a.ownSpent() + b.ownSpent())
+    }
+
+    @Test
+    fun forgedFactsAreRejected() {
+        val (a, _) = pair()
+        // Перенос доли «от моего имени» с другим поколением и отрицательной долей — не принимается.
+        val forgedMove = LimitMoveFact("m1", "aaa", "other-epoch", 1, "bbb", 100, -60 * min, 0)
+        assertTrue(a.applyFacts("bbb", listOf(forgedMove)).isEmpty())
+        // Свой перенос с провода не принимается даже с положительной долей.
+        assertTrue(a.applyFacts("bbb", listOf(forgedMove.copy(uid = "m2", ms = 60 * min))).isEmpty())
+        // От второго телефона, но не мне, или отрицательный, или от третьего — нет.
+        assertTrue(a.applyFacts("bbb", listOf(LimitMoveFact("m3", "bbb", "e", 1, "ccc", 100, 60 * min, 0))).isEmpty())
+        assertTrue(a.applyFacts("bbb", listOf(LimitMoveFact("m4", "bbb", "e", 1, "aaa", 100, -1, 0))).isEmpty())
+        assertTrue(a.applyFacts("bbb", listOf(LimitMoveFact("m5", "ccc", "e", 1, "aaa", 100, 60 * min, 0))).isEmpty())
+        // Настоящий перенос второго телефона мне — принимается.
+        assertEquals(setOf(100L), a.applyFacts("bbb", listOf(LimitMoveFact("m6", "bbb", "e", 1, "aaa", 100, 60 * min, 0))))
+        // Подход с отрицательными повторениями — нет; свой прежнего поколения с нормальными числами — да.
+        val set = SetFact("s1", "aaa", "old", 5, 0, 100, "pushups", "Отжимания", null, -50, 0, 0, 0, null, "REPS", 0)
+        assertTrue(a.applyFacts("bbb", listOf(set)).isEmpty())
+        assertEquals(setOf(100L), a.applyFacts("bbb", listOf(set.copy(uid = "s2", reps = 50))))
+        // Дубль по uid в другом поколении — не дублируется.
+        assertTrue(a.applyFacts("bbb", listOf(set.copy(uid = "s2", reps = 50, epoch = "another"))).isEmpty())
+    }
+
+    @Test
+    fun debtsReserveLimitShare() {
+        val (a, b) = pair(limit = 120 * min)
+        ok(exchange(a, b))
+        b.debtMs = 15 * min
+        a.spending = true
+        val r = ok(exchange(a, b))
+        // B отдаёт свою долю за вычетом неоплаченного расхода.
+        assertEquals(45 * min, r.b.outcome!!.givenLimitMs)
     }
 
     @Test
@@ -300,15 +404,16 @@ class SyncSessionTest {
     }
 
     @Test
-    fun receiverRestoreGetsTransferInAgain() {
+    fun receiverRestoreKeepsTransferInOnce() {
         val (a, b) = pair()
         b.earn(30 * min)
         val backupA = a.snapshot()
         a.spending = true
         ok(exchange(a, b))
-        // A восстанавливает копию до получения: входящий перенос пропал, но исходящий B ещё в журнале.
+        // A восстанавливает копию до получения: входящий перенос возвращается в журнал той же операцией,
+        // а исходящий B по тому же ключу второй раз не зачисляется.
         a.restoreFrom(backupA)
-        assertEquals(0L, a.balance())
+        assertEquals(30 * min, a.balance())
         ok(exchange(a, b))
         assertEquals(30 * min, a.balance())
         assertEquals(1, countKind(a, OpKind.TRANSFER_IN))

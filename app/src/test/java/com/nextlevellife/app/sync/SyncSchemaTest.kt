@@ -29,6 +29,11 @@ class SyncSchemaTest {
         )) assertTrue(part, part in sql)
         // device_id создаётся в самом шаге (через мигрируемую базу), а не через Ledger.
         assertTrue("INSERT OR IGNORE INTO meta (key, value) VALUES ('device_id'" in sql)
+        // uid старых строк детерминирован (device_id, таблица, id, время): повторная миграция той же истории
+        // (восстановление копии схемы 7) даёт те же uid — второй телефон не получит подходы дважды.
+        assertTrue("uid = 'm7-' || (SELECT value FROM meta WHERE key = 'device_id') || '-set-' || id || '-' || time_ms" in sql)
+        assertTrue("uid = 'm7-' || (SELECT value FROM meta WHERE key = 'device_id') || '-run-' || id || '-' || time_ms" in sql)
+        assertTrue(Diary.MIGRATIONS[7].none { it.startsWith("UPDATE sets SET author") && "randomblob" in it })
         // Без UPSERT: на Android 10 SQLite 3.22.
         assertTrue("ON CONFLICT" !in sql && "RETURNING" !in sql)
     }

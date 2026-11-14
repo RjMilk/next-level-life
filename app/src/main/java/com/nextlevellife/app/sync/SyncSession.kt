@@ -128,7 +128,10 @@ class SyncSession(
         // не меньше настоящей, и отдаётся не больше нужного.
         val give = SharedWalletMath.plan(
             SharedWalletMath.Side(me.spending, me.walletMs, me.shareLeftMs, me.day),
-            SharedWalletMath.Side(peerHello.spending, store.peerWalletMs(peer), peerHello.shareLeftMs, peerHello.day),
+            // Доля второго — тоже по копии (в приветствии она могла быть посчитана ещё без копии здешнего журнала).
+            SharedWalletMath.Side(
+                peerHello.spending, store.peerWalletMs(peer), store.peerShareLeftMs(peer) ?: peerHello.shareLeftMs, peerHello.day,
+            ),
         )
         val wallet = if (give.walletMs > 0L) store.giveWallet(peer, give.walletMs) else 0L
         val limit = if (give.limitMs > 0L) store.giveLimit(peer, give.day, give.limitMs) else 0L
