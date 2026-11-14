@@ -56,6 +56,7 @@ import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TimeSnapshot
 import com.nextlevellife.app.data.TrustedClock
 import com.nextlevellife.app.media.MealPhotos
+import com.nextlevellife.app.media.MealProcessing
 import com.nextlevellife.app.pose.CameraPermissionGate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -155,23 +156,16 @@ fun NutritionScreen(onBack: () -> Unit) {
                             pendingZone = t.zone.id
                         },
                         onCaptured = { raw ->
-                            val uid = pendingUid ?: return@MealCameraView
-                            mode = MODE_PROCESSING
-                            scope.launch {
-                                val ok = withContext(Dispatchers.IO) {
-                                    runCatching { MealPhotos.process(raw, MealPhotos.pendingFile(context, uid)) }
-                                        .onFailure { Log.e(TAG, "Не удалось обработать снимок", it) }
-                                        .also { raw.delete() }
-                                        .isSuccess
-                                }
-                                if (ok) {
-                                    mode = MODE_CONFIRM
-                                } else {
-                                    dropPending()
-                                    message = "Не удалось сохранить снимок"
-                                    mode = MODE_LIST
-                                }
+                            // Снимок принадлежит тому uid, под которым был создан его файл: поздний снимок отменённой
+                            // съёмки не должен попасть под uid новой.
+                            val uid = pendingUid
+                            if (uid == null || raw.name != MealPhotos.rawFile(context, uid).name) {
+                                raw.delete()
+                                return@MealCameraView
                             }
+                            mode = MODE_PROCESSING
+                            // Обработка — вне экрана: поворот её не отменит; экран ждёт итог в MODE_PROCESSING.
+                            MealProcessing.start(context, uid, raw)
                         },
                         onError = { message = it },
                     )
@@ -183,6 +177,20 @@ fun NutritionScreen(onBack: () -> Unit) {
                 )
             }
             MODE_PROCESSING -> {
+                val uid = pendingUid
+                LaunchedEffect(uid) {
+                    if (uid == null) { mode = MODE_LIST; return@LaunchedEffect }
+                    while (MealProcessing.isRunning(uid)) kotlinx.coroutines.delay(100)
+                    val ok = MealProcessing.result(uid) ?: MealPhotos.pendingFile(context, uid).isFile
+                    MealProcessing.forget(uid)
+                    if (ok) {
+                        mode = MODE_CONFIRM
+                    } else {
+                        dropPending()
+                        message = "Не удалось сохранить снимок"
+                        mode = MODE_LIST
+                    }
+                }
                 Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         CircularProgressIndicator()

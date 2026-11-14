@@ -67,7 +67,15 @@ object Backup {
             zip.closeEntry()
             // Фото приёмов пищи — каталогом meals/: только неудалённых приёмов этой базы, файлы которых есть здесь.
             // JPEG уже сжат: без повторного сжатия (STORED требует CRC заранее — проще DEFLATE с уровнем 0).
-            val photos = runCatching { Nutrition.livePhotoNames() }.getOrDefault(emptySet())
+            // Список фото — из того же снимка базы, что попадает в копию (а не из текущей базы, где приём могли
+            // удалить уже после снимка): каждому приёму архива — его фото, если файл ещё есть.
+            val photos = runCatching {
+                SQLiteDatabase.openDatabase(tmp.path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+                    db.rawQuery("SELECT photo_name FROM meals WHERE deleted = 0 AND photo_name IS NOT NULL", null).use { c ->
+                        buildSet { while (c.moveToNext()) add(c.getString(0)) }
+                    }
+                }.filter(NutritionMath::isSafePhotoName).toSet()
+            }.getOrElse { runCatching { Nutrition.livePhotoNames() }.getOrDefault(emptySet()) }
             val dir = File(context.filesDir, NutritionMath.PHOTO_DIR)
             zip.setLevel(java.util.zip.Deflater.NO_COMPRESSION)
             for (name in photos.sorted()) {

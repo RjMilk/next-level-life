@@ -1,5 +1,6 @@
 package com.nextlevellife.app.media
 
+import kotlinx.coroutines.launch
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -150,4 +151,36 @@ object MealPhotos {
         Log.w(TAG, "Фото не читается: ${f.name}", e)
         null
     }
+}
+
+/**
+ * Обработка снимков вне экрана: поворот или раскрытие Fold пересоздают экран и отменяют его корутины, а обработка
+ * должна дойти до конца. Экран ждёт итог по uid ([result]) — null, пока идёт.
+ */
+object MealProcessing {
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+    private val results = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val running = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Запустить обработку сырого снимка [raw] в ожидающий файл приёма [uid]. */
+    fun start(context: Context, uid: String, raw: File) {
+        if (!running.add(uid)) return
+        results.remove(uid)
+        val app = context.applicationContext
+        scope.launch {
+            val ok = runCatching { MealPhotos.process(raw, MealPhotos.pendingFile(app, uid)) }
+                .onFailure { android.util.Log.e("MealProcessing", "Не удалось обработать снимок", it) }
+                .isSuccess
+            raw.delete()
+            results[uid] = ok
+            running.remove(uid)
+        }
+    }
+
+    /** Итог обработки [uid]: true — готово, false — сбой, null — ещё идёт или не запускалась. */
+    fun result(uid: String): Boolean? = results[uid]
+
+    fun isRunning(uid: String): Boolean = uid in running
+
+    fun forget(uid: String) { results.remove(uid) }
 }
