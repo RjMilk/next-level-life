@@ -144,11 +144,13 @@ private fun RepExerciseScreen(ex: Exercise, onDone: () -> Unit) {
     BackHandler(enabled = !recorded) { requestExit() }
 
     val widthClass = currentWidthClass()
+    // Fold «столиком»: камера над сгибом, счётчик и кнопки под ним. Счёт и время — выше, они не теряются.
+    val tabletop = rememberTabletop()
     // ▶ «Как выполнять»: гид поверх, счёт на паузе (active = false), засчитанное сохраняется.
     val onGuide: (() -> Unit)? = if (hasGuide && !recorded) ({ showGuide = true }) else null
     if (showGuide && !recorded) GuideDialog(ex.id, onClose = { showGuide = false })
-    // На широком экране счётчик — в панели слева, на камере остаётся только человек.
-    val counterInPanel = widthClass == WidthClass.EXPANDED
+    // На широком экране счётчик — в панели слева, «столиком» — под сгибом; на камере остаётся только человек.
+    val counterInPanel = tabletop != null || widthClass == WidthClass.EXPANDED
     val canFinish = count > 0 && !recorded
 
     val weightChips: @Composable () -> Unit = {
@@ -177,7 +179,33 @@ private fun RepExerciseScreen(ex: Exercise, onDone: () -> Unit) {
     }
 
     val panelWidth = widthClass.workoutPanelWidth
-    if (panelWidth == null) {
+    if (tabletop != null) {
+        TabletopSplit(tabletop, widthClass, top = camera) {
+            TabletopBoard(
+                info = { mod ->
+                    Column(
+                        mod.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ExerciseTitle(ex, widthClass, onGuide)
+                        ExerciseTimer(elapsedMs, widthClass)
+                        weightChips()
+                        RewardInfo(ex, weight, count, stacked = true)
+                    }
+                },
+                score = { mod ->
+                    FittedRepCounter(count = count, target = null, counting = counting, onCamera = false, modifier = mod)
+                },
+                actions = { stacked ->
+                    if (stacked) {
+                        Column { StackedButtons(canFinish = canFinish, onCancel = { requestExit() }, onFinish = { finish() }) }
+                    } else {
+                        BottomBar(canFinish = canFinish, onCancel = { requestExit() }, onFinish = { finish() })
+                    }
+                },
+            )
+        }
+    } else if (panelWidth == null) {
         // Узкий экран: всё в одну колонку, камера забирает остаток высоты.
         Column(
             Modifier
@@ -367,10 +395,12 @@ private fun HoldExerciseScreen(ex: Exercise, onDone: () -> Unit) {
     BackHandler(enabled = !recorded) { requestExit() }
 
     val widthClass = currentWidthClass()
+    // Fold «столиком»: камера над сгибом, табло под ним. Счётчик удержания создан выше — смена позы его не трогает.
+    val tabletop = rememberTabletop()
     // ▶ «Как выполнять»: гид поверх, счёт на паузе (active = false), засчитанное сохраняется.
     val onGuide: (() -> Unit)? = if (hasGuide && !recorded) ({ showGuide = true }) else null
     if (showGuide && !recorded) GuideDialog(ex.id, onClose = { showGuide = false })
-    val scoreInPanel = widthClass == WidthClass.EXPANDED
+    val scoreInPanel = tabletop != null || widthClass == WidthClass.EXPANDED
     val canFinish = creditedMs > 0L && !recorded
     val canRestart = !recorded && !saveFailed
     // Засчитанное есть — сначала спросить: «Заново» его стирает.
@@ -397,7 +427,47 @@ private fun HoldExerciseScreen(ex: Exercise, onDone: () -> Unit) {
     }
 
     val panelWidth = widthClass.workoutPanelWidth
-    if (panelWidth == null) {
+    if (tabletop != null) {
+        TabletopSplit(tabletop, widthClass, top = camera) {
+            TabletopBoard(
+                info = { mod ->
+                    Column(
+                        mod.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ExerciseTitle(ex, widthClass, onGuide)
+                        ExerciseTimer(elapsedMs, widthClass)
+                        HoldRewardInfo(ex, creditedMs, stacked = true)
+                    }
+                },
+                score = { mod ->
+                    if (tracker != null) HoldScore(tracker, onCamera = false, modifier = mod) else Spacer(mod)
+                },
+                actions = { stacked ->
+                    if (stacked) {
+                        Column {
+                            OutlinedButton(
+                                onClick = onRestart,
+                                enabled = canRestart,
+                                shape = ButtonShape,
+                                contentPadding = TightButtonPadding,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = MainButtonHeight),
+                            ) { Text("Заново", style = MaterialTheme.typography.titleMedium, maxLines = 1) }
+                            Spacer(Modifier.height(12.dp))
+                            StackedButtons(canFinish = canFinish, onCancel = { requestExit() }, onFinish = { finish() })
+                        }
+                    } else {
+                        HoldBottomBar(
+                            canFinish = canFinish, canRestart = canRestart,
+                            onCancel = { requestExit() }, onRestart = onRestart, onFinish = { finish() },
+                        )
+                    }
+                },
+            )
+        }
+    } else if (panelWidth == null) {
         Column(
             Modifier
                 .fillMaxSize()

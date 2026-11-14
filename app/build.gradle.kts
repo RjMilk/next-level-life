@@ -46,6 +46,8 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
     implementation("androidx.core:core-ktx:1.19.1")
+    // Поза складного телефона: горизонтальный сгиб наполовину — «режим столика» (камера сверху, табло снизу).
+    implementation("androidx.window:window:1.5.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // Камера и распознавание позы: всё работает на устройстве, без интернета.

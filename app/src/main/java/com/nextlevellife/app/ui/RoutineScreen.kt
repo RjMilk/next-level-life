@@ -674,7 +674,9 @@ private fun RoutineRun(
     var frontCamera by rememberSaveable { mutableStateOf(true) }
     val step = s.step
     val restLeft = if (step is RestStep) step.nominalMs - (nowMs - s.stepStartedAt) else 0L
-    val scoreInPanel = widthClass == WidthClass.EXPANDED
+    // Fold «столиком»: камера над сгибом, табло шага под ним. Счётчики шагов — в [controller], выше раскладки.
+    val tabletop = rememberTabletop()
+    val scoreInPanel = tabletop != null || widthClass == WidthClass.EXPANDED
 
     val camera: @Composable (Modifier) -> Unit = { mod ->
         RoutineCamera(
@@ -685,7 +687,26 @@ private fun RoutineRun(
     }
 
     val panelWidth = widthClass.workoutPanelWidth
-    if (panelWidth == null) {
+    if (tabletop != null) {
+        TabletopSplit(tabletop, widthClass, top = camera) {
+            TabletopBoard(
+                info = { mod ->
+                    Column(
+                        mod.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        StepHeader(s, onShowGuide, compact = true)
+                    }
+                },
+                score = { mod ->
+                    Box(mod, contentAlignment = Alignment.Center) {
+                        StepScore(s, controller, restLeft, onCamera = false, modifier = Modifier.fillMaxWidth())
+                    }
+                },
+                actions = { stacked -> RunControls(s, stacked = stacked, onSkip = onSkip, onQuit = onQuit) },
+            )
+        }
+    } else if (panelWidth == null) {
         Column(
             Modifier
                 .fillMaxSize()

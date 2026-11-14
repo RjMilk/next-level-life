@@ -168,6 +168,7 @@ private fun ColumnScope.CindyPrep() {
 /**
  * Раскладка по классу ширины окна: узкий — показания, камера и кнопки в одну колонку;
  * средний — панель 220 dp слева и камера справа; широкий — панель 300 dp с лесенкой/кругами.
+ * Fold «столиком» (горизонтальный сгиб наполовину) — камера над сгибом, табло шага и кнопки под ним.
  */
 @Composable
 internal fun ComplexRunContent(
@@ -185,6 +186,10 @@ internal fun ComplexRunContent(
     val pad = widthClass.outerPadding
     // Выбор камеры — до ветвления раскладки: переживает и пересоздание, и смену класса ширины.
     var frontCamera by rememberSaveable { mutableStateOf(true) }
+    // Fold «столиком»: камера над сгибом, табло шага под ним. Счёт шага хранит [state] — смена позы его не теряет.
+    val tabletop = rememberTabletop()
+    // Идёт ли счёт — для цвета счётчика под сгибом; после пересоздания панели придёт заново.
+    var counting by remember { mutableStateOf(false) }
 
     val camera: @Composable (Modifier) -> Unit = { mod ->
         CameraRepPanel(
@@ -197,6 +202,8 @@ internal fun ComplexRunContent(
             frontCamera = frontCamera,
             onFrontCameraChange = { frontCamera = it },
             modifier = mod,
+            showCount = tabletop == null,
+            onCountingChange = { counting = it },
             onRep = onRep,
         )
     }
@@ -205,7 +212,45 @@ internal fun ComplexRunContent(
         val innerHeight = (maxHeight - pad * 2).value
         val innerWidth = (maxWidth - pad * 2).value
         val panelWidth = widthClass.workoutPanelWidth
-        if (panelWidth == null) {
+        if (tabletop != null) {
+            TabletopSplit(tabletop, widthClass, top = camera) {
+                TabletopBoard(
+                    info = { mod ->
+                        BoxWithConstraints(mod) {
+                            val infoWidth = maxWidth.value
+                            val infoHeight = maxHeight.value
+                            Column(
+                                Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Readings(
+                                    state = state,
+                                    elapsedMs = elapsedMs,
+                                    widthClass = widthClass,
+                                    widthDp = infoWidth,
+                                    heightDp = infoHeight,
+                                    inPanel = true,
+                                )
+                            }
+                        }
+                    },
+                    score = { mod ->
+                        FittedRepCounter(
+                            count = state.stepCount,
+                            target = step.reps,
+                            counting = counting && state.running,
+                            onCamera = false,
+                            modifier = mod,
+                        )
+                    },
+                    actions = { stacked ->
+                        Controls(enabled = state.running, stacked = stacked, onSkip = onSkip, onQuit = onQuit)
+                    },
+                )
+            }
+        } else if (panelWidth == null) {
             Column(
                 Modifier
                     .fillMaxSize()
