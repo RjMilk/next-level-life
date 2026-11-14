@@ -19,7 +19,7 @@ object SyncBoot {
         if (!attached) {
             synchronized(this) {
                 if (!attached) {
-                    SyncEngine.attach(SyncTransport)
+                    SyncEngine.attach(SyncTransport, app)
                     attached = true
                 }
             }

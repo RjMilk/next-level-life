@@ -50,6 +50,9 @@ class MemorySyncStore(
     var spending = false
     var debtMs = 0L
     var healthConnected = false
+    var healthSteps7d: Long? = null
+    var sourcePending = false
+    var handoffSupported = false
     var importedCalls = 0
 
     /** Сбой записи: следующий apply бросает исключение (до изменения состояния). */
@@ -91,6 +94,8 @@ class MemorySyncStore(
     }
 
     fun earn(ms: Long) = addOp(OpKind.SET_REWARD, ms)
+
+    fun rewardSteps(ms: Long) = addOp(OpKind.STEPS_REWARD, ms, sourceId = day.toString())
 
     /**
      * Потратить до [ms]: не больше кошелька и своей доли лимита (как служба блокировки). [peer] — связанный телефон.
@@ -301,6 +306,7 @@ class MemorySyncStore(
     override fun localState(peerId: String) = LocalState(
         opsEpoch = opsEpoch, factsEpoch = factsEpoch, day = day, zoneId = "UTC", spending = spending,
         walletMs = balance() - debtMs, shareLeftMs = shareLeft(peerId)?.let { it - debtMs }, healthConnected = healthConnected,
+        healthSteps7d = healthSteps7d,
     )
 
     override fun opsCursor(peerId: String): LogCursor? = opsCursors[peerId]
@@ -354,7 +360,7 @@ class MemorySyncStore(
         return days
     }
 
-    override fun isActivitySource(peerId: String): Boolean = settingRows["activity_source"]?.value == deviceId
+    override fun isActivitySource(peerId: String): Boolean = readsActivity(peerId)
 
     override fun activityExport(): ActivityExport? = activity
 
@@ -370,6 +376,7 @@ class MemorySyncStore(
     override fun applySettings(remote: List<SharedWalletMath.Setting>): Boolean {
         val merged = SharedWalletMath.mergeAll(settingRows.values, remote)
         val changed = merged != settingRows
+        if (merged["activity_source"] != settingRows["activity_source"]) sourcePending = true
         settingRows.clear()
         settingRows.putAll(merged)
         return changed
@@ -378,13 +385,24 @@ class MemorySyncStore(
     /** Локальное изменение общей настройки (как сеттер Settings). */
     fun setSetting(key: String, value: String) {
         settingRows[key] = SharedWalletMath.Setting(key, value, SharedWalletMath.nextVersion(settingRows.values, key), deviceId)
+        if (key == "activity_source") sourcePending = true
     }
 
-    override fun ensureActivitySource(peerId: String, myHealth: Boolean, peerHealth: Boolean) {
+    override fun ensureActivitySource(peerId: String, myHealth: Boolean, peerHealth: Boolean, mySteps: Long?, peerSteps: Long?) {
         if ("activity_source" in settingRows) return
-        val src = SharedWalletMath.defaultActivitySource(deviceId, myHealth, peerId, peerHealth)
+        val src = SharedWalletMath.defaultActivitySource(deviceId, myHealth, peerId, peerHealth, mySteps, peerSteps)
         settingRows["activity_source"] = SharedWalletMath.Setting("activity_source", src, 1L, minOf(deviceId, peerId))
+        sourcePending = true
     }
+
+    override fun confirmActivitySource(peerId: String, sent: SharedWalletMath.Setting?, received: SharedWalletMath.Setting?, handoffSupported: Boolean) {
+        this.handoffSupported = handoffSupported
+        if (SharedWalletMath.sourceConfirmed(settingRows["activity_source"], sent, received)) sourcePending = false
+    }
+
+    fun readsActivity(peerId: String): Boolean = SharedWalletMath.isActivitySource(
+        deviceId, peerId, settingRows["activity_source"]?.value, sourcePending,
+    )
 
     override fun peerWalletMs(peerId: String): Long = peerBalance(peerId)
 

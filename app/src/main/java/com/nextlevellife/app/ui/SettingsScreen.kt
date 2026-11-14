@@ -61,7 +61,6 @@ import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.RestoreResult
 import com.nextlevellife.app.data.Settings
-import com.nextlevellife.app.data.SharedSettings
 import com.nextlevellife.app.sync.SyncEngine
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TrustedClock
@@ -459,6 +458,7 @@ private fun StepsSection(version: Int) {
         value = withContext(Dispatchers.IO) { runCatching { Diary.activityDay(today) }.getOrNull() }
     }
     var denied by rememberSaveable { mutableStateOf(false) }
+    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
     val connect = rememberHealthConnectAction(onDenied = { denied = true })
 
     // Раздел открыт — проверим доступ (дешёво; само чтение ограничено по частоте).
@@ -536,7 +536,15 @@ private fun StepsSection(version: Int) {
             "В Garmin Connect включи передачу данных в Health Connect. Данные появляются после синхронизации часов",
             modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
         )
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+            OutlinedButton(
+                onClick = { showDiagnostics = true },
+                shape = ButtonShape,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            ) { Text("Проверить данные Health Connect") }
+        }
     }
+    if (showDiagnostics) HealthDiagnosticsDialog(onDismiss = { showDiagnostics = false })
 }
 
 // ---------- 4. Блокировка ----------
@@ -569,9 +577,6 @@ private fun SecondPhoneSection(version: Int, onPairing: () -> Unit) {
             runCatching { Ledger.balanceMs() to Ledger.peerBalanceMs() }.getOrNull()
         }
     }
-    val source by produceState<String?>(null, version, peer) {
-        value = withContext(Dispatchers.IO) { runCatching { SharedSettings.activitySource() }.getOrNull() }
-    }
     val me = remember { runCatching { Ledger.deviceId() }.getOrNull() }
     SettingsSection("Второй телефон") {
         SettingsRow(SettingsMath.pairStatus(peer?.name))
@@ -594,23 +599,7 @@ private fun SecondPhoneSection(version: Int, onPairing: () -> Unit) {
             }
             if (me != null) {
                 HorizontalDivider(Modifier.padding(top = 4.dp), color = MaterialTheme.colorScheme.surfaceVariant)
-                // Источник выбирается один раз при первом обмене (у кого есть доступ к Health Connect) и не меняется,
-                // пока пара не разорвана: смена «на лету» могла оплатить шаги дважды.
-                val sourceName = when (source) {
-                    null -> "выберется при первом обмене"
-                    me -> "этот телефон"
-                    peer.deviceId -> peer.name
-                    else -> "—"
-                }
-                Text(
-                    "Шаги и бег читает: $sourceName",
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp),
-                    style = MaterialTheme.typography.bodyLarge,
-                )
-                SettingsText(
-                    "Он оплачивает шаги и бонус «Сайтамы»; второй телефон получает данные копией. " +
-                        "Выбирается телефон с подключённым Health Connect. Чтобы сменить — разорви связь и свяжи телефоны заново",
-                )
+                ActivitySourceSelection(version, me, peer.deviceId, peer.name)
             }
         } else {
             SettingsText("Баланс и дневной лимит станут общими на два телефона. Обмен — по Wi-Fi, когда телефоны рядом")

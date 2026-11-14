@@ -203,6 +203,9 @@ object ActivityMath {
 
     fun due(t: DayTotals, capMs: Long = DAILY_CAP_MS): Due = due(t.steps, t.runSteps, t.runDistanceM, capMs)
 
+    /** Локальная строка и журнал обоих источников сохраняют уже оплаченный максимум при передаче телефона. */
+    fun paidBeforeReward(storedMs: Long, ledgerPaidBothMs: Long): Long = maxOf(storedMs, ledgerPaidBothMs)
+
     /**
      * Сколько доначислить за день: только «вверх» и только если начисление включено и день
      * не раньше дня включения [sinceDay]. Уменьшение данных ничего не списывает.

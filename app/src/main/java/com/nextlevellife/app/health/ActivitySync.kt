@@ -78,6 +78,7 @@ object ActivitySync {
             } catch (e: Exception) {
                 Log.e(TAG, "Синхронизация не удалась", e)
                 _state.update { it.copy(error = errorText(e)) }
+                HealthDiagnostics.recordResult(app, errorText(e))
                 // Разрешение могли отозвать прямо сейчас: обновим доступ, чтобы экраны это показали.
                 if (e is SecurityException) _state.update { it.copy(access = HealthConnect.access(app)) }
             } finally {
@@ -116,6 +117,7 @@ object ActivitySync {
         val zone = time.zone
         val today = time.day
         val days = ActivityMath.syncDays(today)
+        HealthDiagnostics.recordAttempt(context, now)
         val snapshot = HealthConnect.read(context, days, zone, now, readRuns = access.canReadRuns)
         // Уже записанная пробежка сохраняет свой день: смена учётного пояса не оплатит её второй раз.
         val knownDays = withContext(Dispatchers.IO) { Diary.activityRunDays(snapshot.runs.map { it.id }) }
@@ -131,6 +133,7 @@ object ActivitySync {
 
         val changed = withContext(Dispatchers.IO) { store(days, totals, runs, now, zone, runsRead = access.canReadRuns) }
         Settings.setActivityLastSyncMs(now)
+        HealthDiagnostics.recordResult(context, null)
         _state.update { it.copy(lastSyncMs = now, error = null) }
         if (changed) Store.notifyChanged()
     }
@@ -161,7 +164,7 @@ object ActivitySync {
             for (t in totals) {
                 val old = oldDays[t.day]
                 // Уже оплачено за день — и здесь, и вторым телефоном (прежним источником, по копии его журнала).
-                val rewarded = maxOf(old?.rewardedMs ?: 0L, Ledger.stepsPaidBothMs(t.day))
+                val rewarded = ActivityMath.paidBeforeReward(old?.rewardedMs ?: 0L, Ledger.stepsPaidBothMs(t.day))
                 val due = ActivityMath.due(t)
                 val delta = ActivityMath.rewardDelta(due.totalMs, rewarded, enabled, t.day, since, frozenThrough)
                 var newRewarded = rewarded

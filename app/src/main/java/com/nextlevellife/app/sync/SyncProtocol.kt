@@ -230,6 +230,30 @@ data class LogCursor(val log: String, val author: String, val epoch: String, val
     }
 }
 
+/**
+ * Совместимые метаданные приветствия в расширяемом списке курсоров. Это не курсоры журналов и они
+ * не сохраняются в sync_cursors. Старые версии используют только OPS/FACTS и пропускают эти элементы.
+ * Бинарный формат Hello и версия протокола остаются прежними.
+ */
+object ActivityHelloMetadata {
+    private const val STEPS = "health_steps7d"
+    private const val HANDOFF = "activity_handoff_v1"
+
+    fun cursors(deviceId: String, local: LocalState): List<LogCursor> = buildList {
+        add(LogCursor(HANDOFF, deviceId, "1", 1L))
+        local.healthSteps7d?.takeIf { it >= 0L }?.let {
+            add(LogCursor(STEPS, deviceId, "${local.day}@${local.zoneId}", it))
+        }
+    }
+
+    fun steps(hello: SyncMessage.Hello, day: Long, zoneId: String): Long? = hello.cursors
+        .singleOrNull { it.log == STEPS && it.author == hello.deviceId && it.epoch == "$day@$zoneId" }
+        ?.pos?.takeIf { it >= 0L }
+
+    fun supportsHandoff(hello: SyncMessage.Hello): Boolean = hello.cursors
+        .singleOrNull { it.log == HANDOFF && it.author == hello.deviceId && it.epoch == "1" }?.pos == 1L
+}
+
 /** Активность за дни [fromDay]..[toDay] от источника активности: получатель заменяет эти дни целиком. */
 data class ActivityExport(val fromDay: Long, val toDay: Long, val days: List<ActivityDay>, val runs: List<ActivityRun>)
 

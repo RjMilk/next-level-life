@@ -96,23 +96,64 @@ object SharedSettings {
      * телефона никогда не считают себя источником одновременно (прежний перестаёт, только увидев новое значение,
      * новый начинает только после удачного обмена). Звать внутри транзакции начисления.
      */
-    fun isActivitySource(): Boolean {
-        val peer = Ledger.peerId() ?: return true
+    fun isActivitySource(): Boolean = synchronized(Diary) {
+        val peer = Ledger.peerId() ?: return@synchronized true
         val pending = runCatching { Diary.metaGet(KEY_SOURCE_PENDING) }.getOrElse { "?" } != null
-        return SharedWalletMath.isActivitySource(Ledger.deviceId(), peer, activitySource(), pending)
+        SharedWalletMath.isActivitySource(Ledger.deviceId(), peer, activitySource(), pending)
     }
 
     /** meta: смена источника активности, сделанная здесь и ещё не подтверждённая обменом. */
     private const val KEY_SOURCE_PENDING = "activity_source_pending"
+    private const val KEY_HANDOFF_PEER = "activity_source_handoff_peer"
 
+    fun activitySourcePending(): Boolean =
+        runCatching { Diary.metaGet(KEY_SOURCE_PENDING) != null }.getOrDefault(true)
 
-    /** Обмен прошёл: второй телефон видел здешние настройки — смена источника подтверждена. */
-    fun confirmAfterSync() {
-        try {
-            Diary.write { Diary.metaDelete(KEY_SOURCE_PENDING) }
-        } catch (e: Exception) {
-            Log.e(TAG, "Не удалось подтвердить смену источника", e)
+    /** Новая пара должна заново подтвердить поддержку передачи источника. Звать в транзакции смены пары. */
+    internal fun resetActivitySourceSyncState() {
+        Diary.metaDelete(KEY_SOURCE_PENDING)
+        Diary.metaDelete(KEY_HANDOFF_PEER)
+    }
+
+    /** Предыдущий APK не умеет подтверждать версию выбора и безопасно передавать источник. */
+    fun canChangeActivitySource(): Boolean = Ledger.peerId()?.let { peer ->
+        runCatching { Diary.metaGet(KEY_HANDOFF_PEER) == peer }.getOrDefault(false)
+    } ?: false
+
+    /** Выбор и остановка здешнего начисления записываются одной транзакцией. Ошибка видна вызывающему экрану. */
+    @Synchronized
+    fun changeActivitySource(deviceId: String) {
+        Diary.write { db ->
+            val me = Ledger.deviceId()
+            val peer = Ledger.peerId() ?: error("Телефоны не связаны")
+            require(deviceId == me || deviceId == peer) { "Выбран телефон вне пары" }
+            check(Diary.metaGet(KEY_HANDOFF_PEER) == peer) { "Обнови приложение на обоих телефонах и выполни обмен" }
+            val have = rows(db)
+            if (have[ACTIVITY_SOURCE]?.value == deviceId) return@write
+            put(db, SharedWalletMath.Setting(ACTIVITY_SOURCE, deviceId,
+                SharedWalletMath.nextVersion(have.values, ACTIVITY_SOURCE), me))
+            Diary.metaPut(KEY_SOURCE_PENDING, "1")
         }
+        Store.notifyChanged()
+    }
+
+    /**
+     * Подтверждается только версия, которую обе стороны действительно отправили в этом обмене.
+     * Done следует после досылки журнала прежнего источника, уже остановленного сменой настройки.
+     * Изменение во время обмена останется pending до следующего обмена.
+     */
+    fun confirmAfterSync(
+        peerId: String, sent: SharedWalletMath.Setting?, received: SharedWalletMath.Setting?, handoffSupported: Boolean,
+    ) {
+        Diary.write { db ->
+            if (Ledger.peerId() != peerId) return@write
+            if (handoffSupported) Diary.metaPut(KEY_HANDOFF_PEER, peerId)
+            else Diary.metaDelete(KEY_HANDOFF_PEER)
+            if (SharedWalletMath.sourceConfirmed(rows(db)[ACTIVITY_SOURCE], sent, received)) {
+                Diary.metaDelete(KEY_SOURCE_PENDING)
+            }
+        }
+        Store.notifyChanged()
     }
 
     /**
@@ -155,38 +196,35 @@ object SharedSettings {
     }
 
     /** Источник по умолчанию, если ещё не выбран (одинаковая строка на обоих телефонах). */
-    fun ensureActivitySource(peerId: String, myHealth: Boolean, peerHealth: Boolean) {
+    @Synchronized
+    fun ensureActivitySource(peerId: String, myHealth: Boolean, peerHealth: Boolean, mySteps: Long? = null, peerSteps: Long? = null) {
         Diary.write { db ->
             if (ACTIVITY_SOURCE in rows(db)) return@write
             val me = Ledger.deviceId()
-            put(db, SharedWalletMath.Setting(ACTIVITY_SOURCE, SharedWalletMath.defaultActivitySource(me, myHealth, peerId, peerHealth), 1L, minOf(me, peerId)))
+            put(db, SharedWalletMath.Setting(ACTIVITY_SOURCE, SharedWalletMath.defaultActivitySource(me, myHealth, peerId, peerHealth, mySteps, peerSteps), 1L, minOf(me, peerId)))
+            Diary.metaPut(KEY_SOURCE_PENDING, "1")
         }
     }
 
     /**
      * Слить настройки второго телефона и применить победителей. true — что-то изменилось.
-     * Источник активности выбирается один раз при первом обмене ([ensureActivitySource]) и пользователем не меняется.
-     * Если две стороны всё же выбрали по-разному (первый обмен оборвался, а доступ к Health Connect с тех пор
-     * изменился), обе сходятся к одному значению детерминированно — к меньшему device_id из двух выборов; так
-     * разногласие не держится дольше одного обмена.
+     * Источник тоже сливается по версии. Получатель ждёт завершения обмена журналами перед начислением.
      */
     @Synchronized
     fun merge(remote: List<SharedWalletMath.Setting>): Boolean {
         val local = all()
-        val merged = SharedWalletMath.mergeAll(local, remote.filter { it.key != ACTIVITY_SOURCE }).toMutableMap()
-        val localSource = local.firstOrNull { it.key == ACTIVITY_SOURCE }
-        val remoteSource = remote.firstOrNull { it.key == ACTIVITY_SOURCE }
-        val agreed = when {
-            remoteSource == null -> localSource
-            localSource == null -> remoteSource
-            localSource.value == remoteSource.value -> localSource
-            else -> if (remoteSource.value < localSource.value) remoteSource else localSource
-        }
-        if (agreed != null) merged[ACTIVITY_SOURCE] = agreed
+        val me = Ledger.deviceId()
+        val peer = Ledger.peerId()
+        val accepted = remote.filter { it.key != ACTIVITY_SOURCE ||
+            (it.value in listOf(me, peer) && it.author in listOf(me, peer) && it.version >= 1L) }
+        val merged = SharedWalletMath.mergeAll(local, accepted)
         val localByKey = local.associateBy { it.key }
         val changedRows = merged.values.filter { localByKey[it.key] != it }
         if (changedRows.isEmpty()) return false
-        Diary.write { db -> for (s in changedRows) put(db, s) }
+        Diary.write { db ->
+            for (s in changedRows) put(db, s)
+            if (changedRows.any { it.key == ACTIVITY_SOURCE }) Diary.metaPut(KEY_SOURCE_PENDING, "1")
+        }
         applyAll()
         if (changedRows.any { it.key == ACTIVITY_SOURCE }) Store.notifyChanged()
         return true

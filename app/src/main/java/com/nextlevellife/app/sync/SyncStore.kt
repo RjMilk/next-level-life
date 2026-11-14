@@ -21,6 +21,7 @@ data class LocalState(
     /** Оставшаяся доля дневного лимита; null — без лимита. */
     val shareLeftMs: Long?,
     val healthConnected: Boolean,
+    val healthSteps7d: Long? = null,
 )
 
 /**
@@ -76,7 +77,10 @@ interface SyncStore {
     fun applySettings(remote: List<SharedWalletMath.Setting>): Boolean
 
     /** Если источник активности ещё не выбран — записать выбор по умолчанию ([SharedWalletMath.defaultActivitySource]). */
-    fun ensureActivitySource(peerId: String, myHealth: Boolean, peerHealth: Boolean)
+    fun ensureActivitySource(peerId: String, myHealth: Boolean, peerHealth: Boolean, mySteps: Long? = null, peerSteps: Long? = null)
+
+    /** После Done подтверждает конкретные отправленную и полученную строки выбора. */
+    fun confirmActivitySource(peerId: String, sent: SharedWalletMath.Setting?, received: SharedWalletMath.Setting?, handoffSupported: Boolean)
 
     /** Кошелёк [peerId] по копии его журнала. */
     fun peerWalletMs(peerId: String): Long

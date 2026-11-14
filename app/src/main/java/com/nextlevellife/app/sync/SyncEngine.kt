@@ -1,9 +1,12 @@
 package com.nextlevellife.app.sync
 
+import android.content.Context
 import android.os.SystemClock
 import android.util.Log
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.Store
+import com.nextlevellife.app.data.SharedSettings
+import com.nextlevellife.app.health.ActivitySync
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -53,13 +56,15 @@ object SyncEngine {
     private val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "sync").apply { isDaemon = true } }
 
     /** Хранилище обмена: на дневнике. */
-    private val store by lazy { DiarySyncStore() }
+    private var appContext: Context? = null
+    private val store by lazy { DiarySyncStore(appContext) }
 
     private val _state = MutableStateFlow(SyncUiState())
     val state: StateFlow<SyncUiState> = _state
 
     /** Подключить транспорт: входящие каналы, слушатель сопряжения, текущая пара. Store должен быть готов. */
-    fun attach(link: SyncLink) {
+    fun attach(link: SyncLink, context: Context) {
+        appContext = context.applicationContext
         this.link = link
         link.setIncomingHandler(::onIncoming)
         link.setPairingListener(::onPairingChanged)
@@ -89,6 +94,7 @@ object SyncEngine {
         val l = link ?: return
         val peer = l.peer() ?: return
         if (!lock.tryLock()) return // идёт входящий обмен — это тот же обмен
+        var retrySource = false
         try {
             _state.update { it.copy(peer = peer, running = true) }
             val channel = try {
@@ -103,11 +109,12 @@ object SyncEngine {
                 return
             }
             Log.i(TAG, "Обмен ($reason)")
-            channel.use { runSession(it, peer) }
+            channel.use { retrySource = runSession(it, peer) && reason != "подтверждение источника" }
         } finally {
             _state.update { it.copy(running = false) }
             lock.unlock()
         }
+        if (retrySource) requestSync("подтверждение источника")
     }
 
     private fun onIncoming(channel: SyncChannel) {
@@ -120,33 +127,41 @@ object SyncEngine {
             val me = runCatching { Ledger.deviceId() }.getOrNull() ?: return
             val acquired = if (me > ch.peerDeviceId) lock.tryLock() else lock.tryLock(INCOMING_WAIT_S, TimeUnit.SECONDS)
             if (!acquired) return
+            var retrySource = false
             try {
                 _state.update { it.copy(peer = peer, running = true) }
-                runSession(ch, peer)
+                retrySource = runSession(ch, peer)
             } finally {
                 _state.update { it.copy(running = false) }
                 lock.unlock()
             }
+            if (retrySource) requestSync("подтверждение источника")
         }
     }
 
-    private fun runSession(channel: SyncChannel, peer: PairedPeer) {
+    private fun runSession(channel: SyncChannel, peer: PairedPeer): Boolean {
         try {
             if (Ledger.peerId() != peer.deviceId) onPairingChanged(peer)
+            val wasActivitySource = SharedSettings.isActivitySource()
             val outcome = SyncSession(store, channel).run()
             // Обмен дошёл до конца: все страницы журнала второго телефона приняты — копия полная.
             Ledger.markPeerCopyComplete(peer.deviceId)
             lastFailureElapsed = null
-            // Второй телефон получил здешние настройки: смена источника активности, сделанная здесь, вступает в силу.
-            com.nextlevellife.app.data.SharedSettings.confirmAfterSync()
+            if (!wasActivitySource && SharedSettings.isActivitySource()) {
+                appContext?.let { ActivitySync.request(it, force = true) }
+            }
+            // Поздний выбор пользователя мог не попасть в снимок Settings этого обмена.
+            // Один дополнительный обмен доставит его, не снимая pending преждевременно.
             _state.update { it.copy(lastSuccessMs = System.currentTimeMillis(), notFound = false, error = null) }
             if (outcome.receivedMs > 0 || outcome.givenWalletMs > 0 || outcome.givenLimitMs > 0) {
                 Log.i(TAG, "Перенос: получено ${outcome.receivedMs}, отдано ${outcome.givenWalletMs} мин. и ${outcome.givenLimitMs} лимита (мс)")
             }
+            return SharedSettings.activitySourcePending()
         } catch (e: Exception) {
             Log.w(TAG, "Обмен не удался", e)
             lastFailureElapsed = SystemClock.elapsedRealtime()
             _state.update { it.copy(notFound = false, error = errorText(e)) }
+            return false
         }
     }
 

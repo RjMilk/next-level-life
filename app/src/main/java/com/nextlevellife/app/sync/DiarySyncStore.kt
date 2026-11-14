@@ -1,6 +1,7 @@
 package com.nextlevellife.app.sync
 
 import android.content.ContentValues
+import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.util.Log
@@ -18,13 +19,16 @@ import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TrustedClock
 import com.nextlevellife.app.health.ActivitySync
 import com.nextlevellife.app.health.HealthAvailability
+import com.nextlevellife.app.health.HealthConnect
 import com.nextlevellife.app.stats.StatsRepository
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Хранилище обмена на дневнике (diary.db). Пакеты применяются транзакциями [Diary.write] вместе с курсорами;
  * свои операции пишет только [Ledger], копии второго телефона лежат в peer_ops и в свой кошелёк не входят.
  */
-class DiarySyncStore : SyncStore {
+class DiarySyncStore(private val context: Context? = null) : SyncStore {
     override val deviceId: String get() = Ledger.deviceId()
 
     /** Неоплаченный расход по последнему погашению: его нельзя отдать. */
@@ -39,6 +43,12 @@ class DiarySyncStore : SyncStore {
         reserveMs = settled?.unpaidMs ?: 0L
         val time = TrustedClock.snapshot()
         val wallet = if (settled == null) 0L else Ledger.balanceMs() - settled.unpaidMs
+        // В том числе на телефоне, который пока не источник. Ошибка оценки оставляет прежний fallback по id.
+        val steps = context?.let { app ->
+            HealthConnect.cachedSevenDaySteps(app) ?: runBlocking {
+                withTimeoutOrNull(4_000L) { HealthConnect.sevenDaySteps(app) }
+            }
+        }
         return LocalState(
             opsEpoch = Ledger.opsEpoch(),
             factsEpoch = Diary.factsEpoch(),
@@ -48,7 +58,8 @@ class DiarySyncStore : SyncStore {
             walletMs = wallet,
             // Неоплаченный расход (долг) ещё ляжет в эти сутки: он уже израсходовал часть доли.
             shareLeftMs = Ledger.shareLeftMs(time.day)?.let { it - (settled?.unpaidMs ?: 0L) },
-            healthConnected = ActivitySync.state.value.access?.availability == HealthAvailability.CONNECTED,
+            healthConnected = steps != null || ActivitySync.state.value.access?.availability == HealthAvailability.CONNECTED,
+            healthSteps7d = steps,
         )
     }
 
@@ -367,7 +378,8 @@ class DiarySyncStore : SyncStore {
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
-    override fun isActivitySource(peerId: String): Boolean = SharedSettings.activitySource() == deviceId
+    override fun isActivitySource(peerId: String): Boolean =
+        Ledger.peerId() == peerId && SharedSettings.isActivitySource()
 
     override fun activityExport(): ActivityExport? {
         val today = TrustedClock.today()
@@ -396,8 +408,11 @@ class DiarySyncStore : SyncStore {
 
     override fun applySettings(remote: List<SharedWalletMath.Setting>): Boolean = SharedSettings.merge(remote)
 
-    override fun ensureActivitySource(peerId: String, myHealth: Boolean, peerHealth: Boolean) =
-        SharedSettings.ensureActivitySource(peerId, myHealth, peerHealth)
+    override fun ensureActivitySource(peerId: String, myHealth: Boolean, peerHealth: Boolean, mySteps: Long?, peerSteps: Long?) =
+        SharedSettings.ensureActivitySource(peerId, myHealth, peerHealth, mySteps, peerSteps)
+
+    override fun confirmActivitySource(peerId: String, sent: SharedWalletMath.Setting?, received: SharedWalletMath.Setting?, handoffSupported: Boolean) =
+        SharedSettings.confirmAfterSync(peerId, sent, received, handoffSupported)
 
     override fun peerShareLeftMs(peerId: String): Long? = Ledger.peerShareLeftMs(TrustedClock.today())
 
@@ -445,6 +460,7 @@ class DiarySyncStore : SyncStore {
     /** Разрыв пары: копия журнала второго телефона и курсоры операций удаляются; факты остаются. */
     fun unpair() {
         Diary.write { db ->
+            SharedSettings.resetActivitySourceSyncState()
             db.delete("peer_ops", null, null)
             db.delete("sync_cursors", "log = ?", arrayOf(LogCursor.OPS))
         }
@@ -454,6 +470,7 @@ class DiarySyncStore : SyncStore {
     /** Сменился связанный телефон: копии прежнего удаляются. */
     fun forgetOtherPeers(peerId: String) {
         Diary.write { db ->
+            SharedSettings.resetActivitySourceSyncState()
             db.delete("peer_ops", "device_id <> ?", arrayOf(peerId))
             db.delete("sync_cursors", "log = ? AND author <> ?", arrayOf(LogCursor.OPS, peerId))
         }

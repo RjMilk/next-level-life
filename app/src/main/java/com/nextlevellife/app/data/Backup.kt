@@ -448,6 +448,11 @@ object Backup {
                 if (localPeer != null) putMeta(Ledger.KEY_SYNC_PEER, localPeer) else db.delete("meta", "key = ?", arrayOf(Ledger.KEY_SYNC_PEER))
                 db.delete("shared_settings", "key = ?", arrayOf(SharedSettings.ACTIVITY_SOURCE))
                 if (localSource != null) db.insertWithOnConflict("shared_settings", null, localSource, SQLiteDatabase.CONFLICT_REPLACE)
+                // Копия могла быть снята с подтверждённым выбором другого состояния пары.
+                // Журнал peer_ops стёрт выше, поэтому здешний источник ждёт свежего обмена перед начислением.
+                db.delete("meta", "key = ?", arrayOf("activity_source_handoff_peer"))
+                if (localPeer != null && localSource != null) putMeta("activity_source_pending", "1")
+                else db.delete("meta", "key = ?", arrayOf("activity_source_pending"))
                 // Копия журнала второго телефона стёрта выше — до следующего обмена она не полная.
                 db.delete("meta", "key = ?", arrayOf(Ledger.KEY_PEER_COMPLETE))
                 for ((key, value) in localPairMeta) {

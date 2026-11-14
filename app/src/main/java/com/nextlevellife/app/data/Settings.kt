@@ -90,13 +90,8 @@ object Settings {
         applySharedSteps(since)
     }
 
-    /**
-     * Источник активности пары выбирается один раз при первом обмене после сопряжения
-     * ([SharedSettings.ensureActivitySource]) и не меняется, пока пара не разорвана: смена «на лету» допускала двойную
-     * оплату шагов и бонуса «Сайтамы» (ревью Codex). Чтобы сменить — разорвать связь и связать телефоны заново.
-     */
-    @Suppress("UNUSED_PARAMETER")
-    fun setActivitySource(deviceId: String) = Unit
+    /** Смена источника вступает в силу после обмена настройками и журналами обоих телефонов. */
+    fun setActivitySource(deviceId: String) = SharedSettings.changeActivitySource(deviceId)
 
     // ---------- Значения из общих настроек (без новой версии) ----------
 

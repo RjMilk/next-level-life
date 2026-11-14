@@ -36,7 +36,7 @@ data class PairedPeer(val deviceId: String, val name: String)
 
 /**
  * Транспорт глазами обмена данными. Реализация — объект транспорта; обмен получает её через
- * `SyncEngine.attach(link)`. Все методы можно звать с любого потока; [open] блокирует.
+ * `SyncEngine.attach(link, context)`. Все методы можно звать с любого потока; [open] блокирует.
  */
 interface SyncLink {
     /** Связанный телефон; null — сопряжения нет. */

@@ -34,6 +34,8 @@ class SyncSession(
     private val days = HashSet<Long>()
     private var changed = false
     private var receivedMs = 0L
+    private var sentSource: SharedWalletMath.Setting? = null
+    private var receivedSource: SharedWalletMath.Setting? = null
 
     /** Что уже есть у второго телефона: растёт по мере отправки. */
     private class Known(cursors: List<LogCursor>, me: String, opsEpoch: String) {
@@ -61,7 +63,7 @@ class SyncSession(
                 walletMs = local.walletMs,
                 shareLeftMs = local.shareLeftMs,
                 healthConnected = local.healthConnected,
-                cursors = listOfNotNull(store.opsCursor(peer)) + store.factCursors(),
+                cursors = listOfNotNull(store.opsCursor(peer)) + store.factCursors() + ActivityHelloMetadata.cursors(store.deviceId, local),
             )
             val peerHello = if (channel.initiator) {
                 send(hello)
@@ -73,7 +75,8 @@ class SyncSession(
                 throw SyncProtocolException(SyncRules.protocolMismatch(peerHello.protocol, SyncCodec.PROTOCOL_VERSION))
             }
             if (peerHello.deviceId != peer) throw SyncProtocolException("Приветствие не от связанного телефона")
-            store.ensureActivitySource(peer, local.healthConnected, peerHello.healthConnected)
+            store.ensureActivitySource(peer, local.healthConnected, peerHello.healthConnected,
+                local.healthSteps7d, ActivityHelloMetadata.steps(peerHello, local.day, local.zoneId))
             val known = Known(peerHello.cursors, store.deviceId, local.opsEpoch)
 
             // Журналы.
@@ -105,6 +108,7 @@ class SyncSession(
                 if (receive() != SyncMessage.Done) throw SyncProtocolException("Ожидалось завершение")
                 send(SyncMessage.Done)
             }
+            store.confirmActivitySource(peer, sentSource, receivedSource, ActivityHelloMetadata.supportsHandoff(peerHello))
             return SyncOutcome(peerHello, receivedMs, given.first, given.second)
         } finally {
             store.onImported(days, changed || receivedMs > 0L)
@@ -114,11 +118,17 @@ class SyncSession(
     // ---------- Отправка ----------
 
     private fun sendLogs(peer: String, opsEpoch: String, known: Known) {
-        send(SyncMessage.Settings(store.settings()))
+        sendSettings()
         sendOps(opsEpoch, known)
         sendFacts(known)
         if (store.isActivitySource(peer)) store.activityExport()?.let { send(SyncMessage.Activity(it)) }
         send(SyncMessage.EndLogs)
+    }
+
+    private fun sendSettings() {
+        val settings = store.settings()
+        sentSource = settings.firstOrNull { it.key == "activity_source" }
+        send(SyncMessage.Settings(settings))
     }
 
     /** Переносы «от себя» по свежему своему состоянию и приветствию второго телефона, затем их досылка. */
@@ -135,6 +145,8 @@ class SyncSession(
         )
         val wallet = if (give.walletMs > 0L) store.giveWallet(peer, give.walletMs) else 0L
         val limit = if (give.limitMs > 0L) store.giveLimit(peer, give.day, give.limitMs) else 0L
+        // Эхо победившей версии. Старый источник останавливается до верхней границы следующей выгрузки ops.
+        sendSettings()
         sendOps(opsEpoch, known)
         sendFacts(known)
         send(SyncMessage.EndLogs)
@@ -192,7 +204,10 @@ class SyncSession(
     private fun receiveStream(peer: String) {
         while (true) {
             when (val m = receive()) {
-                is SyncMessage.Settings -> if (store.applySettings(m.rows)) changed = true
+                is SyncMessage.Settings -> {
+                    receivedSource = m.rows.firstOrNull { it.key == "activity_source" }
+                    if (store.applySettings(m.rows)) changed = true
+                }
                 is SyncMessage.Ops -> {
                     receivedMs += store.applyOps(peer, m.epoch, m.reset, m.rows)
                     if (m.rows.isNotEmpty() || m.reset) changed = true

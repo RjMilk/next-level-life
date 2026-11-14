@@ -86,7 +86,7 @@ class SyncSessionTest {
         assertEquals(factsA, a.facts.size)
         assertEquals(opsCopy, b.peerOps["aaa"]!!.size)
         // Только служебные сообщения: приветствия, настройки, концы потоков (журналы, переносы, досылка), завершение.
-        assertEquals(2 + 2 + 5 + 2, r.messages)
+        assertEquals(2 + 4 + 5 + 2, r.messages)
     }
 
     @Test
@@ -444,6 +444,8 @@ class SyncSessionTest {
             listOf(ActivityRun("r1", 0, 1, 100, 1_000, 900, "garmin", 56)),
         )
         b.activity = ActivityExport(90, 100, listOf(ActivityDay(100, 1, 0, 0, 0, 0, emptyList(), 0, 1)), emptyList())
+        ok(exchange(a, b))
+        // Первоначальный выбор подтверждён обоими журналами. Следующий обмен копирует данные источника.
         ok(exchange(a, b))
         // Версия 2 у B побеждает версию 1 у A.
         assertEquals("45", a.settingRows["daily_limit"]!!.value)

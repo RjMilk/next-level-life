@@ -72,7 +72,6 @@ import com.nextlevellife.app.stats.StatsSummary
 import com.nextlevellife.app.stats.StatsText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.time.LocalDate
 
 /** Итог дня с прошлого показа: при возврате на главную карточка «Сегодня» не мигает. */
 private var cachedToday: Pair<Long, ProgressMath.DayDigest>? = null
@@ -138,7 +137,7 @@ fun HomeScreen(
     val nightStart = remember(version) { Settings.nightStartMin }
     val nightEnd = remember(version) { Settings.nightEndMin }
     // Итог дня из дневника и расход за сегодня: читаются в фоне.
-    val today = LocalDate.now().toEpochDay()
+    val today = TrustedClock.today()
     val todayDigest by produceState(cachedToday?.takeIf { it.first == today }?.second, version, today) {
         value = withContext(Dispatchers.IO) {
             runCatching {

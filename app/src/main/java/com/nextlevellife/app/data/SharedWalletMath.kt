@@ -137,7 +137,9 @@ object SharedWalletMath {
         }
         return when {
             a.version != b.version -> if (a.version > b.version) a else b
-            else -> if (a.author >= b.author) a else b
+            a.author != b.author -> if (a.author > b.author) a else b
+            // Повреждённые строки с одинаковыми версией и автором тоже сходятся на обеих сторонах.
+            else -> if (a.value >= b.value) a else b
         }
     }
 
@@ -154,10 +156,6 @@ object SharedWalletMath {
         (known.filter { it.key == key }.maxOfOrNull { it.version } ?: 0L) + 1
 
     /**
-     * Источник активности по умолчанию при появлении пары: телефон с доступом к Health Connect; у обоих или
-     * ни у кого — с меньшим device_id. Одинаков на обоих телефонах.
-     */
-    /**
      * Начисляет ли телефон [me] за активность: без пары ([peer] = null) — да; в паре — только выбранный источник
      * [source], и только если здешняя смена источника уже подтверждена обменом ([pendingChange] = false). Источник
      * не выбран — никто: два телефона никогда не начисляют за одни шаги одновременно.
@@ -165,9 +163,19 @@ object SharedWalletMath {
     fun isActivitySource(me: String, peer: String?, source: String?, pendingChange: Boolean): Boolean =
         peer == null || (source == me && !pendingChange)
 
-    fun defaultActivitySource(me: String, meHealth: Boolean, peer: String, peerHealth: Boolean): String = when {
+    /** Подтверждение относится к точному снимку выбора, включая версию и автора. */
+    fun sourceConfirmed(current: Setting?, sent: Setting?, received: Setting?): Boolean =
+        current != null && current == sent && current == received
+
+    /** При двух разрешениях предпочитается больше шагов, при неизвестной оценке или равенстве — меньший id. */
+    fun defaultActivitySource(
+        me: String, meHealth: Boolean, peer: String, peerHealth: Boolean,
+        meSteps: Long? = null, peerSteps: Long? = null,
+    ): String = when {
         meHealth && !peerHealth -> me
         peerHealth && !meHealth -> peer
+        meHealth && peerHealth && meSteps != null && peerSteps != null && meSteps != peerSteps ->
+            if (meSteps > peerSteps) me else peer
         else -> minOf(me, peer)
     }
 }

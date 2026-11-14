@@ -14,10 +14,11 @@
         android:name="android.hardware.camera.any"
         android:required="false" />
     <!-- Шаги и пробежки (часы Garmin, телефон) из Health Connect: только чтение, только пока приложение открыто.
-         Фоновое чтение и история старше 30 дней не запрашиваются. Данные остаются на телефоне. -->
+         Расширенная история запрашивается отдельно в диагностике. Данные остаются на телефоне. -->
     <uses-permission android:name="android.permission.health.READ_STEPS" />
     <uses-permission android:name="android.permission.health.READ_DISTANCE" />
     <uses-permission android:name="android.permission.health.READ_EXERCISE" />
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_HISTORY" />
     <!-- Синхронизация двух своих телефонов по домашней Wi-Fi сети: TCP и поиск через NSD, без интернета и серверов.
          ACCESS_LOCAL_NETWORK на Android 17 — разрешение времени выполнения, запрашивается на экране сопряжения. -->
     <uses-permission android:name="android.permission.INTERNET" />

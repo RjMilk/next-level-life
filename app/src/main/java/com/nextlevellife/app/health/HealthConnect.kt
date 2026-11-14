@@ -7,6 +7,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.HealthConnectFeatures
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.DistanceRecord
@@ -21,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.ZoneId
+import com.nextlevellife.app.data.TrustedClock
 
 /** Что Health Connect может дать приложению прямо сейчас. */
 enum class HealthAvailability {
@@ -49,7 +51,7 @@ data class HealthSnapshot(
 
 /**
  * Обёртка над Health Connect: доступность, разрешения и чтение. Только чтение и только
- * в активном приложении: фонового чтения и истории старше 30 дней не запрашиваем.
+ * в активном приложении. Чтение истории запрашивается отдельно по желанию пользователя.
  * Все обращения — в [Dispatchers.IO]. Ошибки чтения пробрасываются (их ловит [ActivitySync]),
  * проверка доступа ошибок не бросает.
  */
@@ -62,9 +64,57 @@ object HealthConnect {
     val STEPS_PERMISSION: String = HealthPermission.getReadPermission(StepsRecord::class)
     val DISTANCE_PERMISSION: String = HealthPermission.getReadPermission(DistanceRecord::class)
     val EXERCISE_PERMISSION: String = HealthPermission.getReadPermission(ExerciseSessionRecord::class)
+    val HISTORY_PERMISSION: String = HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY
+    val BACKGROUND_PERMISSION: String = HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
 
     /** Всё, что просим: шаги, дистанция, тренировки. */
     val PERMISSIONS: Set<String> = setOf(STEPS_PERMISSION, DISTANCE_PERMISSION, EXERCISE_PERMISSION)
+
+    /** Расширенная история необязательна и доступна только на поддерживающем её провайдере. */
+    suspend fun optionalHistoryPermissions(context: Context): Set<String> = withContext(Dispatchers.IO) {
+        if (sdkStatus(context) != HealthConnectClient.SDK_AVAILABLE) return@withContext emptySet()
+        try {
+            val client = HealthConnectClient.getOrCreate(context, PROVIDER_PACKAGE)
+            if (client.features.getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_HISTORY) ==
+                HealthConnectFeatures.FEATURE_STATUS_AVAILABLE) setOf(HISTORY_PERMISSION) else emptySet()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            emptySet()
+        }
+    }
+
+    /** Независимая проверка именно этого телефона, включая телефон, который сейчас не источник пары. */
+    suspend fun sevenDaySteps(context: Context): Long? = withContext(Dispatchers.IO) {
+        if (access(context).availability != HealthAvailability.CONNECTED) return@withContext null
+        try {
+            val time = TrustedClock.snapshot()
+            val days = (time.day - 6..time.day).toList()
+            val snapshot = read(context, days, time.zone, time.utcMs, readRuns = false)
+            val total = snapshot.stepsByDay.values.sumOf { it ?: 0L }
+            context.getSharedPreferences(DIAGNOSTICS_PREFS, Context.MODE_PRIVATE).edit()
+                .putLong("seven_day_steps", total).putLong("seven_day_read_ms", time.utcMs)
+                .putLong("seven_day_day", time.day).putString("seven_day_zone", time.zone.id).apply()
+            total
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Недавняя локальная проверка для приветствия обмена, без обращения к Health Connect из транзакции. */
+    fun cachedSevenDaySteps(context: Context): Long? {
+        val time = TrustedClock.snapshot()
+        val prefs = context.getSharedPreferences(DIAGNOSTICS_PREFS, Context.MODE_PRIVATE)
+        val readMs = prefs.getLong("seven_day_read_ms", 0L)
+        if (prefs.getLong("seven_day_day", Long.MIN_VALUE) != time.day ||
+            prefs.getString("seven_day_zone", null) != time.zone.id ||
+            time.utcMs - readMs !in 0..30 * 60_000L) return null
+        return prefs.getLong("seven_day_steps", -1L).takeIf { it >= 0L }
+    }
+
+    internal const val DIAGNOSTICS_PREFS = "health_diagnostics"
 
     /** Какие тренировки считаются бегом. */
     val RUNNING_TYPES: Set<Int> = setOf(
