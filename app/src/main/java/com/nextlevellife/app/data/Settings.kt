@@ -51,7 +51,9 @@ object Settings {
     // телефоном возвращает победителя через applyShared… — читатели не меняются. Процесс умер между записями —
     // при запуске действующие значения из shared_settings снова записываются в prefs (SharedSettings.applyAll).
 
-    fun setDailyLimitMin(minutes: Int) {
+    // Запись в таблицу и в prefs — под той же блокировкой, что и SharedSettings.applyAll/merge: параллельное применение
+    // старого значения не перезапишет только что сохранённое новое.
+    fun setDailyLimitMin(minutes: Int) = synchronized(SharedSettings) {
         require(minutes in BlockRules.LIMIT_RANGE) { "Дневной лимит вне диапазона ${BlockRules.LIMIT_RANGE}: $minutes" }
         SharedSettings.localChange(SharedSettings.DAILY_LIMIT, minutes.toString())
         applySharedLimit(minutes)
@@ -69,7 +71,7 @@ object Settings {
         setNight(nightEnabled, nightStartMin, minuteOfDay)
     }
 
-    private fun setNight(enabled: Boolean, startMin: Int, endMin: Int) {
+    private fun setNight(enabled: Boolean, startMin: Int, endMin: Int) = synchronized(SharedSettings) {
         SharedSettings.localChange(SharedSettings.NIGHT, SharedSettingsCodec.night(enabled, startMin, endMin))
         applySharedNight(enabled, startMin, endMin)
     }
@@ -78,7 +80,7 @@ object Settings {
      * Включение запоминает день [today]: дни раньше него не оплачиваются. Повторное включение
      * уже включённого день не сдвигает; выключение и новое включение — сдвигает.
      */
-    fun setStepsRewardEnabled(enabled: Boolean, today: Long = TrustedClock.today()) {
+    fun setStepsRewardEnabled(enabled: Boolean, today: Long = TrustedClock.today()) = synchronized(SharedSettings) {
         val since = when {
             !enabled -> null
             stepsRewardEnabled -> stepsRewardSinceDay
@@ -89,13 +91,12 @@ object Settings {
     }
 
     /**
-     * Источник активности пары (device_id): общая настройка. Смена вступает в силу на этом телефоне только после
-     * удачного обмена ([SharedSettings.changeActivitySource]): до этого ни один из двух не начисляет дважды.
+     * Источник активности пары выбирается один раз при первом обмене после сопряжения
+     * ([SharedSettings.ensureActivitySource]) и не меняется, пока пара не разорвана: смена «на лету» допускала двойную
+     * оплату шагов и бонуса «Сайтамы» (ревью Codex). Чтобы сменить — разорвать связь и связать телефоны заново.
      */
-    fun setActivitySource(deviceId: String) {
-        SharedSettings.changeActivitySource(deviceId)
-        Store.notifyChanged()
-    }
+    @Suppress("UNUSED_PARAMETER")
+    fun setActivitySource(deviceId: String) = Unit
 
     // ---------- Значения из общих настроек (без новой версии) ----------
 

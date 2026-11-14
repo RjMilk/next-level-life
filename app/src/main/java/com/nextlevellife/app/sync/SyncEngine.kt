@@ -134,6 +134,8 @@ object SyncEngine {
         try {
             if (Ledger.peerId() != peer.deviceId) onPairingChanged(peer)
             val outcome = SyncSession(store, channel).run()
+            // Обмен дошёл до конца: все страницы журнала второго телефона приняты — копия полная.
+            Ledger.markPeerCopyComplete(peer.deviceId)
             lastFailureElapsed = null
             // Второй телефон получил здешние настройки: смена источника активности, сделанная здесь, вступает в силу.
             com.nextlevellife.app.data.SharedSettings.confirmAfterSync()

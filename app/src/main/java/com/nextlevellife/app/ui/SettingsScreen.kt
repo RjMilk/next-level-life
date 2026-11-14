@@ -588,33 +588,23 @@ private fun SecondPhoneSection(version: Int, onPairing: () -> Unit) {
             }
             if (me != null) {
                 HorizontalDivider(Modifier.padding(top = 4.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                // Источник выбирается один раз при первом обмене (у кого есть доступ к Health Connect) и не меняется,
+                // пока пара не разорвана: смена «на лету» могла оплатить шаги дважды.
+                val sourceName = when (source) {
+                    null -> "выберется при первом обмене"
+                    me -> "этот телефон"
+                    peer.deviceId -> peer.name
+                    else -> "—"
+                }
                 Text(
-                    "Шаги и бег читает",
+                    "Шаги и бег читает: $sourceName",
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp),
                     style = MaterialTheme.typography.bodyLarge,
                 )
-                val choices = listOf(me to "Этот телефон", peer.deviceId to peer.name)
-                SingleChoiceSegmentedButtonRow(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp)
-                ) {
-                    choices.forEachIndexed { i, (id, label) ->
-                        SegmentedButton(
-                            selected = source == id,
-                            onClick = {
-                                if (source != id) {
-                                    Settings.setActivitySource(id)
-                                    SyncEngine.requestSync("источник активности", force = true)
-                                }
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(i, choices.size),
-                            colors = SegmentedButtonDefaults.colors(activeContainerColor = Accent, activeContentColor = OnAccent),
-                            icon = {},
-                        ) { Text(label, maxLines = 1) }
-                    }
-                }
-                SettingsText("Он оплачивает шаги и бонус «Сайтамы»; второй телефон получает данные копией")
+                SettingsText(
+                    "Он оплачивает шаги и бонус «Сайтамы»; второй телефон получает данные копией. " +
+                        "Выбирается телефон с подключённым Health Connect. Чтобы сменить — разорви связь и свяжи телефоны заново",
+                )
             }
         } else {
             SettingsText("Баланс и дневной лимит станут общими на два телефона. Обмен — по Wi-Fi, когда телефоны рядом")

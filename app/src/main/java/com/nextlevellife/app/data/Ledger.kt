@@ -394,9 +394,17 @@ object Ledger {
         ) { it.toOp() }
     }
 
-    /** Есть ли копия журнала второго телефона [peer] (был хоть один принятый пакет его операций). */
-    private fun hasPeerCopy(peer: String): Boolean =
-        Diary.query("SELECT 1 FROM sync_cursors WHERE log = 'ops' AND author = ? LIMIT 1", peer) { true }.isNotEmpty()
+    /**
+     * Есть ли ПОЛНАЯ копия журнала второго телефона [peer]: после сопряжения хотя бы один обмен дошёл до конца
+     * ([markPeerCopyComplete]). Принятые первые страницы при оборванном обмене полной копией не считаются: иначе расход
+     * второго телефона, оставшийся на непринятых страницах, выглядел бы нулевым.
+     */
+    private fun hasPeerCopy(peer: String): Boolean = Diary.metaGet(KEY_PEER_COMPLETE) == peer
+
+    /** Обмен с [peer] завершён целиком: копия его журнала полная (см. [hasPeerCopy]). */
+    internal fun markPeerCopyComplete(peer: String) = synchronized(Diary) {
+        if (Diary.metaGet(KEY_PEER_COMPLETE) != peer) Diary.metaPut(KEY_PEER_COMPLETE, peer)
+    }
 
     /** Есть ли операция с ключом [key] в копии журнала второго телефона (идемпотентность общих начислений). */
     fun peerHasKey(key: String): Boolean = synchronized(Diary) {
@@ -484,9 +492,24 @@ object Ledger {
     }
 
     internal fun setPeer(peerId: String?) = synchronized(Diary) {
-        if (peerId == null) Diary.metaDelete(KEY_SYNC_PEER) else Diary.metaPut(KEY_SYNC_PEER, peerId)
+        val old = runCatching { Diary.metaGet(KEY_SYNC_PEER) }.getOrNull()
+        if (peerId == null) {
+            Diary.metaDelete(KEY_SYNC_PEER)
+            Diary.metaDelete(KEY_PAIRED_DAY)
+            Diary.metaDelete(KEY_PEER_COMPLETE)
+        } else {
+            Diary.metaPut(KEY_SYNC_PEER, peerId)
+            if (old != peerId) {
+                // Новая пара: сутки сопряжения (особое правило доли) и копия журнала ещё не полная.
+                Diary.metaPut(KEY_PAIRED_DAY, TrustedClock.today().toString())
+                Diary.metaDelete(KEY_PEER_COMPLETE)
+            }
+        }
         cachedPeer = peerId
     }
+
+    /** Учётные сутки сопряжения с нынешним вторым телефоном; null — пары нет или день не записан. */
+    private fun pairedDay(): Long? = Diary.metaGet(KEY_PAIRED_DAY)?.toLongOrNull()
 
     /** Кошелёк второго телефона по копии его журнала (сумма peer_ops); 0 — пары или копии нет. */
     fun peerBalanceMs(): Long {
@@ -552,8 +575,16 @@ object Ledger {
     fun shareLeftMs(day: Long, limitMin: Int = Settings.dailyLimitMin): Long? {
         val peer = peerId()
         val (incoming, outgoing) = if (peer == null) 0L to 0L else limitMoves(day)
-        // Расход второго телефона за сутки по копии; копии ещё нет (не было обмена после сопряжения) — null.
-        val peerSpent = if (peer == null) 0L else synchronized(Diary) { if (hasPeerCopy(peer)) peerSpentMs(day) else null }
+        // Расход второго телефона за сутки по копии. Полной копии ещё нет (после сопряжения ни один обмен не дошёл до
+        // конца): в сутки сопряжения его расход неизвестен — null (доля не больше нуля, он мог тратить до пары без
+        // ограничения половиной); в последующие сутки оба телефона уже ограничены половиной — 0 (обычное правило).
+        val peerSpent = if (peer == null) 0L else synchronized(Diary) {
+            when {
+                hasPeerCopy(peer) -> peerSpentMs(day)
+                pairedDay() == null || pairedDay() == day -> null
+                else -> 0L
+            }
+        }
         return SharedWalletMath.shareLeftMs(
             limitMs = limitMin * 60_000L, me = deviceId(), peer = peer,
             incomingMs = incoming, outgoingMs = outgoing, ownSpentMs = ownSpentMs(day), peerSpentMs = peerSpent,
@@ -646,6 +677,12 @@ object Ledger {
 
     /** meta: device_id связанного телефона (нет ключа — пары нет). Локальное значение: копия его не переносит. */
     internal const val KEY_SYNC_PEER = "sync_peer"
+
+    /** meta: учётные сутки сопряжения с нынешним вторым телефоном. */
+    internal const val KEY_PAIRED_DAY = "sync_paired_day"
+
+    /** meta: device_id второго телефона, с которым хотя бы один обмен дошёл до конца (копия журнала полная). */
+    internal const val KEY_PEER_COMPLETE = "sync_peer_complete"
 
     /** source_type переносов между телефонами. */
     internal const val SOURCE_TRANSFER = "transfer"

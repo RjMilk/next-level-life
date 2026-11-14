@@ -105,17 +105,6 @@ object SharedSettings {
     /** meta: смена источника активности, сделанная здесь и ещё не подтверждённая обменом. */
     private const val KEY_SOURCE_PENDING = "activity_source_pending"
 
-    /** Пользователь выбрал источник активности: общая настройка и отметка «ждёт подтверждения» — одной транзакцией. */
-    fun changeActivitySource(deviceId: String) {
-        try {
-            Diary.write { db ->
-                put(db, SharedWalletMath.Setting(ACTIVITY_SOURCE, deviceId, SharedWalletMath.nextVersion(rows(db).values, ACTIVITY_SOURCE), Ledger.deviceId()))
-                Diary.metaPut(KEY_SOURCE_PENDING, deviceId)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Не удалось сменить источник активности", e)
-        }
-    }
 
     /** Обмен прошёл: второй телефон видел здешние настройки — смена источника подтверждена. */
     fun confirmAfterSync() {
@@ -130,6 +119,7 @@ object SharedSettings {
      * Записать действующие значения общих настроек в prefs и meta, если они там другие (при запуске и после слияния):
      * строка shared_settings могла записаться, а prefs — нет (процесс остановился между записями).
      */
+    @Synchronized
     fun applyAll() {
         val rows = try {
             Diary.write { db -> rows(db) }
@@ -173,10 +163,14 @@ object SharedSettings {
         }
     }
 
-    /** Слить настройки второго телефона и применить победителей. true — что-то изменилось. */
+    /**
+     * Слить настройки второго телефона и применить победителей. true — что-то изменилось. Источник активности не
+     * сливается: он выбирается один раз при первом обмене ([ensureActivitySource]) и дальше не меняется.
+     */
+    @Synchronized
     fun merge(remote: List<SharedWalletMath.Setting>): Boolean {
         val local = all()
-        val merged = SharedWalletMath.mergeAll(local, remote)
+        val merged = SharedWalletMath.mergeAll(local, remote.filter { it.key != ACTIVITY_SOURCE })
         val localByKey = local.associateBy { it.key }
         val changedRows = merged.values.filter { localByKey[it.key] != it }
         if (changedRows.isEmpty()) return false

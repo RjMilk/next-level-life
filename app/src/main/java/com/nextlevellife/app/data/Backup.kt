@@ -273,6 +273,20 @@ object Backup {
         }
         // Связь с вторым телефоном — здешняя: копия её не переносит.
         val localPeer = runCatching { Ledger.peerId() }.getOrNull()
+        // Источник активности пары — тоже здешний: копия со старым источником позволила бы оплатить шаги дважды.
+        val localSource = runCatching {
+            synchronized(Diary) {
+                Diary.query("SELECT value, version, author FROM shared_settings WHERE key = ?", SharedSettings.ACTIVITY_SOURCE) { c ->
+                    android.content.ContentValues().apply {
+                        put("key", SharedSettings.ACTIVITY_SOURCE); put("value", c.getString(0))
+                        put("version", c.getLong(1)); put("author", c.getString(2))
+                    }
+                }.firstOrNull()
+            }
+        }.getOrNull()
+        val localPairMeta = runCatching {
+            synchronized(Diary) { listOf(Ledger.KEY_PAIRED_DAY).associateWith { Diary.metaGet(it) } }
+        }.getOrDefault(emptyMap())
         // Переносы доли дневного лимита (отданные и полученные) — тоже: без них восстановление вернуло бы отданную
         // долю (свои переносы с другого телефона не принимаются) или потеряло полученную.
         val currentMoves = try {
@@ -328,6 +342,13 @@ object Backup {
                 db.delete("peer_ops", null, null)
                 for (move in currentMoves) db.insertWithOnConflict("limit_moves", null, move, SQLiteDatabase.CONFLICT_IGNORE)
                 if (localPeer != null) putMeta(Ledger.KEY_SYNC_PEER, localPeer) else db.delete("meta", "key = ?", arrayOf(Ledger.KEY_SYNC_PEER))
+                db.delete("shared_settings", "key = ?", arrayOf(SharedSettings.ACTIVITY_SOURCE))
+                if (localSource != null) db.insertWithOnConflict("shared_settings", null, localSource, SQLiteDatabase.CONFLICT_REPLACE)
+                // Копия журнала второго телефона стёрта выше — до следующего обмена она не полная.
+                db.delete("meta", "key = ?", arrayOf(Ledger.KEY_PEER_COMPLETE))
+                for ((key, value) in localPairMeta) {
+                    if (value != null) putMeta(key, value) else db.delete("meta", "key = ?", arrayOf(key))
+                }
                 val backupMeta = HashMap<String, String>()
                 db.rawQuery("SELECT key, value FROM meta", null).use { c ->
                     while (c.moveToNext()) backupMeta[c.getString(0)] = c.getString(1)
