@@ -50,8 +50,19 @@ object Exercises {
     val row = Exercise("row", "Тяга к поясу в наклоне", 25, 1.0, kettlebell = true)
     val deadlift = Exercise("deadlift", "Становая тяга", 25, 1.0, kettlebell = true)
 
+    // Из каталога docs/exercise-catalog.md (раздел 1): цена для 16 кг и минимум секунд на повтор.
+    val gobletSquat = Exercise("goblet_squat", "Присед с гирей у груди", 35, 2.5, kettlebell = true)
+
+    /** Считается любая рука; обе руки разом — один повтор. */
+    val press = Exercise("press", "Жим гири одной рукой", 30, 2.5, kettlebell = true)
+
+    /** Каждый шаг назад (любой ногой) — один повтор. */
+    val reverseLunge = Exercise("reverse_lunge", "Выпад назад с гирей", 35, 3.0, kettlebell = true)
+    val curl = Exercise("curl", "Сгибание рук с гирей", 20, 3.0, kettlebell = true)
+    val gluteBridge = Exercise("glute_bridge", "Ягодичный мост с гирей", 20, 3.0, kettlebell = true)
+
     val bodyweight = listOf(pushups, squats, abs, pullups, plank)
-    val kettlebell = listOf(thruster, swing, sumoPull, row, deadlift)
+    val kettlebell = listOf(thruster, swing, sumoPull, row, deadlift, gobletSquat, press, reverseLunge, curl, gluteBridge)
     val all = bodyweight + kettlebell
 
     fun byId(id: String): Exercise = all.first { it.id == id }

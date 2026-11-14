@@ -83,6 +83,12 @@ internal enum class Feature(val isAngle: Boolean, vararg limbs: Limb) {
 
     /** Смещение локтя от плеча по горизонтали (всегда ≥ 0). */
     ELBOW_SHOULDER_DX(false, Limb.SHOULDER, Limb.ELBOW),
+
+    /**
+     * Угол в тазу плечо–таз–колено (сгибание бедра). 180 — корпус и бедро на одной прямой
+     * (верх ягодичного моста), лёжа с согнутыми ногами ≈ 130. В отличие от [HIP_ANGLE] не зависит от голени.
+     */
+    HIP_FLEXION(true, Limb.SHOULDER, Limb.HIP, Limb.KNEE),
     ;
 
     val joints: Set<Limb> = limbs.toSet()
@@ -148,6 +154,7 @@ internal enum class Feature(val isAngle: Boolean, vararg limbs: Limb) {
                 v[HIP_ANGLE.ordinal] = Geometry.jointAngle(s, h, a)
                 v[HIP_OFF_LINE.ordinal] = Geometry.offsetFromLine(h, s, a, scale)
             }
+            if (s != null && h != null && k != null) v[HIP_FLEXION.ordinal] = Geometry.jointAngle(s, h, k)
             if (s != null && a != null) v[BODY_FROM_HORIZONTAL.ordinal] = Geometry.tiltFromHorizontal(a, s)
             if (s != null && e != null) {
                 v[SHOULDER_OVER_ELBOW.ordinal] = Geometry.heightAbove(s, e, scale)
@@ -448,6 +455,7 @@ internal class Signals(private val v: FloatArray) {
     val bodyFromHorizontal get() = this[Feature.BODY_FROM_HORIZONTAL]
     val shoulderOverElbow get() = this[Feature.SHOULDER_OVER_ELBOW]
     val elbowShoulderDx get() = this[Feature.ELBOW_SHOULDER_DX]
+    val hipFlexion get() = this[Feature.HIP_FLEXION]
 
     companion object {
         const val ARM_TO_TORSO = Feature.ARM_TO_TORSO

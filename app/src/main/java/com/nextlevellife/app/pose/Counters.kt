@@ -4,7 +4,8 @@ import com.nextlevellife.app.pose.Geometry.progress
 import kotlin.math.abs
 
 /**
- * Счётчики повторений по камере. Один общий автомат ([PhaseCounter]) и девять конфигураций.
+ * Счётчики повторений по камере. Один общий автомат ([PhaseCounter]) и конфигурации упражнений;
+ * упражнения одной рукой — по автомату на руку ([EitherArmCounter]).
  * Все пороги — в [CounterThresholds]: углы в градусах, высоты в долях длины торса
  * (у становой — в долях длины бедра).
  */
@@ -14,7 +15,9 @@ object RepCounters {
      * Вид счёта — [RepCounter.kind]: повторения или удержание («plank»).
      */
     fun forExercise(exerciseId: String): RepCounter? =
-        ExerciseConfigs.byId[exerciseId]?.let { PhaseCounter(it) }
+        ExerciseConfigs.byId[exerciseId]?.let {
+            if (exerciseId in ExerciseConfigs.eitherArm) EitherArmCounter(it) else PhaseCounter(it)
+        }
             ?: HoldConfigs.byId[exerciseId]?.let { HoldCounter(it) }
 }
 
@@ -236,6 +239,127 @@ internal object CounterThresholds {
         const val ENTER_SHOULDER_OVER_HIP = 0.1f
 
         const val TORSO_TILT_UPRIGHT = 10f
+    }
+
+    /**
+     * Присед с гирей у груди, камера сбоку. Колени — как у приседаний; руки у груди проверяются
+     * в позе (если запястья видны): с опущенными руками это обычный присед, он здесь не считается.
+     */
+    object GobletSquat {
+        const val KNEE_BOTTOM = Squats.KNEE_BOTTOM
+        const val KNEE_TOP = Squats.KNEE_TOP
+        const val KNEE_STRAIGHT = Squats.KNEE_STRAIGHT
+
+        /** Вход: запястья у груди — ниже плеча не больше чем на столько торса… */
+        const val ENTER_WRIST_OVER_SHOULDER_MIN = -0.6f
+
+        /** …и не выше плеча больше чем на столько. */
+        const val ENTER_WRIST_OVER_SHOULDER_MAX = 0.2f
+
+        /** В движении — те же границы шире (кисти сползают, гиря закрывает запястья). */
+        const val HOLD_WRIST_OVER_SHOULDER_MIN = -0.8f
+        const val HOLD_WRIST_OVER_SHOULDER_MAX = 0.35f
+
+        /** Полный цикл короче — рывок, а не присед. */
+        const val MIN_REP_MS = 600L
+    }
+
+    /**
+     * Выпад назад с гирей у груди, камера сбоку. Счёт по колену видимой стороны: при шаге назад
+     * любой ногой сгибаются оба колена (переднее ≈ 90°, заднее ≈ 90–110°), поэтому повтор виден
+     * по любой ноге и путаница левой/правой при перекрытии ног счёту не мешает.
+     * Разнос стоп по горизонтали (шаг назад) по одной стороне тела не проверить — не проверяется.
+     */
+    object ReverseLunge {
+        /** Низ: колено согнуто сильнее (заднее колено в выпаде сгибается меньше переднего). */
+        const val KNEE_BOTTOM = 125f
+        const val KNEE_TOP = 155f
+        const val KNEE_STRAIGHT = 170f
+        const val MIN_REP_MS = 600L
+    }
+
+    /** Жим гири одной рукой стоя, камера спереди. Каждая рука считается своим автоматом ([EitherArmCounter]). */
+    object Press {
+        /** Гиря у плеча: локоть согнут сильнее… */
+        const val RACK_ELBOW_MAX = 115f
+
+        /** …и запястье ниже плеча не больше чем на столько торса (кисть у плеча, а не у пояса). */
+        const val RACK_WRIST_OVER_SHOULDER_MIN = -0.5f
+
+        /** Верх: рука почти прямая (каталог: 155, на 5° мягче)… */
+        const val TOP_ELBOW = 150f
+
+        /** …и запястье выше носа хотя бы на столько торса (полужим с локтем у уха ≈ 0,25). */
+        const val TOP_WRIST_OVER_NOSE = 0.35f
+
+        /** Для индикатора: запястье у плеча — ниже носа примерно на столько. */
+        const val RACK_WRIST_OVER_NOSE = -0.3f
+
+        /** В движении (если видно): колени почти прямые — без подседа и толчка ногами. */
+        const val HOLD_KNEE_MIN = 140f
+
+        /** В движении: корпус не наклонён. */
+        const val HOLD_TORSO_TILT_MAX = 25f
+
+        const val MIN_REP_MS = 500L
+
+        /** Повторы двух рук ближе по времени — это жим двумя руками разом: засчитывается один. */
+        const val SIMULTANEOUS_MS = 600L
+    }
+
+    /** Сгибание рук с гирей двумя руками, камера сбоку. */
+    object Curl {
+        /** Низ: рука почти прямая. */
+        const val ELBOW_BOTTOM = 145f
+
+        /** Верх: локоть согнут сильнее (каталог: 70, на 5° мягче)… */
+        const val ELBOW_TOP = 75f
+
+        /** …запястья выше таза хотя бы на столько торса… */
+        const val WRIST_OVER_HIP_TOP = 0.4f
+
+        /** …и корпус почти вертикален: подъём раскачкой с отклонением назад не засчитывается. */
+        const val TORSO_TILT_TOP = 20f
+
+        const val ELBOW_STRAIGHT = 165f
+        const val MIN_REP_MS = 600L
+    }
+
+    /**
+     * Ягодичный мост с гирей на тазу, камера сбоку и низко. Без калибровки высоты: верх — бедро
+     * на одной прямой с корпусом (угол плечо–таз–колено) и таз заметно выше плеч.
+     */
+    object GluteBridge {
+        /** Верх: угол плечо–таз–колено больше (каталог: 155; полуподъём ≈ 152–158, с шумом до ~162)… */
+        const val HIP_FLEXION_TOP = 163f
+
+        /** …и плечо ниже таза хотя бы на столько торса (корпус поднят на ~25°; полуподъём ≈ 0,3). */
+        const val SHOULDER_BELOW_HIP_TOP = 0.42f
+
+        /** Низ: таз опущен — угол меньше… */
+        const val HIP_FLEXION_DOWN = 145f
+
+        /** …и плечо почти на высоте таза. */
+        const val SHOULDER_BELOW_HIP_DOWN = 0.15f
+
+        /** Для индикатора: угол лёжа с согнутыми ногами. */
+        const val HIP_FLEXION_FLAT = 130f
+
+        /** Вход: лежит — торс от вертикали в этих пределах… */
+        const val ENTER_TORSO_TILT_MIN = 65f
+        const val ENTER_TORSO_TILT_MAX = 115f
+
+        /** …колени согнуты (если видны)… */
+        const val ENTER_KNEE_MAX = 120f
+
+        /** …таз и лодыжки примерно на одной высоте (если видны). */
+        const val ENTER_HIP_ANKLE_LEVEL = 0.4f
+
+        /** В движении: торс не поднят (не сел) и не перевёрнут. */
+        const val HOLD_TORSO_TILT_MIN = 50f
+        const val HOLD_TORSO_TILT_MAX = 150f
+
+        const val MIN_REP_MS = 600L
     }
 
     /**
@@ -582,8 +706,207 @@ internal object ExerciseConfigs {
         )
     }
 
-    val all: List<ExerciseConfig> =
-        listOf(pushups, squats, abs, pullups, thruster, swings, sumoPull, row, deadlift)
+    /** Гиря у груди: запястья около плеча (NaN — не видно, например, закрыты гирей — не нарушение). */
+    private fun wristsAtChest(s: Sample, min: Float, max: Float) =
+        ok(s[Feature.WRIST_OVER_SHOULDER]) { it > min && it < max }
+
+    private val gobletSquat = with(CounterThresholds.GobletSquat) {
+        ExerciseConfig(
+            id = "goblet_squat",
+            postureHint = "Встань прямо, гиря у груди",
+            startHint = STAND_UP,
+            farHint = LOWER,
+            finishHint = ALL_THE_WAY,
+            enter = {
+                standingEnter(it, shoulderOverHip = CounterThresholds.Squats.ENTER_SHOULDER_OVER_HIP) &&
+                    wristsAtChest(it, ENTER_WRIST_OVER_SHOULDER_MIN, ENTER_WRIST_OVER_SHOULDER_MAX)
+            },
+            hold = { standingHold(it) && wristsAtChest(it, HOLD_WRIST_OVER_SHOULDER_MIN, HOLD_WRIST_OVER_SHOULDER_MAX) },
+            rest = listOf(Feature.KNEE.above(KNEE_TOP)),
+            far = listOf(Feature.KNEE.below(KNEE_BOTTOM)),
+            finish = listOf(Feature.KNEE.above(KNEE_TOP)),
+            depth = { progress(it[Feature.KNEE], KNEE_STRAIGHT, KNEE_BOTTOM) },
+            minRepMs = MIN_REP_MS,
+        )
+    }
+
+    private val reverseLunge = with(CounterThresholds.ReverseLunge) {
+        val chest = CounterThresholds.GobletSquat
+        ExerciseConfig(
+            id = "reverse_lunge",
+            postureHint = "Встань прямо, гиря у груди",
+            startHint = STAND_UP,
+            farHint = LOWER,
+            finishHint = ALL_THE_WAY,
+            enter = {
+                standingEnter(it) &&
+                    wristsAtChest(it, chest.ENTER_WRIST_OVER_SHOULDER_MIN, chest.ENTER_WRIST_OVER_SHOULDER_MAX)
+            },
+            hold = {
+                standingHold(it) &&
+                    wristsAtChest(it, chest.HOLD_WRIST_OVER_SHOULDER_MIN, chest.HOLD_WRIST_OVER_SHOULDER_MAX)
+            },
+            rest = listOf(Feature.KNEE.above(KNEE_TOP)),
+            far = listOf(Feature.KNEE.below(KNEE_BOTTOM)),
+            finish = listOf(Feature.KNEE.above(KNEE_TOP)),
+            depth = { progress(it[Feature.KNEE], KNEE_STRAIGHT, KNEE_BOTTOM) },
+            minRepMs = MIN_REP_MS,
+        )
+    }
+
+    private val press = with(CounterThresholds.Press) {
+        val rack = listOf(
+            Feature.ELBOW.below(RACK_ELBOW_MAX),
+            Feature.WRIST_OVER_SHOULDER.above(RACK_WRIST_OVER_SHOULDER_MIN),
+        )
+        ExerciseConfig(
+            id = "press",
+            postureHint = STAND_UP,
+            startHint = "Гирю к плечу",
+            farHint = HIGHER,
+            finishHint = ALL_THE_WAY,
+            enter = { standingEnter(it) },
+            hold = { s ->
+                standingHold(s) &&
+                    ok(s[Feature.KNEE]) { it > HOLD_KNEE_MIN } &&
+                    ok(s[Feature.TORSO_TILT]) { it < HOLD_TORSO_TILT_MAX }
+            },
+            rest = rack,
+            far = listOf(Feature.ELBOW.above(TOP_ELBOW), Feature.WRIST_OVER_NOSE.above(TOP_WRIST_OVER_NOSE)),
+            finish = rack,
+            depth = { progress(it[Feature.WRIST_OVER_NOSE], RACK_WRIST_OVER_NOSE, TOP_WRIST_OVER_NOSE) },
+            minRepMs = MIN_REP_MS,
+        )
+    }
+
+    private val curl = with(CounterThresholds.Curl) {
+        ExerciseConfig(
+            id = "curl",
+            postureHint = STAND_UP,
+            startHint = "Опусти руки",
+            farHint = HIGHER,
+            finishHint = ALL_THE_WAY,
+            enter = { standingEnter(it) },
+            hold = { standingHold(it) },
+            rest = listOf(Feature.ELBOW.above(ELBOW_BOTTOM)),
+            far = listOf(
+                Feature.ELBOW.below(ELBOW_TOP),
+                Feature.WRIST_OVER_HIP.above(WRIST_OVER_HIP_TOP),
+                Feature.TORSO_TILT.below(TORSO_TILT_TOP),
+            ),
+            finish = listOf(Feature.ELBOW.above(ELBOW_BOTTOM)),
+            depth = { progress(it[Feature.ELBOW], ELBOW_STRAIGHT, ELBOW_TOP) },
+            minRepMs = MIN_REP_MS,
+        )
+    }
+
+    private val gluteBridge = with(CounterThresholds.GluteBridge) {
+        val down = listOf(
+            Feature.HIP_FLEXION.below(HIP_FLEXION_DOWN),
+            Feature.SHOULDER_OVER_HIP.above(-SHOULDER_BELOW_HIP_DOWN),
+        )
+        ExerciseConfig(
+            id = "glute_bridge",
+            postureHint = "Ляг на спину, согни ноги",
+            startHint = "Опусти таз",
+            farHint = HIGHER,
+            finishHint = ALL_THE_WAY,
+            enter = { s ->
+                val tilt = s[Feature.TORSO_TILT]
+                tilt > ENTER_TORSO_TILT_MIN && tilt < ENTER_TORSO_TILT_MAX &&
+                    s[Feature.HIP_FLEXION] < HIP_FLEXION_DOWN &&
+                    ok(s[Feature.KNEE]) { it < ENTER_KNEE_MAX } &&
+                    ok(s[Feature.HIP_OVER_ANKLE]) { abs(it) < ENTER_HIP_ANKLE_LEVEL }
+            },
+            hold = { s -> ok(s[Feature.TORSO_TILT]) { it > HOLD_TORSO_TILT_MIN && it < HOLD_TORSO_TILT_MAX } },
+            rest = down,
+            far = listOf(
+                Feature.HIP_FLEXION.above(HIP_FLEXION_TOP),
+                Feature.SHOULDER_OVER_HIP.below(-SHOULDER_BELOW_HIP_TOP),
+            ),
+            finish = down,
+            depth = { progress(it[Feature.HIP_FLEXION], HIP_FLEXION_FLAT, HIP_FLEXION_TOP) },
+            minRepMs = MIN_REP_MS,
+        )
+    }
+
+    val all: List<ExerciseConfig> = listOf(
+        pushups, squats, abs, pullups, thruster, swings, sumoPull, row, deadlift,
+        gobletSquat, press, reverseLunge, curl, gluteBridge,
+    )
 
     val byId: Map<String, ExerciseConfig> = all.associateBy { it.id }
+
+    /** Упражнения одной рукой: считается любая рука ([EitherArmCounter]). */
+    val eitherArm: Set<String> = setOf("press")
+}
+
+/**
+ * Упражнение одной рукой, камера спереди (жим): обе руки видны одинаково хорошо, и «липкий» выбор
+ * стороны в [SideSelector] мог бы застрять на свободной руке. Поэтому — по автомату на каждую руку:
+ * каждому достаётся кадр без локтя и кисти другой руки, так что он видит только свою.
+ * Повторы рук складываются; если обе руки засчитали повтор почти одновременно
+ * ([CounterThresholds.Press.SIMULTANEOUS_MS]) — это жим двумя руками разом, засчитывается один.
+ * Показания (подсказка, глубина, исходное положение) — от руки, которая сейчас работает.
+ */
+internal class EitherArmCounter(cfg: ExerciseConfig) : RepCounter {
+    private class Arm(side: Side, cfg: ExerciseConfig) {
+        val counter = PhaseCounter(cfg)
+        var seen = 0
+        var lastRepMs = Long.MIN_VALUE
+        private val other = if (side == Side.LEFT) Side.RIGHT else Side.LEFT
+        private val hidden = setOf(other.joint(Limb.ELBOW), other.joint(Limb.WRIST))
+
+        fun only(frame: PoseFrame): PoseFrame =
+            if (frame.points.isEmpty()) frame else PoseFrame(frame.timeMs, frame.width, frame.height, frame.points.filterKeys { it !in hidden })
+    }
+
+    private val arms = Side.entries.map { Arm(it, cfg) }
+    private var count = 0
+    private var shown = 0
+
+    override var state: RepState = RepState()
+        private set
+
+    override fun onFrame(frame: PoseFrame): RepState {
+        val t = frame.timeMs
+        val states = arms.map { it.counter.onFrame(it.only(frame)) }
+        arms.forEachIndexed { i, arm ->
+            val grown = states[i].count - arm.seen
+            arm.seen = states[i].count
+            if (grown > 0) {
+                val otherArm = arms[1 - i]
+                val together = otherArm.lastRepMs != Long.MIN_VALUE && t - otherArm.lastRepMs <= CounterThresholds.Press.SIMULTANEOUS_MS
+                count += if (together) grown - 1 else grown
+                arm.lastRepMs = t
+                shown = i
+            }
+        }
+        if (score(states[1 - shown]) > score(states[shown]) + SWITCH_MARGIN) shown = 1 - shown
+        state = states[shown].copy(count = count)
+        return state
+    }
+
+    /** Насколько рука «в работе»: не видна < в позе < у плеча или в движении (+ глубина). */
+    private fun score(s: RepState): Float = when {
+        !s.tracking -> 0f
+        !s.inPosition -> 1f
+        else -> 2f + (if (s.atStart || s.depth > ACTIVE_DEPTH) 1f else 0f) + s.depth
+    }
+
+    override fun reset() {
+        arms.forEach {
+            it.counter.reset()
+            it.seen = 0
+            it.lastRepMs = Long.MIN_VALUE
+        }
+        count = 0
+        shown = 0
+        state = RepState()
+    }
+
+    private companion object {
+        const val SWITCH_MARGIN = 0.5f
+        const val ACTIVE_DEPTH = 0.05f
+    }
 }

@@ -31,6 +31,12 @@ internal class Spec(
 internal val STAND = Key(0f, 180f, 180f, 180f, 180f)
 internal val CURL = Key(0f, 180f, 180f, 180f, 30f)
 
+/** Гиря у груди: запястья на уровне плеч перед грудью. */
+internal val GOBLET = Key(0f, 180f, 180f, 160f, 20f)
+
+/** Мост внизу: лёжа на спине, колени согнуты, руки к тазу. */
+internal val BRIDGE_DOWN = Key(270f, 40f, 150f, 95f, 70f)
+
 internal val SPECS = listOf(
     Spec(
         "pushups",
@@ -105,6 +111,36 @@ internal val SPECS = listOf(
         wrong = listOf(Key(0f, 180f, 180f, 180f, 180f), Key(70f, 150f, 195f, 180f, 180f)).map { it.rotated(90f) },
         farHint = "Ниже",
     ),
+    Spec(
+        "goblet_squat",
+        path = listOf(GOBLET, Key(25f, 95f, 200f, 165f, 25f)),
+        segmentMs = 900,
+        // Тот же присед, но руки опущены вдоль тела — это не присед с гирей у груди.
+        wrong = listOf(STAND, Key(40f, 95f, 200f, 180f, 180f)),
+        farHint = "Ниже",
+    ),
+    Spec(
+        "reverse_lunge",
+        // Видимая нога отходит назад: колено ≈ 90°, голень горизонтально.
+        path = listOf(GOBLET, Key(3f, 190f, 280f, 162f, 22f)),
+        segmentMs = 900,
+        wrong = listOf(STAND, Key(3f, 190f, 280f, 180f, 180f)),
+        farHint = "Ниже",
+    ),
+    Spec(
+        "curl",
+        path = listOf(Key(0f, 180f, 180f, 175f, 172f), Key(0f, 180f, 180f, 178f, 15f)),
+        segmentMs = 900,
+        wrong = listOf(Key(0f, 180f, 180f, 175f, 172f), Key(0f, 180f, 180f, 178f, 15f)).map { it.rotated(90f) },
+        farHint = "Выше",
+    ),
+    Spec(
+        "glute_bridge",
+        path = listOf(BRIDGE_DOWN, Key(235f, 55f, 175f, 95f, 70f)),
+        segmentMs = 900,
+        wrong = listOf(STAND, CURL),
+        farHint = "Выше",
+    ),
 )
 
 class RepCountersTest {
@@ -119,10 +155,17 @@ class RepCountersTest {
     }
 
     @Test
-    fun allNineExercisesHaveCounters() {
-        val ids = listOf("pushups", "squats", "abs", "pullups", "thruster", "swings", "sumo_pull", "row", "deadlift")
+    fun allRepExercisesHaveCounters() {
+        val ids = listOf(
+            "pushups", "squats", "abs", "pullups", "thruster", "swings", "sumo_pull", "row", "deadlift",
+            "goblet_squat", "reverse_lunge", "curl", "glute_bridge",
+        )
         for (id in ids) assertNotNull(id, RepCounters.forExercise(id))
+        // Жим одной рукой снимается спереди — его проверяет PressCounterTest.
         assertEquals(ids.toSet(), SPECS.map { it.id }.toSet())
+        assertTrue(RepCounters.forExercise("press") is EitherArmCounter)
+        // У каждого упражнения на повторения из каталога есть счётчик.
+        for (ex in com.nextlevellife.app.data.Exercises.all) assertNotNull(ex.id, RepCounters.forExercise(ex.id))
         assertNull(RepCounters.forExercise("minotaur"))
         assertNull(RepCounters.forExercise(""))
     }

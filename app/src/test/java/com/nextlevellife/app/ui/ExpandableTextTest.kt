@@ -36,6 +36,11 @@ class ExpandableTextTest {
     fun kettlebellSummaryHasCountAndWeightFactors() {
         assertEquals(
             "5${nbsp}упражнений · цена за 16${nbsp}кг",
+            ExpandableText.kettlebellSummary(5),
+        )
+        // Число в сводке — из списка, а не захардкожено.
+        assertEquals(
+            "${Exercises.kettlebell.size}${nbsp}упражнений · цена за 16${nbsp}кг",
             ExpandableText.kettlebellSummary(Exercises.kettlebell.size),
         )
         assertEquals("1${nbsp}упражнение · цена за 16${nbsp}кг", ExpandableText.kettlebellSummary(1))
