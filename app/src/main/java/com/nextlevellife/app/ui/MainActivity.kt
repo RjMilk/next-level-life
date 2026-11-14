@@ -93,6 +93,8 @@ class MainActivity : ComponentActivity() {
         Store.init(this)
         // Служба блокировки может быть выключена — транспорт и обмен поднимаем и отсюда (повтор безопасен).
         com.nextlevellife.app.sync.SyncBoot.ensure(this)
+        // Новая версия на GitHub: проверка не чаще раза в сутки (показывается в «Настройках» → «Обновление»).
+        com.nextlevellife.app.update.UpdateManager.autoCheckIfDue(this)
         enableEdgeToEdge()
         if (savedInstanceState == null && isRationaleIntent(intent)) {
             showRationale = true
