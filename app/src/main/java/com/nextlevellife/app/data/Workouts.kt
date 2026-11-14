@@ -241,6 +241,41 @@ object Workouts {
     }
 
     /**
+     * Прохождение домашней программы ([Programs]): строка complex_runs (complex_id = [Program.id], completed —
+     * цель достигнута во всех подходах) без подходов и без награды — подходы уже записаны и оплачены по одному
+     * ([recordSets] / [recordHold] с ключами `program:<session>:<step>:<set>`), бонуса за завершение нет.
+     * Операция журнала с нулевой суммой нужна для идемпотентности по [sessionId] (ключ `complex:<sessionId>`).
+     * Ничего не засчитано — ничего не пишется (saved = true). [summary] — итог по записанным подходам.
+     */
+    @Synchronized
+    fun recordProgram(
+        program: Program, summary: ProgramSummary, weightKg: Int, durationMs: Long, sessionId: String? = null,
+    ): WorkoutResult {
+        if (!summary.hasWork) return NOTHING
+        val key = LedgerMath.complexKey(sessionId ?: UUID.randomUUID().toString())
+        return persist(key, program.title) {
+            val time = TrustedClock.snapshot()
+            val runId = Diary.addRun(
+                timeMs = time.utcMs, day = time.day, complexId = program.id,
+                weightKg = if (program.kettlebell) weightKg else null,
+                durationMs = durationMs.coerceAtLeast(0L), rounds = null, extraReps = null,
+                totalReps = summary.totalReps, earnedMs = 0L, xp = 0L, completed = summary.completed,
+                sets = emptyList(),
+            )
+            val result = WorkoutResult(0L, 0L)
+            credit(
+                OpKind.COMPLEX_REWARD, key, result, sourceType = "complex_run", sourceId = runId.toString(), time = time,
+                details = mapOf(
+                    "complex_id" to program.id, "completed" to summary.completed, "duration_ms" to durationMs,
+                    "sets_done" to summary.setsDone, "goal_sets" to summary.goalSets, "reps" to summary.totalReps,
+                    "held_ms" to summary.heldMs, "sets_earned_ms" to summary.earnedMs,
+                ),
+            )
+            result
+        }
+    }
+
+    /**
      * Одна транзакция: если операция с ключом [key] уже есть — возвращает её сохранённый результат,
      * иначе выполняет [block] (дневник + [credit]). После успешной новой записи обновляет серию дней.
      * Любая ошибка — откат и [FAILED].

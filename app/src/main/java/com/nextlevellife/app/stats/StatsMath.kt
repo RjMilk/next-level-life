@@ -4,6 +4,7 @@ import com.nextlevellife.app.data.ActivityDay
 import com.nextlevellife.app.data.BlockEvent
 import com.nextlevellife.app.data.ComplexRun
 import com.nextlevellife.app.data.Measurement
+import com.nextlevellife.app.data.Programs
 import com.nextlevellife.app.data.Routines
 import com.nextlevellife.app.data.SaitamaMath
 import com.nextlevellife.app.data.SetEntry
@@ -144,9 +145,12 @@ object StatsMath {
      * 5 — программы мягкой подвижности (ЛФК и йога, [Routines]) не дают ни силы, ни выносливости: их прохождения
      *     не считаются завершёнными комплексами (+[COMPLEX_BONUS]) и не добавляют времени комплексов, их подходы
      *     (exercise_id `lfk_…` / `yoga_…`) не входят ни в повторения, ни в планку.
+     * 6 — прохождения домашних программ ([Programs], complex_id `home_…`) не считаются завершёнными комплексами
+     *     (+[COMPLEX_BONUS]) и не добавляют времени комплексов выносливости: иначе короткая программа стала бы
+     *     лазейкой. Их подходы — обычные подходы упражнений и идут в силу и «Сайтаму» по общим правилам.
      * Правила дисциплины с версии 1 не менялись: её очки из кеша прежних версий переносятся ([keepOldDiscipline]).
      */
-    const val RULE_VERSION = 5
+    const val RULE_VERSION = 6
 
     /** Потолок очков одной характеристики за день. */
     const val DAY_CAP = 10
@@ -400,7 +404,7 @@ object StatsMath {
         return StrengthInput(
             reps = repSets.sumOf { it.reps.coerceAtLeast(0) },
             heldMs = ownSets.filter { it.measurement == Measurement.HOLD }.sumOf { it.heldMs.coerceAtLeast(0L) },
-            completedComplexes = runs.count { it.completed && !Routines.isRoutineId(it.complexId) } + saitama,
+            completedComplexes = runs.count { it.completed && countsAsComplex(it.complexId) } + saitama,
             bestSet = repSets.maxOfOrNull { it.reps } ?: 0,
         )
     }
@@ -409,9 +413,16 @@ object StatsMath {
         steps = activity?.steps,
         runSteps = activity?.runSteps ?: 0L,
         runMeters = activity?.runDistanceM ?: 0L,
-        complexMs = runs.filter { it.completed && !Routines.isRoutineId(it.complexId) }
+        complexMs = runs.filter { it.completed && countsAsComplex(it.complexId) }
             .sumOf { it.durationMs.coerceAtLeast(0L) },
     )
+
+    /**
+     * Прохождение даёт бонус комплекса и время выносливости: не программа ЛФК/йоги (правила 5)
+     * и не домашняя программа (правила 6).
+     */
+    fun countsAsComplex(complexId: String): Boolean =
+        !Routines.isRoutineId(complexId) && !Programs.isProgramId(complexId)
 
     /**
      * Наблюдение на [fromMs, toMs) было полным: события начались не позже [fromMs] ([observedSinceMs]),
