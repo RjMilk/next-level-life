@@ -29,6 +29,20 @@ object ExpandableText {
         return "Цена за $base${NBSP}кг; $factors"
     }
 
+    /**
+     * «4 упражнения · штанга · вес не влияет на минуты» — сводка свёрнутой группы «Зал»;
+     * снаряды — без повторов, в порядке упражнений.
+     */
+    fun gymSummary(exercises: List<Exercise>): String {
+        val count = exercises.size
+        val equipment = exercises.mapNotNull { it.gym?.equipment?.title }.distinct().joinToString(", ")
+        return listOf(
+            "$count$NBSP${pluralRu(count, "упражнение", "упражнения", "упражнений")}",
+            equipment,
+            "вес не влияет на минуты",
+        ).filter { it.isNotEmpty() }.joinToString(" · ")
+    }
+
     /** Множитель с запятой: 1.2 → «1,2». */
     fun factorLabel(factor: Double): String = factor.toString().replace('.', ',')
 

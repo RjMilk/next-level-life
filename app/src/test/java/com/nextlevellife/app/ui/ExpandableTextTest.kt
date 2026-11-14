@@ -52,6 +52,18 @@ class ExpandableTextTest {
     }
 
     @Test
+    fun gymSummaryHasCountEquipmentAndNote() {
+        assertEquals(
+            "4${nbsp}упражнения · штанга · вес не влияет на минуты",
+            ExpandableText.gymSummary(Exercises.gym),
+        )
+        assertEquals(
+            "1${nbsp}упражнение · штанга · вес не влияет на минуты",
+            ExpandableText.gymSummary(Exercises.gym.take(1)),
+        )
+    }
+
+    @Test
     fun recordsSummaryDependsOnWhatExists() {
         assertEquals("Минотавр, Синди", ExpandableText.recordsSummary(hasActivity = false, hasExercises = false))
         assertEquals("Минотавр, Синди, упражнения", ExpandableText.recordsSummary(hasActivity = false, hasExercises = true))

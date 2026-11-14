@@ -29,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -41,6 +42,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.data.Exercises
+import com.nextlevellife.app.data.GymHistory
+import com.nextlevellife.app.data.GymMath
+import com.nextlevellife.app.data.GymSummary
 import com.nextlevellife.app.data.Weights
 import com.nextlevellife.app.data.Workouts
 import com.nextlevellife.app.guide.GuidePrefs
@@ -49,7 +53,9 @@ import com.nextlevellife.app.pose.CountKind
 import com.nextlevellife.app.pose.RepCounters
 import com.nextlevellife.app.pose.rememberRepSound
 import com.nextlevellife.app.stats.StatsText
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /**
@@ -108,6 +114,15 @@ private fun RepExerciseScreen(ex: Exercise, onDone: () -> Unit) {
     var showGuide by rememberSaveable { mutableStateOf(false) }
     val hasGuide = remember(ex.id) { Guides.of(ex.id) != null }
 
+    // Зал: вес выбирается до первого повтора и пишется в подход; на награду он не влияет. null — ещё не выбран:
+    // тогда вес по умолчанию (последний вес упражнения, иначе пустой гриф), на первом повторе он закрепляется.
+    val gym = ex.gym
+    var chosenLoad by rememberSaveable { mutableStateOf<Int?>(null) }
+    val gymSummary by produceState<GymSummary?>(null, ex.id) {
+        if (gym != null) value = withContext(Dispatchers.IO) { GymHistory.summary(ex) }
+    }
+    val load: Int? = gym?.let { chosenLoad ?: gymSummary?.defaultLoadG ?: it.loadMode.defaultG }
+
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -121,7 +136,7 @@ private fun RepExerciseScreen(ex: Exercise, onDone: () -> Unit) {
         if (recorded || count <= 0) return
         // Повтор после сбоя — с той же длительностью, что и первая попытка.
         val duration = if (saveFailed) recordedElapsedMs else (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
-        val result = Workouts.recordSet(ex, weight, count, duration, sessionId)
+        val result = Workouts.recordSet(ex, weight, count, duration, sessionId, loadG = load)
         recordedElapsedMs = duration
         showExit = false
         if (!result.saved) {
@@ -158,6 +173,10 @@ private fun RepExerciseScreen(ex: Exercise, onDone: () -> Unit) {
             // Вес выбирается до первого повторения: камера его не видит, а цена от него зависит.
             WeightChips(weight, enabled = count == 0 && !recorded) { weight = it }
         }
+        if (load != null) {
+            // Вес зала — тоже до первого повторения; цена от него не зависит.
+            GymLoadPicker(ex, load, gymSummary, enabled = count == 0 && !recorded) { chosenLoad = it }
+        }
     }
 
     val camera: @Composable (Modifier) -> Unit = { modifier ->
@@ -174,7 +193,11 @@ private fun RepExerciseScreen(ex: Exercise, onDone: () -> Unit) {
             modifier = modifier,
             showCount = !counterInPanel,
             onCountingChange = { counting = it },
-            onRep = { count++ },
+            onRep = {
+                // Первый повтор закрепляет вес зала: история, дочитанная позже, его уже не поменяет.
+                if (load != null && chosenLoad == null) chosenLoad = load
+                count++
+            },
         )
     }
 
@@ -304,7 +327,11 @@ private fun RepExerciseScreen(ex: Exercise, onDone: () -> Unit) {
             title = { Text("Тренировка записана") },
             text = {
                 Text(
-                    listOfNotNull("${repsText(recordedCount)}: +${formatShort(recordedEarnedMs)}", recordedStrength).joinToString(", "),
+                    listOfNotNull(
+                        "${repsText(recordedCount)}: +${formatShort(recordedEarnedMs)}",
+                        load?.let { "вес ${GymMath.formatKg(it)}" },
+                        recordedStrength,
+                    ).joinToString(", "),
                     style = MaterialTheme.typography.bodyLarge.merge(Tabular),
                 )
             },

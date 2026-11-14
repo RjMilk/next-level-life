@@ -52,6 +52,8 @@ import com.nextlevellife.app.data.Saitama
 import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.data.Exercises
+import com.nextlevellife.app.data.GymHistory
+import com.nextlevellife.app.data.GymSummary
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.Minotaur
 import com.nextlevellife.app.data.Programs
@@ -577,9 +579,9 @@ private val ComplexCardColor = Color(0xFF2A1F0A)
 private val GroupBodyPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 12.dp)
 
 /**
- * «Заработать минуты»: четыре раскрывающиеся группы, по умолчанию свёрнуты — «Комплексы»
- * (ключ `home_complexes`), «Домашние тренировки» (`home_programs`), «Без веса» (`home_bodyweight`)
- * и «С гирей» (`home_kettlebell`).
+ * «Заработать минуты»: пять раскрывающихся групп, по умолчанию свёрнуты — «Комплексы»
+ * (ключ `home_complexes`), «Домашние тренировки» (`home_programs`), «Без веса» (`home_bodyweight`),
+ * «С гирей» (`home_kettlebell`) и «Зал» (`home_gym`).
  * [extraComplexes] — карточки других комплексов, они идут после Синди; [complexesSummary] — сводка группы.
  */
 @Composable
@@ -597,6 +599,10 @@ private fun EarnSection(
 ) {
     // Свои программы — из настроек; version меняется после сохранения и удаления.
     val customPrograms = remember(version) { CustomPrograms.all() }
+    // Рабочие веса и советы зала — из дневника, не в главном потоке; пока читаются — карточки без них.
+    val gymSummaries by produceState<Map<String, GymSummary>>(emptyMap(), version) {
+        value = withContext(Dispatchers.IO) { GymHistory.summaries() }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Заработать минуты", style = MaterialTheme.typography.titleMedium)
         cards()
@@ -643,6 +649,22 @@ private fun EarnSection(
                 modifier = Modifier.padding(horizontal = 4.dp),
             )
             CardGrid(Exercises.kettlebell, columns) { ex, m -> ExerciseCard(ex, m, onExercise) }
+        }
+        ExpandableCard(
+            key = "home_gym",
+            title = "Зал",
+            summary = ExpandableText.gymSummary(Exercises.gym),
+            contentPadding = GroupBodyPadding,
+            contentSpacing = 12.dp,
+        ) {
+            Text(
+                "Телефон — на стойке или штативе, повторения считает камера. Вес выбирается перед подходом: " +
+                    "он для истории и советов, на минуты и очки не влияет.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+            CardGrid(Exercises.gym, columns) { ex, m -> GymExerciseCard(ex, gymSummaries[ex.id], m, onExercise) }
         }
     }
 }

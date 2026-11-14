@@ -43,6 +43,8 @@ import com.nextlevellife.app.data.Nutrition
 import com.nextlevellife.app.data.ExerciseRecord
 import com.nextlevellife.app.data.ExerciseTotal
 import com.nextlevellife.app.data.Exercises
+import com.nextlevellife.app.data.GymHistory
+import com.nextlevellife.app.data.GymSummary
 import com.nextlevellife.app.data.SetEntry
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TrustedClock
@@ -158,6 +160,10 @@ fun ProgressScreen(modifier: Modifier = Modifier, onStatInfo: (String) -> Unit =
     val stats by produceState(StatsRepository.cached(), version, today) {
         value = withContext(Dispatchers.IO) { StatsRepository.load() }
     }
+    // Зал: последний и лучший рабочий вес по упражнениям.
+    val gymSummaries by produceState<Map<String, GymSummary>>(emptyMap(), version) {
+        value = withContext(Dispatchers.IO) { GymHistory.summaries() }
+    }
     val history by produceState(ProgressCache.history, version, expanded) {
         val id = expanded
         value = if (id == null) null else withContext(Dispatchers.IO) {
@@ -241,6 +247,7 @@ fun ProgressScreen(modifier: Modifier = Modifier, onStatInfo: (String) -> Unit =
                     longestRun = o.longestRun,
                     today = today,
                 )
+                GymProgressCard(Exercises.gym, gymSummaries)
             }
         }
     }
@@ -302,7 +309,7 @@ private fun loadOverview(today: Long): Overview {
     val days = ProgressMath.lastDays(today, CHART_DAYS)
     val summaries = runCatching { Diary.daySummaries(days.first(), days.last()) }.getOrDefault(emptyList())
     val byDay = summaries.associateBy { it.day }
-    val exerciseOrder = Exercises.all.map { it.id }
+    val exerciseOrder = Exercises.catalog.map { it.id }
     val records = runCatching { Diary.exerciseRecords() }.getOrDefault(emptyList())
         .sortedWith(
             compareBy<ExerciseRecord> { exerciseOrder.indexOf(it.exerciseId).let { i -> if (i < 0) Int.MAX_VALUE else i } }
