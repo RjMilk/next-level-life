@@ -3,6 +3,7 @@ package com.nextlevellife.app.ui
 import com.nextlevellife.app.data.ActivityDay
 import com.nextlevellife.app.data.ActivityRun
 import com.nextlevellife.app.data.Cindy
+import com.nextlevellife.app.data.CustomProgramMath
 import com.nextlevellife.app.data.ComplexRun
 import com.nextlevellife.app.data.DiaryMath
 import com.nextlevellife.app.data.ExerciseRecord
@@ -215,9 +216,14 @@ internal object ProgressMath {
         return "${r.exerciseName} — лучший подход $best, всего $total"
     }
 
-    /** Название программы ЛФК/йоги или домашней программы (с гирей — «Гиря — силовая 24 кг»); null — не программа. */
+    /**
+     * Название программы ЛФК/йоги или домашней программы (с гирей — «Гиря — силовая 24 кг»); удалённая
+     * своя программа — «Своя программа»; null — не программа.
+     */
     private fun programTitle(r: ComplexRun): String? =
-        Routines.byId(r.complexId)?.title ?: Programs.byId(r.complexId)?.let { exerciseLabel(it.title, r.weightKg) }
+        Routines.byId(r.complexId)?.title
+            ?: Programs.byId(r.complexId)?.let { exerciseLabel(it.title, r.weightKg) }
+            ?: if (CustomProgramMath.isCustomId(r.complexId)) exerciseLabel(CustomProgramMath.SUBTITLE, r.weightKg) else null
 
     /** «Минотавр 16 кг — 24:35», «Синди — 12 кругов + 7 повт.», незавершённый — с пометкой. */
     fun complexLine(r: ComplexRun): String {

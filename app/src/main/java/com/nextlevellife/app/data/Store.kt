@@ -55,6 +55,9 @@ object Store {
 
     internal fun prefs(): SharedPreferences = sp
 
+    /** Настройки открыты ([init] уже был). В юнит-тестах — нет. */
+    internal fun isReady(): Boolean = ::sp.isInitialized
+
     /** Сообщить экранам, что данные изменились. */
     internal fun notifyChanged() {
         _version.update { it + 1 }
@@ -213,6 +216,8 @@ object Store {
         // День включения оплаты шагов: без него восстановленный переключатель не платит.
         Settings.stepsRewardSinceDay?.let { settings.put(Settings.KEY_STEPS_SINCE, it) }
         o.put("settings", settings)
+        // Свои программы (строка JSON, CustomProgramMath.encode): только этого телефона, в обмен не идут.
+        o.put(CustomPrograms.KEY, CustomProgramMath.encode(CustomPrograms.all()))
         return o
     }
 
@@ -245,6 +250,13 @@ object Store {
         require(limit in com.nextlevellife.app.block.BlockRules.LIMIT_RANGE) { "Лимит в копии вне диапазона: $limit" }
         require(nightStart in com.nextlevellife.app.block.BlockRules.MINUTE_RANGE) { "Начало ночи в копии вне суток" }
         require(nightEnd in com.nextlevellife.app.block.BlockRules.MINUTE_RANGE) { "Конец ночи в копии вне суток" }
+        // Свои программы: разбор с нормализацией (испорченное отбрасывается). В копиях до них ключа нет —
+        // тогда текущие свои программы не трогаются.
+        val customPrograms = if (o.has(CustomPrograms.KEY)) {
+            CustomProgramMath.encode(CustomProgramMath.decode(o.optString(CustomPrograms.KEY)))
+        } else {
+            null
+        }
         return PrefsSnapshot { e ->
             e.putBoolean(KEY_CONFIGURED, configured)
             e.putStringSet(KEY_BLOCKED, blocked)
@@ -258,6 +270,7 @@ object Store {
             e.putInt(Settings.KEY_NIGHT_END, nightEnd)
             e.putBoolean(Settings.KEY_STEPS_REWARD, steps)
             if (steps && stepsSince != null) e.putLong(Settings.KEY_STEPS_SINCE, stepsSince) else e.remove(Settings.KEY_STEPS_SINCE)
+            if (customPrograms != null) e.putString(CustomPrograms.KEY, customPrograms)
         }
     }
 

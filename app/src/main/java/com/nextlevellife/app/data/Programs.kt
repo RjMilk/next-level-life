@@ -137,9 +137,10 @@ object Programs {
 
     val all: List<Program> = listOf(beginner, legsCore, kettlebellStrength, kettlebellEndurance)
 
-    fun byId(id: String): Program? = all.firstOrNull { it.id == id }
+    /** Готовая или своя программа ([CustomPrograms], id с префиксом [CustomProgramMath.PREFIX]); null — нет такой. */
+    fun byId(id: String): Program? = all.firstOrNull { it.id == id } ?: CustomPrograms.byId(id)
 
-    /** Прохождение домашней программы (complex_runs.complex_id), включая будущие свои программы. */
+    /** Прохождение домашней программы (complex_runs.complex_id), включая свои программы. */
     fun isProgramId(complexId: String): Boolean = complexId.startsWith(PREFIX)
 }
 
