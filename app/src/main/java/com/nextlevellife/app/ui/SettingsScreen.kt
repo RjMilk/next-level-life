@@ -2,6 +2,7 @@ package com.nextlevellife.app.ui
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -70,6 +71,10 @@ import com.nextlevellife.app.health.ActivitySync
 import com.nextlevellife.app.health.HealthAccess
 import com.nextlevellife.app.health.HealthAvailability
 import com.nextlevellife.app.health.HealthConnect
+import com.nextlevellife.app.update.UpdateManager
+import com.nextlevellife.app.update.UpdateMath
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -113,6 +118,7 @@ fun SettingsScreen(
             BlockingSection(version, onApps)
             SecondPhoneSection(version, onPairing)
             DataSection(version)
+            UpdateSection()
             AboutSection()
             Spacer(Modifier.height(8.dp))
         }
@@ -747,7 +753,130 @@ private fun DataSection(version: Int) {
     }
 }
 
-// ---------- 7. О приложении ----------
+// ---------- 7. Обновление ----------
+
+/**
+ * Обновление из релизов GitHub ([UpdateManager]): установленная версия, проверка (по кнопке и сама — раз в сутки
+ * при открытии настроек), найденная версия с описанием и размером, загрузка с прогрессом, установка.
+ * Новая версия, найденная автопроверкой, видна здесь строкой «Доступна версия …».
+ */
+@Composable
+private fun UpdateSection() {
+    val context = LocalContext.current
+    val ui by UpdateManager.state.collectAsState()
+    val installed = remember { UpdateManager.installedVersionName(context) }
+    var canInstall by remember { mutableStateOf(UpdateManager.canInstall(context)) }
+    LaunchedEffect(Unit) { UpdateManager.autoCheckIfDue(context) }
+    // Вернулись из системных настроек «Установка неизвестных приложений» — перечитать разрешение.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { canInstall = UpdateManager.canInstall(context) }
+    val buttonMod = Modifier
+        .fillMaxWidth()
+        .heightIn(min = 48.dp)
+
+    SettingsSection("Обновление") {
+        SettingsRow("Установлена версия", installed)
+        val available = ui.available
+        if (available != null) {
+            SettingsText(
+                "Доступна версия ${available.version} · ${UpdateMath.sizeText(available.sizeBytes)}",
+                color = Accent,
+            )
+            if (available.notes.isNotEmpty()) {
+                Text(
+                    available.notes,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Column(
+            Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            when (ui.phase) {
+                UpdateManager.Phase.CHECKING -> {
+                    Text("Проверяю релизы на GitHub…", style = MaterialTheme.typography.bodyMedium)
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                UpdateManager.Phase.DOWNLOADING -> {
+                    val total = ui.totalBytes.coerceAtLeast(1L)
+                    Text(
+                        "Скачиваю: ${UpdateMath.sizeText(ui.downloadedBytes)} из ${UpdateMath.sizeText(ui.totalBytes)}",
+                        style = MaterialTheme.typography.bodyMedium.merge(Tabular),
+                    )
+                    LinearProgressIndicator(
+                        progress = { (ui.downloadedBytes.toFloat() / total).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedButton(onClick = { UpdateManager.cancel() }, shape = ButtonShape, modifier = buttonMod) {
+                        Text("Отменить загрузку")
+                    }
+                }
+                UpdateManager.Phase.VERIFYING -> {
+                    Text("Проверяю контрольную сумму и подпись…", style = MaterialTheme.typography.bodyMedium)
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                UpdateManager.Phase.INSTALLING -> {
+                    Text("Передаю файл установщику…", style = MaterialTheme.typography.bodyMedium)
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                UpdateManager.Phase.READY -> when {
+                    !canInstall -> {
+                        Text(
+                            "Чтобы поставить обновление, разреши этому приложению установку приложений.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Button(
+                            onClick = {
+                                val intent = Intent(
+                                    android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    Uri.parse("package:${context.packageName}"),
+                                )
+                                runCatching { context.startActivity(intent) }
+                            },
+                            shape = ButtonShape,
+                            modifier = buttonMod,
+                        ) { Text("Разрешить установку") }
+                    }
+                    ui.confirmIntent != null -> Button(
+                        onClick = { UpdateManager.confirmFrom(context) },
+                        shape = ButtonShape,
+                        modifier = buttonMod,
+                    ) { Text("Подтвердить установку") }
+                    else -> Button(onClick = { UpdateManager.install(context) }, shape = ButtonShape, modifier = buttonMod) {
+                        Text("Установить")
+                    }
+                }
+                UpdateManager.Phase.IDLE -> if (available != null) {
+                    Button(onClick = { UpdateManager.downloadAndInstall(context) }, shape = ButtonShape, modifier = buttonMod) {
+                        Text("Скачать и установить")
+                    }
+                }
+            }
+            OutlinedButton(
+                onClick = { UpdateManager.check(context, manual = true) },
+                enabled = !ui.busy,
+                shape = ButtonShape,
+                modifier = buttonMod,
+            ) { Text("Проверить обновление") }
+        }
+        ui.warning?.let { SettingsText(it, color = Warn) }
+        ui.message?.let { SettingsText(it, color = if (ui.isError) Bad else Good) }
+        SettingsText(
+            if (ui.lastCheckMs > 0L) {
+                "Последняя проверка: ${SettingsMath.dateTime(ui.lastCheckMs, System.currentTimeMillis())}"
+            } else {
+                "Проверки ещё не было"
+            },
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+    }
+}
+
+// ---------- 8. О приложении ----------
 
 private val LICENSE_FILES = listOf(
     "Inter" to "licenses/OFL-Inter.txt",
