@@ -9,6 +9,7 @@ import com.nextlevellife.app.data.ExerciseRecord
 import com.nextlevellife.app.data.ExerciseTotal
 import com.nextlevellife.app.data.Measurement
 import com.nextlevellife.app.data.Minotaur
+import com.nextlevellife.app.data.Programs
 import com.nextlevellife.app.data.Routines
 import com.nextlevellife.app.data.SetEntry
 import com.nextlevellife.app.health.ActivityMath
@@ -214,6 +215,10 @@ internal object ProgressMath {
         return "${r.exerciseName} — лучший подход $best, всего $total"
     }
 
+    /** Название программы ЛФК/йоги или домашней программы (с гирей — «Гиря — силовая 24 кг»); null — не программа. */
+    private fun programTitle(r: ComplexRun): String? =
+        Routines.byId(r.complexId)?.title ?: Programs.byId(r.complexId)?.let { exerciseLabel(it.title, r.weightKg) }
+
     /** «Минотавр 16 кг — 24:35», «Синди — 12 кругов + 7 повт.», незавершённый — с пометкой. */
     fun complexLine(r: ComplexRun): String {
         val base = when (r.complexId) {
@@ -223,7 +228,8 @@ internal object ProgressMath {
                 if (rounds != null) "Синди — ${cindyResult(rounds, r.extraReps ?: 0)}"
                 else "Синди — ${r.totalReps} повт."
             }
-            else -> Routines.byId(r.complexId)?.let { "${it.title} — ${formatDuration(r.durationMs)}" }
+            else -> programTitle(r)
+                ?.let { "$it — ${formatDuration(r.durationMs)}" }
                 ?: "${exerciseLabel("Комплекс", r.weightKg)} — ${r.totalReps} повт."
         }
         return if (r.completed) base else "$base · не завершён"
@@ -259,7 +265,8 @@ internal object ProgressMath {
                 val rounds = r.rounds
                 "Синди" to (if (rounds != null) cindyResult(rounds, r.extraReps ?: 0) else "${r.totalReps} повт.")
             }
-            else -> Routines.byId(r.complexId)?.let { it.title to formatDuration(r.durationMs) }
+            else -> programTitle(r)
+                ?.let { it to formatDuration(r.durationMs) }
                 ?: (exerciseLabel("Комплекс", r.weightKg) to "${r.totalReps} повт.")
         }
         return Cells(if (r.completed) label else "$label · не завершён", value)

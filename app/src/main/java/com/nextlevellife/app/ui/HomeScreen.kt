@@ -53,6 +53,7 @@ import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.Minotaur
+import com.nextlevellife.app.data.Programs
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TrustedClock
@@ -566,8 +567,9 @@ private val ComplexCardColor = Color(0xFF2A1F0A)
 private val GroupBodyPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 12.dp)
 
 /**
- * «Заработать минуты»: три раскрывающиеся группы, по умолчанию свёрнуты — «Комплексы»
- * (ключ `home_complexes`), «Без веса» (`home_bodyweight`) и «С гирей» (`home_kettlebell`).
+ * «Заработать минуты»: четыре раскрывающиеся группы, по умолчанию свёрнуты — «Комплексы»
+ * (ключ `home_complexes`), «Домашние тренировки» (`home_programs`), «Без веса» (`home_bodyweight`)
+ * и «С гирей» (`home_kettlebell`).
  * [extraComplexes] — карточки других комплексов, они идут после Синди; [complexesSummary] — сводка группы.
  */
 @Composable
@@ -591,6 +593,15 @@ private fun EarnSection(
             MinotaurCard(version) { onComplex(Minotaur.ID) }
             CindyCard(version) { onComplex(Cindy.ID) }
             extraComplexes()
+        }
+        ExpandableCard(
+            key = "home_programs",
+            title = Programs.GROUP_TITLE,
+            summary = programsSummary(),
+            contentPadding = GroupBodyPadding,
+            contentSpacing = 12.dp,
+        ) {
+            ProgramCards(onOpen = onComplex)
         }
         ExpandableCard(
             key = "home_bodyweight",

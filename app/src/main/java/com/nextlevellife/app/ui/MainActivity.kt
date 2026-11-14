@@ -62,6 +62,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.unit.dp
+import com.nextlevellife.app.data.Programs
 import com.nextlevellife.app.data.Routines
 import com.nextlevellife.app.data.Saitama
 import com.nextlevellife.app.data.SaitamaRepository
@@ -192,6 +193,10 @@ class MainActivity : ComponentActivity() {
                                             resumeCount = resumeCount,
                                             onExercise = { screen = "$EXERCISE$it$FROM_SAITAMA" },
                                             onBack = goHome,
+                                        )
+                                        screen.startsWith(COMPLEX) && Programs.isProgramId(screen.removePrefix(COMPLEX)) -> ProgramScreen(
+                                            programId = screen.removePrefix(COMPLEX),
+                                            onDone = goHome,
                                         )
                                         screen.startsWith(COMPLEX) && Routines.isRoutineId(screen.removePrefix(COMPLEX)) -> {
                                             var guideFor by rememberSaveable { mutableStateOf<String?>(null) }
