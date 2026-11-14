@@ -64,8 +64,10 @@ class GymSyncTest {
         assertTrue(accept(set("pushups", null)))
         assertTrue(accept(set("bb_squat", null)))
         // Общие пределы обмена 0..400 кг, кратно 0,5 кг.
-        assertTrue(accept(set("bb_squat", 0)))
-        assertTrue(accept(set("bb_squat", 500)))
+        // У известного упражнения зала — пределы его способа учёта (штанга от 20 кг).
+        assertFalse(accept(set("bb_squat", 0)))
+        assertFalse(accept(set("bb_squat", 500)))
+        assertFalse(accept(set("bb_squat", 19_500)))
         assertTrue(accept(set("bb_squat", 20_000)))
         assertTrue(accept(set("bb_squat", 62_500)))
         assertTrue(accept(set("bb_deadlift", 400_000)))

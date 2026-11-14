@@ -120,7 +120,8 @@ object GymMath {
         if (loadG == null) return true
         if (loadG !in 0..MAX_LOAD_G || loadG % LOAD_STEP_G != 0) return false
         val known = Exercises.byIdOrNull(exerciseId)
-        if (known != null) return known.isGym
+        // Известное упражнение зала — вес в пределах и на шаге своего способа учёта.
+        if (known != null) return known.gym?.let { isValid(it.loadMode, loadG) } ?: false
         return !Routines.isRoutineExercise(exerciseId)
     }
 
