@@ -16,7 +16,7 @@ import org.junit.Test
 class SyncSchemaTest {
     @Test
     fun migration8AddsSyncTablesAndOwnership() {
-        assertEquals(8, Diary.SCHEMA_VERSION)
+        assertTrue(Diary.SCHEMA_VERSION >= 8)
         val sql = Diary.MIGRATIONS[7].joinToString("\n")
         for (part in listOf(
             "ALTER TABLE balance_ops ADD COLUMN rev INTEGER NOT NULL DEFAULT 0",

@@ -36,7 +36,8 @@ data class OpRecord(
 )
 
 /**
- * «Факт» — запись, которая не меняется и не удаляется: подход, прохождение комплекса, перенос доли лимита.
+ * «Факт» — запись, которая не меняется и не удаляется: подход, прохождение комплекса, перенос доли лимита,
+ * приём пищи и его удаление (удаление — тоже факт, сам приём остаётся в журнале).
  * Объединяется по (автор, поколение, номер); [uid] — постоянный идентификатор (повтор не дублирует).
  */
 sealed interface FactRecord {
@@ -96,6 +97,37 @@ data class LimitMoveFact(
     override val day: Long,
     val ms: Long,
     val createdUtcMs: Long,
+) : FactRecord
+
+/**
+ * Приём пищи (дневник питания). [day] — учётные сутки снимка, [capturedUtcMs] — доверенное время снимка,
+ * [zoneId] — учётный пояс в момент снимка. Фото по сети не передаётся: [hasPhoto] — снимок есть у автора
+ * (у получателя файла нет — «Фото на другом телефоне»). [note] — короткая заметка, задаётся только при создании.
+ */
+data class MealFact(
+    override val uid: String,
+    override val author: String,
+    override val epoch: String,
+    override val aseq: Long,
+    val capturedUtcMs: Long,
+    override val day: Long,
+    val zoneId: String,
+    val hasPhoto: Boolean,
+    val note: String?,
+) : FactRecord
+
+/**
+ * Удаление приёма [mealUid] — отдельный факт: может прийти раньше самого приёма и переживает восстановление копии.
+ * [day] — учётные сутки удаления, [utcMs] — доверенное время удаления.
+ */
+data class MealDeleteFact(
+    override val uid: String,
+    override val author: String,
+    override val epoch: String,
+    override val aseq: Long,
+    val mealUid: String,
+    override val day: Long,
+    val utcMs: Long,
 ) : FactRecord
 
 /**
@@ -164,7 +196,8 @@ class SyncProtocolException(message: String) : IOException(message)
  * необязательные поля — байт-признак. Неизвестный тип или обрезанное сообщение — [SyncProtocolException].
  */
 object SyncCodec {
-    const val PROTOCOL_VERSION = 1
+    /** 2 — приёмы пищи и их удаления ([MealFact], [MealDeleteFact]). */
+    const val PROTOCOL_VERSION = 2
     private const val MAGIC = 0x4E // 'N'
 
     private const val T_HELLO = 1
@@ -178,6 +211,8 @@ object SyncCodec {
     private const val F_SET = 1
     private const val F_RUN = 2
     private const val F_MOVE = 3
+    private const val F_MEAL = 4
+    private const val F_MEAL_DELETE = 5
 
     fun encode(m: SyncMessage): ByteArray {
         val bytes = ByteArrayOutputStream()
@@ -314,6 +349,14 @@ object SyncCodec {
                 o.writeByte(F_MOVE); head(o, f)
                 o.str(f.toDevice); o.writeLong(f.day); o.writeLong(f.ms); o.writeLong(f.createdUtcMs)
             }
+            is MealFact -> {
+                o.writeByte(F_MEAL); head(o, f)
+                o.writeLong(f.capturedUtcMs); o.writeLong(f.day); o.str(f.zoneId); o.writeBoolean(f.hasPhoto); o.optStr(f.note)
+            }
+            is MealDeleteFact -> {
+                o.writeByte(F_MEAL_DELETE); head(o, f)
+                o.str(f.mealUid); o.writeLong(f.day); o.writeLong(f.utcMs)
+            }
         }
     }
 
@@ -339,6 +382,11 @@ object SyncCodec {
                 totalReps = i.readInt(), earnedMs = i.readLong(), xp = i.readLong(), completed = i.readBoolean(),
             )
             F_MOVE -> LimitMoveFact(uid, author, epoch, aseq, toDevice = i.str(), day = i.readLong(), ms = i.readLong(), createdUtcMs = i.readLong())
+            F_MEAL -> MealFact(
+                uid, author, epoch, aseq, capturedUtcMs = i.readLong(), day = i.readLong(), zoneId = i.str(),
+                hasPhoto = i.readBoolean(), note = i.optStr(),
+            )
+            F_MEAL_DELETE -> MealDeleteFact(uid, author, epoch, aseq, mealUid = i.str(), day = i.readLong(), utcMs = i.readLong())
             else -> throw SyncProtocolException("Неизвестный вид факта $kind")
         }
     }

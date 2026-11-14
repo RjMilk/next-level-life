@@ -111,6 +111,29 @@ class MemorySyncStore(
         return f
     }
 
+    /** Свой приём пищи (как Nutrition.addMeal). */
+    fun addMeal(note: String? = null, timeMs: Long = day * 86_400_000L + 8 * 3_600_000L): MealFact {
+        val f = MealFact(
+            uid = UUID.randomUUID().toString(), author = deviceId, epoch = factsEpoch, aseq = ++factSeq,
+            capturedUtcMs = timeMs, day = day, zoneId = "UTC", hasPhoto = true, note = note,
+        )
+        facts[f.uid] = f
+        return f
+    }
+
+    /** Своё удаление приёма [mealUid] (как Nutrition.deleteMeal). */
+    fun deleteMeal(mealUid: String): MealDeleteFact {
+        val f = MealDeleteFact(UUID.randomUUID().toString(), deviceId, factsEpoch, ++factSeq, mealUid, day, day * 86_400_000L)
+        facts[f.uid] = f
+        return f
+    }
+
+    /** Видимые приёмы: без удалённых (удаление могло прийти раньше приёма). */
+    fun visibleMeals(): List<MealFact> {
+        val deleted = facts.values.filterIsInstance<MealDeleteFact>().mapTo(HashSet()) { it.mealUid }
+        return facts.values.filterIsInstance<MealFact>().filter { it.uid !in deleted }
+    }
+
     /**
      * Восстановление копии [backup]: журнал и факты копии, новые поколения, курсоры сброшены; исходящие переносы
      * текущего журнала, которых нет в копии, возвращаются той же операцией (как Ledger.appendRestoreCarry).
@@ -118,6 +141,8 @@ class MemorySyncStore(
     fun restoreFrom(backup: MemorySyncStore) {
         val current = ops.values.toList()
         val currentMoves = facts.values.filterIsInstance<LimitMoveFact>()
+        // Приёмы пищи и удаления текущей базы переносятся в восстановленную (как в Backup.swap).
+        val currentMeals = facts.values.filter { it is MealFact || it is MealDeleteFact }
         ops.clear()
         ops.putAll(backup.ops)
         rev = maxOf(rev, backup.rev)
@@ -138,6 +163,7 @@ class MemorySyncStore(
         facts.putAll(backup.facts)
         // Переносы доли лимита — локально (с провода свои не принимаются).
         for (m in currentMoves) facts.putIfAbsent(m.uid, m)
+        for (m in currentMeals) facts.putIfAbsent(m.uid, m)
         peerOps.clear()
         opsCursors.clear()
         opsEpoch = "ops-$deviceId-${UUID.randomUUID()}"

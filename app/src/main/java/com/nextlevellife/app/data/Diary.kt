@@ -1212,6 +1212,37 @@ object Diary {
                 PRIMARY KEY (log, author, epoch)
             )""",
         ),
+        // 8 → 9: дневник питания. meals — приёмы пищи (факты: author, epoch, aseq из общего счётчика facts_seq, uid);
+        // photo_name — имя файла в filesDir/meals (по сети не передаётся, у копии со второго телефона файла нет);
+        // deleted — приём удалён (кеш журнала meal_deletes: удаление — отдельный факт, приходит и раньше приёма).
+        // meal_deletes — удаления приёмов; day — учётные сутки удаления.
+        listOf(
+            """CREATE TABLE meals (
+                uid TEXT PRIMARY KEY NOT NULL,
+                author TEXT NOT NULL,
+                epoch TEXT NOT NULL,
+                aseq INTEGER NOT NULL,
+                captured_utc_ms INTEGER NOT NULL,
+                accounting_day INTEGER NOT NULL,
+                zone_id TEXT NOT NULL,
+                photo_name TEXT,
+                note TEXT,
+                deleted INTEGER NOT NULL DEFAULT 0
+            )""",
+            "CREATE INDEX idx_meals_day ON meals(accounting_day, captured_utc_ms)",
+            "CREATE INDEX idx_meals_author ON meals(author, epoch, aseq)",
+            """CREATE TABLE meal_deletes (
+                uid TEXT PRIMARY KEY NOT NULL,
+                meal_uid TEXT NOT NULL,
+                author TEXT NOT NULL,
+                epoch TEXT NOT NULL,
+                aseq INTEGER NOT NULL,
+                utc_ms INTEGER NOT NULL,
+                day INTEGER NOT NULL
+            )""",
+            "CREATE INDEX idx_meal_deletes_meal ON meal_deletes(meal_uid)",
+            "CREATE INDEX idx_meal_deletes_author ON meal_deletes(author, epoch, aseq)",
+        ),
     )
 }
 

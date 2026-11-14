@@ -1,8 +1,10 @@
 package com.nextlevellife.app.sync
 
 import com.nextlevellife.app.data.LedgerMath
+import com.nextlevellife.app.data.NutritionMath
 import com.nextlevellife.app.data.OpKind
 import com.nextlevellife.app.data.SharedWalletMath
+import com.nextlevellife.app.data.TrustedClockMath
 
 /** Своё состояние для приветствия и правила переноса (после погашения текущего расхода). */
 data class LocalState(
@@ -108,6 +110,19 @@ object SyncRules {
             !(f.author == me && f.epoch == myFactsEpoch)
         is RunFact -> f.totalReps >= 0 && f.earnedMs >= 0L && f.xp >= 0L && f.durationMs >= 0L &&
             (f.rounds ?: 0) >= 0 && (f.extraReps ?: 0) >= 0 && !(f.author == me && f.epoch == myFactsEpoch)
+        // Приёмы пищи и удаления: только этой пары (автор — я или второй телефон), свои — только прежних поколений.
+        // uid приёма — имя файла фото, поэтому только безопасные символы; заметка — не длиннее предела.
+        is MealFact -> (f.author == me || f.author == peer) && !(f.author == me && f.epoch == myFactsEpoch) &&
+            NutritionMath.isSafeUid(f.uid) && f.capturedUtcMs > 0L && TrustedClockMath.isValidZoneId(f.zoneId) &&
+            (f.note?.length ?: 0) <= NutritionMath.MAX_NOTE_CHARS
+        is MealDeleteFact -> (f.author == me || f.author == peer) && !(f.author == me && f.epoch == myFactsEpoch) &&
+            NutritionMath.isSafeUid(f.uid) && NutritionMath.isSafeUid(f.mealUid)
+    }
+
+    /** Понятная причина отказа, когда версии обмена у телефонов разные. */
+    fun protocolMismatch(peer: Int, mine: Int): String = when {
+        peer < mine -> "на втором телефоне старая версия приложения (обмен $peer, здесь $mine) — обнови его"
+        else -> "на этом телефоне старая версия приложения (обмен $mine, на втором $peer) — обнови его"
     }
 
     /**

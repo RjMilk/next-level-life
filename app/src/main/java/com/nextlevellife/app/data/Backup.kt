@@ -28,8 +28,8 @@ sealed interface RestoreResult {
 
 /**
  * Резервная копия: zip из diary.db (согласованный снимок), prefs.json (настройки, блокируемые
- * приложения, серия, рекорды) и manifest.json (версия формата, версия приложения, время, device_id).
- * Записи движений (poselog) в копию не входят. Выбор файла — забота экрана: здесь только потоки.
+ * приложения, серия, рекорды), manifest.json (версия формата, версия приложения, время, device_id) и фото
+ * приёмов пищи каталогом meals/ (<uid>.jpg). Записи движений (poselog) в копию не входят. Выбор файла — забота экрана: здесь только потоки.
  */
 object Backup {
     private const val TAG = "Backup"
@@ -65,6 +65,18 @@ object Backup {
             zip.putNextEntry(ZipEntry(BackupMath.ENTRY_DB))
             tmp.inputStream().use { it.copyTo(zip) }
             zip.closeEntry()
+            // Фото приёмов пищи — каталогом meals/: только неудалённых приёмов этой базы, файлы которых есть здесь.
+            // JPEG уже сжат: без повторного сжатия (STORED требует CRC заранее — проще DEFLATE с уровнем 0).
+            val photos = runCatching { Nutrition.livePhotoNames() }.getOrDefault(emptySet())
+            val dir = File(context.filesDir, NutritionMath.PHOTO_DIR)
+            zip.setLevel(java.util.zip.Deflater.NO_COMPRESSION)
+            for (name in photos.sorted()) {
+                val f = File(dir, name)
+                if (!f.isFile) continue
+                zip.putNextEntry(ZipEntry(NutritionMath.backupEntryFor(name)))
+                f.inputStream().use { it.copyTo(zip) }
+                zip.closeEntry()
+            }
             zip.finish()
             zip.flush()
         } finally {
@@ -90,6 +102,8 @@ object Backup {
             var manifestText: String? = null
             var prefsText: String? = null
             var hasDb = false
+            val photosTmp = File(work, NutritionMath.PHOTO_DIR)
+            var photosBytes = 0L
             try {
                 ZipInputStream(input).let { zip ->
                     while (true) {
@@ -108,7 +122,18 @@ object Backup {
                                 dbTmp.outputStream().use { copyLimited(zip, it, MAX_DB_BYTES) }
                                 hasDb = true
                             }
-                            else -> Unit // Чужие файлы пропускаем, на диск не пишем.
+                            else -> {
+                                // Фото приёма: только «meals/<uid>.jpg» ровно на один уровень (без «..» и каталогов),
+                                // во временную папку; остальные чужие файлы пропускаем, на диск не пишем.
+                                val photo = NutritionMath.backupPhotoName(entry.name)
+                                if (photo != null && !entry.isDirectory) {
+                                    val dest = File(photosTmp.apply { mkdirs() }, photo)
+                                    if (dest.exists()) return RestoreResult.Error("В копии два одинаковых фото")
+                                    val n = dest.outputStream().use { copyLimited(zip, it, BackupMath.MAX_PHOTO_BYTES) }
+                                    photosBytes += n
+                                    if (photosBytes > BackupMath.MAX_PHOTOS_TOTAL_BYTES) return RestoreResult.Error("Фото в копии слишком много")
+                                }
+                            }
                         }
                         zip.closeEntry()
                     }
@@ -156,6 +181,7 @@ object Backup {
             try {
                 return swap(context, dbTmp, newPrefs, newPrefsJson) { carried[0] = it }.let { error ->
                     replaced = error == null
+                    if (replaced) installPhotos(context, photosTmp)
                     if (error != null) RestoreResult.Error(error)
                     else RestoreResult.Ok(manifest.optLong("created_at_ms", 0L), manifest.optString("device_id").ifEmpty { null }, carried[0])
                 }
@@ -303,6 +329,39 @@ object Backup {
             Log.e(TAG, "Не удалось прочитать переносы доли лимита", e)
             emptyList()
         }
+        // Приёмы пищи и их удаления текущей базы — тоже: приёмы не дают наград (переносить безопасно), фото их
+        // остаются в filesDir, а удаление после копии не должно воскресить приём.
+        val currentMeals = try {
+            synchronized(Diary) {
+                Diary.query(
+                    "SELECT uid, author, epoch, aseq, captured_utc_ms, accounting_day, zone_id, photo_name, note FROM meals",
+                ) { c ->
+                    android.content.ContentValues().apply {
+                        put("uid", c.getString(0)); put("author", c.getString(1)); put("epoch", c.getString(2))
+                        put("aseq", c.getLong(3)); put("captured_utc_ms", c.getLong(4)); put("accounting_day", c.getLong(5))
+                        put("zone_id", c.getString(6))
+                        if (c.isNull(7)) putNull("photo_name") else put("photo_name", c.getString(7))
+                        if (c.isNull(8)) putNull("note") else put("note", c.getString(8))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось прочитать приёмы пищи", e)
+            emptyList()
+        }
+        val currentMealDeletes = try {
+            synchronized(Diary) {
+                Diary.query("SELECT uid, meal_uid, author, epoch, aseq, utc_ms, day FROM meal_deletes") { c ->
+                    android.content.ContentValues().apply {
+                        put("uid", c.getString(0)); put("meal_uid", c.getString(1)); put("author", c.getString(2))
+                        put("epoch", c.getString(3)); put("aseq", c.getLong(4)); put("utc_ms", c.getLong(5)); put("day", c.getLong(6))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось прочитать удаления приёмов пищи", e)
+            emptyList()
+        }
         var carriedMs = 0L
         val oldPrefsJson = Store.exportPrefs()
         val oldPrefs = Store.parsePrefs(oldPrefsJson)
@@ -341,6 +400,9 @@ object Backup {
                 db.delete("sync_cursors", null, null)
                 db.delete("peer_ops", null, null)
                 for (move in currentMoves) db.insertWithOnConflict("limit_moves", null, move, SQLiteDatabase.CONFLICT_IGNORE)
+                for (meal in currentMeals) db.insertWithOnConflict("meals", null, meal, SQLiteDatabase.CONFLICT_IGNORE)
+                for (del in currentMealDeletes) db.insertWithOnConflict("meal_deletes", null, del, SQLiteDatabase.CONFLICT_IGNORE)
+                db.execSQL("UPDATE meals SET deleted = 1 WHERE uid IN (SELECT meal_uid FROM meal_deletes)")
                 if (localPeer != null) putMeta(Ledger.KEY_SYNC_PEER, localPeer) else db.delete("meta", "key = ?", arrayOf(Ledger.KEY_SYNC_PEER))
                 db.delete("shared_settings", "key = ?", arrayOf(SharedSettings.ACTIVITY_SOURCE))
                 if (localSource != null) db.insertWithOnConflict("shared_settings", null, localSource, SQLiteDatabase.CONFLICT_REPLACE)
@@ -551,7 +613,7 @@ object Backup {
         return out.toByteArray()
     }
 
-    private fun copyLimited(input: InputStream, out: OutputStream, limit: Long) {
+    private fun copyLimited(input: InputStream, out: OutputStream, limit: Long): Long {
         val buf = ByteArray(64 * 1024)
         var total = 0L
         while (true) {
@@ -560,6 +622,35 @@ object Backup {
             total += n
             if (total > limit) throw IOException("Файл в копии слишком большой")
             out.write(buf, 0, n)
+        }
+        return total
+    }
+
+    /**
+     * Фото приёмов из копии — в filesDir/meals после успешной подмены базы. Имеющиеся файлы не заменяются
+     * (тот же uid — тот же снимок), фото текущих приёмов, которых нет в копии, остаются. Ошибки только логируются:
+     * база уже восстановлена, без фото приём покажется «Фото не сохранилось».
+     */
+    private fun installPhotos(context: Context, from: File) {
+        val names = from.list() ?: return
+        val dir = File(context.filesDir, NutritionMath.PHOTO_DIR).apply { mkdirs() }
+        for (name in names) {
+            if (!NutritionMath.isSafePhotoName(name)) continue
+            val src = File(from, name)
+            val dest = File(dir, name)
+            if (dest.exists()) continue
+            try {
+                if (!src.renameTo(dest)) {
+                    val tmp = File(dir, "$name.tmp")
+                    src.inputStream().use { input -> tmp.outputStream().use { input.copyTo(it) } }
+                    if (!tmp.renameTo(dest)) {
+                        tmp.delete()
+                        throw IOException("не удалось переименовать")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Не удалось восстановить фото $name", e)
+            }
         }
     }
 
@@ -589,9 +680,21 @@ object BackupMath {
     const val SLEEP_SCHEMA = 5
     val SLEEP_TABLES = setOf("phone_events", "observation_gaps", "sleep_nights")
 
+    /** С версии 9 — дневник питания. */
+    const val MEALS_SCHEMA = 9
+    val MEAL_TABLES = setOf("meals", "meal_deletes")
+
+    /** Предел одного фото и всех фото в копии (байт). */
+    const val MAX_PHOTO_BYTES = 16L * 1024 * 1024
+    const val MAX_PHOTOS_TOTAL_BYTES = 8L * 1024 * 1024 * 1024
+
     /** Таблицы, которые обязаны быть в базе версии [schema]: более старые копии догоняют миграции. */
-    fun requiredTables(schema: Int): Set<String> =
-        if (schema >= SLEEP_SCHEMA) REQUIRED_TABLES + SLEEP_TABLES else REQUIRED_TABLES
+    fun requiredTables(schema: Int): Set<String> {
+        var t = REQUIRED_TABLES
+        if (schema >= SLEEP_SCHEMA) t = t + SLEEP_TABLES
+        if (schema >= MEALS_SCHEMA) t = t + MEAL_TABLES
+        return t
+    }
 
     /** null — манифест годится; иначе причина отказа. */
     fun checkManifest(formatVersion: Int?, dbSchema: Int?, supportedSchema: Int, supportedFormat: Int = FORMAT_VERSION): String? = when {

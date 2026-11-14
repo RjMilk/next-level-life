@@ -70,7 +70,7 @@ class SyncSession(
                 (receive() as? SyncMessage.Hello ?: throw SyncProtocolException("Ожидалось приветствие")).also { send(hello) }
             }
             if (peerHello.protocol != SyncCodec.PROTOCOL_VERSION) {
-                throw SyncProtocolException("Другая версия обмена: ${peerHello.protocol}, здесь ${SyncCodec.PROTOCOL_VERSION}")
+                throw SyncProtocolException(SyncRules.protocolMismatch(peerHello.protocol, SyncCodec.PROTOCOL_VERSION))
             }
             if (peerHello.deviceId != peer) throw SyncProtocolException("Приветствие не от связанного телефона")
             store.ensureActivitySource(peer, local.healthConnected, peerHello.healthConnected)

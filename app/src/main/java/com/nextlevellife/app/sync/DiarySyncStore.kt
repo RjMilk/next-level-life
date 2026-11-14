@@ -7,6 +7,7 @@ import android.util.Log
 import com.nextlevellife.app.block.SpendBridge
 import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Ledger
+import com.nextlevellife.app.data.Nutrition
 import com.nextlevellife.app.data.OpKind
 import com.nextlevellife.app.data.SharedSettings
 import com.nextlevellife.app.data.SharedWalletMath
@@ -57,7 +58,8 @@ class DiarySyncStore : SyncStore {
         val data = Diary.query(
             "SELECT author, epoch, MAX(aseq) FROM (" +
                 "SELECT author, epoch, aseq FROM sets UNION ALL SELECT author, epoch, aseq FROM complex_runs " +
-                "UNION ALL SELECT author, epoch, aseq FROM limit_moves) " +
+                "UNION ALL SELECT author, epoch, aseq FROM limit_moves UNION ALL SELECT author, epoch, aseq FROM meals " +
+                "UNION ALL SELECT author, epoch, aseq FROM meal_deletes) " +
                 "WHERE author IS NOT NULL AND epoch IS NOT NULL AND aseq IS NOT NULL GROUP BY author, epoch",
         ) { LogCursor(LogCursor.FACTS, it.getString(0), it.getString(1), it.getLong(2)) }
         val stored = Diary.query("SELECT log, author, epoch, pos FROM sync_cursors WHERE log = ?", LogCursor.FACTS) {
@@ -111,7 +113,24 @@ class DiarySyncStore : SyncStore {
                 "WHERE author = ? AND epoch = ? AND aseq > ? ORDER BY aseq LIMIT $limit",
             *args,
         ) { LimitMoveFact(it.getString(0), it.getString(1), it.getString(2), it.getLong(3), it.getString(4), it.getLong(5), it.getLong(6), it.getLong(7)) }
-        (runs + sets + moves).sortedBy { it.aseq }.take(limit)
+        // Приёмы пищи: фото не передаётся, только признак «снимок есть у автора».
+        val meals = Diary.query(
+            "SELECT uid, author, epoch, aseq, captured_utc_ms, accounting_day, zone_id, photo_name IS NOT NULL, note FROM meals " +
+                "WHERE author = ? AND epoch = ? AND aseq > ? ORDER BY aseq LIMIT $limit",
+            *args,
+        ) {
+            MealFact(
+                it.getString(0), it.getString(1), it.getString(2), it.getLong(3), capturedUtcMs = it.getLong(4),
+                day = it.getLong(5), zoneId = it.getString(6), hasPhoto = it.getInt(7) != 0,
+                note = if (it.isNull(8)) null else it.getString(8),
+            )
+        }
+        val mealDeletes = Diary.query(
+            "SELECT uid, author, epoch, aseq, meal_uid, day, utc_ms FROM meal_deletes " +
+                "WHERE author = ? AND epoch = ? AND aseq > ? ORDER BY aseq LIMIT $limit",
+            *args,
+        ) { MealDeleteFact(it.getString(0), it.getString(1), it.getString(2), it.getLong(3), it.getString(4), it.getLong(5), it.getLong(6)) }
+        (runs + sets + moves + meals + mealDeletes).sortedBy { it.aseq }.take(limit)
     }
 
     override fun applyOps(peerId: String, epoch: String, reset: Boolean, rows: List<OpRecord>): Long {
@@ -177,7 +196,8 @@ class DiarySyncStore : SyncStore {
                     Log.w(TAG, "Отклонён факт ${f.uid} автора ${f.author}")
                     continue
                 }
-                if (insertFact(db, f)) days += f.day
+                // Приёмы пищи на характеристики и серию не влияют: их сутки не пересчитываются.
+                if (insertFact(db, f) && f !is MealFact && f !is MealDeleteFact) days += f.day
             }
             for ((k, pos) in maxByGroup) {
                 val old = Diary.query(
@@ -233,6 +253,10 @@ class DiarySyncStore : SyncStore {
                 })
                 true
             }
+            is MealFact -> Nutrition.insertMealCopy(
+                db, f.uid, f.author, f.epoch, f.aseq, f.capturedUtcMs, f.day, f.zoneId, f.hasPhoto, f.note,
+            )
+            is MealDeleteFact -> Nutrition.insertDeleteCopy(db, f.uid, f.mealUid, f.author, f.epoch, f.aseq, f.day, f.utcMs)
         }
     }
 
