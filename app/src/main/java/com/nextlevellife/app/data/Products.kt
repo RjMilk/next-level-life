@@ -618,6 +618,16 @@ object ProductsMath {
         return "≈${NBSP}$body (${withoutEntries(t.entries - t.macrosCounted)})"
     }
 
+    /**
+     * Строка карточки приёма в ленте: «2 продукта · 640 ккал», «3 продукта · ≈ 640 ккал (без 1 позиции)»;
+     * ккал не посчитать — «1 продукт». Позиций нет — null.
+     */
+    fun mealLine(t: NutritionTotals): String? {
+        if (t.entries == 0) return null
+        val count = "${t.entries}$NBSP${productsWord(t.entries)}"
+        return if (t.kcalCounted == 0) count else "$count · ${kcalText(t)}"
+    }
+
     /** Десятые доли грамма → «12,5», «0,0». */
     fun dgText(dg: Int): String = dgText(dg.toLong())
 

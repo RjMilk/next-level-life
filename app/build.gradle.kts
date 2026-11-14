@@ -57,6 +57,9 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$camerax")
     implementation("androidx.camera:camera-view:$camerax")
     implementation("com.google.mlkit:pose-detection-accurate:18.0.0-beta5")
+    // Штрихкоды продуктов в дневнике питания: модель внутри APK (не play-services-вариант с загрузкой модели),
+    // распознавание на устройстве, без сети.
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
 
     // Шаги и пробежки с часов Garmin и телефона: только чтение из Health Connect, данные не покидают телефон.
     implementation("androidx.health.connect:connect-client:1.1.0")

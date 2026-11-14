@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -49,9 +51,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.nextlevellife.app.data.Ledger
+import com.nextlevellife.app.data.MealEntryLine
 import com.nextlevellife.app.data.MealItem
 import com.nextlevellife.app.data.Nutrition
 import com.nextlevellife.app.data.NutritionMath
+import com.nextlevellife.app.data.ProductVersion
+import com.nextlevellife.app.data.Products
+import com.nextlevellife.app.data.ProductsMath
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TimeSnapshot
 import com.nextlevellife.app.data.TrustedClock
@@ -66,19 +72,26 @@ import java.util.UUID
 
 private const val TAG = "NutritionScreen"
 
-/** Приём в ленте: есть ли файл фото здесь и снят ли он этим телефоном. */
-private data class MealRow(val meal: MealItem, val hasFile: Boolean, val mine: Boolean)
+/** Приём в ленте: есть ли файл фото здесь, снят ли он этим телефоном, его позиции (продукты). */
+private data class MealRow(val meal: MealItem, val hasFile: Boolean, val mine: Boolean, val entries: List<MealEntryLine>)
 
 private const val MODE_LIST = "list"
 private const val MODE_CAMERA = "camera"
 private const val MODE_PROCESSING = "processing"
 private const val MODE_CONFIRM = "confirm"
 private const val MODE_VIEW = "view"
+private const val MODE_PRODUCTS = "products"
+private const val MODE_PRODUCT_EDIT = "product_edit"
+private const val MODE_PICK = "pick"
+private const val MODE_SCAN = "scan"
+private const val MODE_PORTION = "portion"
 
 /**
  * «Питание»: съёмка еды камерой приложения, лента приёмов учётных суток (листание днями ‹ ›), окно питания
  * (первый и последний зафиксированный приём). Просмотр фото крупно, удаление с подтверждением. Заметка задаётся
  * только при съёмке. Минут и очков питание не даёт. Фото на второй телефон не передаются.
+ * В приёме — продукты ([Products]): из своего списка, по штрихкоду или новой карточкой; сумма ккал и БЖУ у приёма
+ * и за день. «Мои продукты» — список, поиск, правка и удаление карточек.
  */
 @Composable
 fun NutritionScreen(onBack: () -> Unit) {
@@ -95,6 +108,15 @@ fun NutritionScreen(onBack: () -> Unit) {
     var note by rememberSaveable { mutableStateOf("") }
     var viewUid by rememberSaveable { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
+    // Карточка продукта: ключ сеанса правки (свои поля формы), продукт (null — новый), штрихкод со сканера,
+    // вернуться ли после сохранения к выбору порции для приёма [viewUid].
+    var editKey by rememberSaveable { mutableStateOf("") }
+    var editProductUid by rememberSaveable { mutableStateOf<String?>(null) }
+    var editBarcode by rememberSaveable { mutableStateOf<String?>(null) }
+    var editForMeal by rememberSaveable { mutableStateOf(false) }
+    // Выбранная версия продукта для позиции приёма [viewUid].
+    var pickVersionUid by rememberSaveable { mutableStateOf<String?>(null) }
+    var pickMessage by remember { mutableStateOf<String?>(null) }
 
     // Фото удалённых приёмов (в том числе удалённых на втором телефоне) и брошенные снимки — убрать.
     LaunchedEffect(Unit) { withContext(Dispatchers.IO) { runCatching { MealPhotos.prune(context) } } }
@@ -103,9 +125,37 @@ fun NutritionScreen(onBack: () -> Unit) {
         value = withContext(Dispatchers.IO) {
             runCatching {
                 val me = runCatching { Ledger.deviceId() }.getOrNull()
-                Nutrition.mealsForDay(day).map { MealRow(it, MealPhotos.exists(context, it.photoName), it.author == me) }
+                val entries = runCatching { Products.entriesForDay(day) }
+                    .onFailure { Log.e(TAG, "Не удалось прочитать продукты приёмов", it) }.getOrDefault(emptyMap())
+                Nutrition.mealsForDay(day).map {
+                    MealRow(it, MealPhotos.exists(context, it.photoName), it.author == me, entries[it.uid].orEmpty())
+                }
             }.onFailure { Log.e(TAG, "Не удалось прочитать приёмы", it) }.getOrDefault(emptyList())
         }
+    }
+    val products by produceState<List<ProductVersion>?>(null, version) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { Products.live() }.onFailure { Log.e(TAG, "Не удалось прочитать продукты", it) }.getOrDefault(emptyList())
+        }
+    }
+
+    fun openEditor(productUid: String?, barcode: String?, forMeal: Boolean) {
+        editKey = UUID.randomUUID().toString()
+        editProductUid = productUid
+        editBarcode = barcode
+        editForMeal = forMeal
+        mode = MODE_PRODUCT_EDIT
+    }
+
+    fun openPortion(v: ProductVersion) {
+        pickVersionUid = v.versionUid
+        editKey = UUID.randomUUID().toString()
+        mode = MODE_PORTION
+    }
+
+    fun openPicker() {
+        pickMessage = null
+        mode = MODE_PICK
     }
 
     fun dropPending() {
@@ -126,6 +176,9 @@ fun NutritionScreen(onBack: () -> Unit) {
             MODE_LIST -> onBack()
             MODE_PROCESSING -> Unit
             MODE_CONFIRM, MODE_CAMERA -> { dropPending(); mode = MODE_LIST }
+            MODE_PICK -> mode = MODE_VIEW
+            MODE_SCAN, MODE_PORTION -> openPicker()
+            // Карточка продукта обрабатывает «Назад» сама (спрашивает, если есть несохранённые правки).
             else -> mode = MODE_LIST
         }
     }
@@ -260,17 +313,108 @@ fun NutritionScreen(onBack: () -> Unit) {
                     if (rows != null) LaunchedEffect(Unit) { mode = MODE_LIST }
                     return@Column
                 }
-                MealView(row, onClose = { mode = MODE_LIST }, onDelete = {
-                    scope.launch {
-                        withContext(Dispatchers.IO) {
-                            runCatching {
-                                Nutrition.deleteMeal(row.meal.uid)
-                                row.meal.photoName?.let { MealPhotos.delete(context, listOf(it)) }
-                            }.onFailure { Log.e(TAG, "Не удалось удалить приём", it) }
+                MealView(
+                    row,
+                    onClose = { mode = MODE_LIST },
+                    onDelete = {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    Nutrition.deleteMeal(row.meal.uid)
+                                    row.meal.photoName?.let { MealPhotos.delete(context, listOf(it)) }
+                                }.onFailure { Log.e(TAG, "Не удалось удалить приём", it) }
+                            }
+                            mode = MODE_LIST
                         }
-                        mode = MODE_LIST
+                    },
+                    onAddProduct = { openPicker() },
+                    onRemoveEntry = { line ->
+                        scope.launch(Dispatchers.IO) {
+                            runCatching { Products.deleteEntry(line.entry.uid) }
+                                .onFailure { Log.e(TAG, "Не удалось убрать продукт из приёма", it) }
+                        }
+                    },
+                )
+            }
+            MODE_PRODUCTS -> ProductsListView(
+                live = products,
+                onBack = { mode = MODE_LIST },
+                onNew = { openEditor(null, null, forMeal = false) },
+                onOpen = { openEditor(it.productUid, null, forMeal = false) },
+            )
+            MODE_PRODUCT_EDIT -> {
+                val live = products
+                val back = if (editForMeal) MODE_PICK else MODE_PRODUCTS
+                val stored = editProductUid?.let { uid -> live?.firstOrNull { it.productUid == uid } }
+                when {
+                    live == null -> CircularProgressIndicator(Modifier.padding(16.dp))
+                    // Продукт удалили на другом телефоне, пока карточка была открыта.
+                    editProductUid != null && stored == null -> LaunchedEffect(Unit) { mode = back }
+                    else -> ProductEditorView(
+                        editKey = editKey,
+                        stored = stored,
+                        initialBarcode = editBarcode,
+                        live = live,
+                        onClose = { if (editForMeal) openPicker() else mode = MODE_PRODUCTS },
+                        onSaved = { v -> if (editForMeal) openPortion(v) else mode = MODE_PRODUCTS },
+                        onDeleted = { mode = MODE_PRODUCTS },
+                    )
+                }
+            }
+            MODE_PICK -> ProductPickerView(
+                live = products,
+                message = pickMessage,
+                onCancel = { mode = MODE_VIEW },
+                onScan = { pickMessage = null; mode = MODE_SCAN },
+                onNew = { openEditor(null, null, forMeal = true) },
+                onPick = { openPortion(it) },
+            )
+            MODE_SCAN -> BarcodeScanView(
+                onCancel = { openPicker() },
+                onCode = { code ->
+                    scope.launch {
+                        val found = withContext(Dispatchers.IO) {
+                            runCatching { ProductsMath.findByBarcode(Products.live(), code) }
+                                .onFailure { Log.e(TAG, "Не удалось найти продукт по штрихкоду", it) }
+                        }
+                        found.fold(
+                            // Знакомый — сразу порция; незнакомый — новая карточка с этим кодом.
+                            onSuccess = { v -> if (v != null) openPortion(v) else openEditor(null, code, forMeal = true) },
+                            onFailure = { openPicker(); pickMessage = "Не удалось прочитать продукты" },
+                        )
                     }
-                })
+                },
+            )
+            MODE_PORTION -> {
+                val uid = pickVersionUid
+                val v by produceState<ProductVersion?>(null, uid) {
+                    value = uid?.let { withContext(Dispatchers.IO) { runCatching { Products.version(it) }.getOrNull() } }
+                }
+                PortionView(
+                    key = editKey,
+                    version = v,
+                    onCancel = { openPicker() },
+                    onAdd = { grams ->
+                        val meal = viewUid
+                        val ver = v
+                        if (meal == null || ver == null) {
+                            mode = MODE_LIST
+                        } else {
+                            scope.launch {
+                                val ok = withContext(Dispatchers.IO) {
+                                    runCatching { Products.addEntry(meal, ver, grams) }
+                                        .onFailure { Log.e(TAG, "Не удалось добавить продукт в приём", it) }.isSuccess
+                                }
+                                if (ok) {
+                                    mode = MODE_VIEW
+                                } else {
+                                    openPicker()
+                                    pickMessage = "Не удалось добавить продукт"
+                                }
+                            }
+                        }
+                    },
+                )
             }
             else -> MealList(
                 day = day,
@@ -279,6 +423,7 @@ fun NutritionScreen(onBack: () -> Unit) {
                 message = message,
                 onBack = onBack,
                 onShoot = { startCamera() },
+                onProducts = { mode = MODE_PRODUCTS },
                 onDay = { day = it.coerceAtMost(today) },
                 onOpen = { viewUid = it; mode = MODE_VIEW },
             )
@@ -308,6 +453,7 @@ private fun MealList(
     message: String?,
     onBack: () -> Unit,
     onShoot: () -> Unit,
+    onProducts: () -> Unit,
     onDay: (Long) -> Unit,
     onOpen: (String) -> Unit,
 ) {
@@ -318,6 +464,11 @@ private fun MealList(
             shape = ButtonShape,
             modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
         ) { Text("Снять еду", style = MaterialTheme.typography.titleMedium) }
+        OutlinedButton(
+            onClick = onProducts,
+            shape = ButtonShape,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+        ) { Text("Мои продукты") }
         if (message != null) {
             Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
         }
@@ -355,6 +506,7 @@ private fun MealList(
                 )
             }
         }
+        DayTotalsCard(rows?.flatMap { it.entries }.orEmpty())
         rows?.forEach { row -> MealCard(row, onClick = { onOpen(row.meal.uid) }) }
         Spacer(Modifier.heightIn(min = 12.dp))
     }
@@ -406,6 +558,13 @@ private fun MealCard(row: MealRow, onClick: () -> Unit) {
                     style = MaterialTheme.typography.titleMedium.merge(Tabular),
                 )
                 row.meal.note?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                ProductsMath.mealLine(ProductsMath.totals(row.entries))?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall.merge(Tabular),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             Text("›", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -428,26 +587,43 @@ private fun PhotoBox(bitmap: Bitmap?, modifier: Modifier, placeholder: String? =
     }
 }
 
-/** Приём крупно: фото, время, заметка, «Удалить» с подтверждением. */
+/**
+ * Приём крупно: фото, время, заметка, продукты (сумма, «Добавить продукт», «Убрать»), «Удалить приём»
+ * с подтверждением. Прокручивается: фото — 4:3, без файла фото — короткая плашка с подписью.
+ */
 @Composable
-private fun androidx.compose.foundation.layout.ColumnScope.MealView(row: MealRow, onClose: () -> Unit, onDelete: () -> Unit) {
+private fun MealView(
+    row: MealRow,
+    onClose: () -> Unit,
+    onDelete: () -> Unit,
+    onAddProduct: () -> Unit,
+    onRemoveEntry: (MealEntryLine) -> Unit,
+) {
     val context = LocalContext.current
     var confirm by rememberSaveable { mutableStateOf(false) }
     val meal = row.meal
     val today = TrustedClock.today()
-    Header("${dayName(meal.day, today)}, ${NutritionMath.timeText(meal.capturedUtcMs, meal.zoneId)}", "Назад", onClose)
-    val bitmap by produceState<Bitmap?>(null, meal.photoName, row.hasFile) {
-        val name = meal.photoName
-        value = if (name != null && row.hasFile) withContext(Dispatchers.IO) { MealPhotos.full(context, name) } else null
+    Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Header("${dayName(meal.day, today)}, ${NutritionMath.timeText(meal.capturedUtcMs, meal.zoneId)}", "Назад", onClose)
+        val bitmap by produceState<Bitmap?>(null, meal.photoName, row.hasFile) {
+            val name = meal.photoName
+            value = if (name != null && row.hasFile) withContext(Dispatchers.IO) { MealPhotos.full(context, name) } else null
+        }
+        if (row.hasFile) {
+            PhotoBox(bitmap, Modifier.fillMaxWidth().aspectRatio(4f / 3f))
+        } else {
+            PhotoBox(null, Modifier.fillMaxWidth().height(96.dp), placeholder = photoPlaceholder(row))
+        }
+        meal.note?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
+        MealEntriesSection(row.entries, onAdd = onAddProduct, onRemove = onRemoveEntry)
+        OutlinedButton(
+            onClick = { confirm = true },
+            shape = ButtonShape,
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+        ) { Text("Удалить приём") }
+        Spacer(Modifier.height(12.dp))
     }
-    PhotoBox(bitmap, Modifier.fillMaxWidth().weight(1f), placeholder = if (row.hasFile) null else photoPlaceholder(row))
-    meal.note?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
-    OutlinedButton(
-        onClick = { confirm = true },
-        shape = ButtonShape,
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
-    ) { Text("Удалить") }
     if (confirm) {
         AlertDialog(
             onDismissRequest = { confirm = false },

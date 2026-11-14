@@ -260,6 +260,11 @@ class ProductsMathTest {
         assertEquals("Ккал не посчитать: нет веса или ккал на 100 г", plain(ProductsMath.kcalText(none)))
         assertNull(ProductsMath.macrosText(none))
         assertNull(ProductsMath.kcalText(ProductsMath.totals(emptyList())))
+        // Строка карточки приёма.
+        assertEquals("4 продукта · ≈ 575 ккал (без 2 позиций)", plain(ProductsMath.mealLine(t)))
+        assertEquals("2 продукта · 500 ккал", plain(ProductsMath.mealLine(full)))
+        assertEquals("1 продукт", plain(ProductsMath.mealLine(none)))
+        assertNull(ProductsMath.mealLine(ProductsMath.totals(emptyList())))
         // Округление ккал — после суммы: 3 × (333 ккал/100 г × 10 г = 33,3 ккал) = 99,9 → 100, а не 3 × 33 = 99.
         val third = product(uid = "v3", kcal = 333)
         val sum = ProductsMath.totals(List(3) { line(10, third, uid = "t$it") })
