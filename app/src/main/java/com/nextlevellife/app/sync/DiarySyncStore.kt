@@ -121,6 +121,8 @@ class DiarySyncStore : SyncStore {
             if (reset) {
                 db.delete("peer_ops", "device_id = ?", arrayOf(peerId))
                 db.delete("sync_cursors", "log = ? AND author = ?", arrayOf(LogCursor.OPS, peerId))
+                // Копия стёрта и будет собираться заново: до конца этого обмена она не полная.
+                db.delete("meta", "key = ?", arrayOf(Ledger.KEY_PEER_COMPLETE))
             } else if (cursor == null || cursor.epoch != epoch) {
                 throw SyncProtocolException("Пакет операций другого поколения")
             }

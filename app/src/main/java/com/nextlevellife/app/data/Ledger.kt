@@ -493,6 +493,8 @@ object Ledger {
 
     internal fun setPeer(peerId: String?) = synchronized(Diary) {
         val old = runCatching { Diary.metaGet(KEY_SYNC_PEER) }.getOrNull()
+        // Источник активности выбирается для конкретной пары: разрыв или новая пара — выбрать заново.
+        if (old != peerId) Diary.db().delete("shared_settings", "key = ?", arrayOf(SharedSettings.ACTIVITY_SOURCE))
         if (peerId == null) {
             Diary.metaDelete(KEY_SYNC_PEER)
             Diary.metaDelete(KEY_PAIRED_DAY)
@@ -581,7 +583,7 @@ object Ledger {
         val peerSpent = if (peer == null) 0L else synchronized(Diary) {
             when {
                 hasPeerCopy(peer) -> peerSpentMs(day)
-                pairedDay() == null || pairedDay() == day -> null
+                pairedDay() == day -> null
                 else -> 0L
             }
         }

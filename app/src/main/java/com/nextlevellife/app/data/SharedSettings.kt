@@ -164,13 +164,25 @@ object SharedSettings {
     }
 
     /**
-     * Слить настройки второго телефона и применить победителей. true — что-то изменилось. Источник активности не
-     * сливается: он выбирается один раз при первом обмене ([ensureActivitySource]) и дальше не меняется.
+     * Слить настройки второго телефона и применить победителей. true — что-то изменилось.
+     * Источник активности выбирается один раз при первом обмене ([ensureActivitySource]) и пользователем не меняется.
+     * Если две стороны всё же выбрали по-разному (первый обмен оборвался, а доступ к Health Connect с тех пор
+     * изменился), обе сходятся к одному значению детерминированно — к меньшему device_id из двух выборов; так
+     * разногласие не держится дольше одного обмена.
      */
     @Synchronized
     fun merge(remote: List<SharedWalletMath.Setting>): Boolean {
         val local = all()
-        val merged = SharedWalletMath.mergeAll(local, remote.filter { it.key != ACTIVITY_SOURCE })
+        val merged = SharedWalletMath.mergeAll(local, remote.filter { it.key != ACTIVITY_SOURCE }).toMutableMap()
+        val localSource = local.firstOrNull { it.key == ACTIVITY_SOURCE }
+        val remoteSource = remote.firstOrNull { it.key == ACTIVITY_SOURCE }
+        val agreed = when {
+            remoteSource == null -> localSource
+            localSource == null -> remoteSource
+            localSource.value == remoteSource.value -> localSource
+            else -> if (remoteSource.value < localSource.value) remoteSource else localSource
+        }
+        if (agreed != null) merged[ACTIVITY_SOURCE] = agreed
         val localByKey = local.associateBy { it.key }
         val changedRows = merged.values.filter { localByKey[it.key] != it }
         if (changedRows.isEmpty()) return false
