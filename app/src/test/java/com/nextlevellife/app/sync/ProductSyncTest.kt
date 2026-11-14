@@ -245,6 +245,84 @@ class ProductSyncTest {
     }
 
     @Test
+    fun nonPositiveAseqRejectedForAllKinds() {
+        val me = "aaa"
+        val peer = "bbb"
+        val utc = 1_700_000_000_000L
+        val day = 19_676L
+        val zone = "Europe/Moscow"
+        val good: List<FactRecord> = listOf(
+            SetFact("s1", peer, "e", 1, utc, day, "pushups", "Отжимания", null, 10, 0, 0, 0, null, "REPS", 0),
+            RunFact("r1", peer, "e", 1, utc, day, "c1", null, 0, null, null, 10, 0, 0, true),
+            LimitMoveFact("l1", peer, "e", 1, me, day, 60_000, utc),
+            MealFact("m1", peer, "e", 1, utc, day, zone, false, null),
+            MealDeleteFact("md1", peer, "e", 1, "m1", day, utc),
+            CardAttemptFact("c1", peer, "e", 1, "mul:7x8", "mul", utc, day, zone, true, 10_000),
+            ProductVersionFact("v1", peer, "e", 1, "p1", utc, day, zone, "Рис", null, null, null, null, null, null),
+            ProductDeleteFact("pd1", peer, "e", 1, "p1", utc, day, zone),
+            MealEntryFact("n1", peer, "e", 1, "m1", "v1", 100, utc, day, zone),
+            MealEntryDeleteFact("x1", peer, "e", 1, "n1", utc, day, zone),
+        )
+        for (f in good) {
+            assertTrue(f.toString(), SyncRules.acceptFact(f, me, "cur", peer))
+            for (bad in listOf(0L, -1L, Long.MIN_VALUE)) {
+                val copy = when (f) {
+                    is SetFact -> f.copy(aseq = bad)
+                    is RunFact -> f.copy(aseq = bad)
+                    is LimitMoveFact -> f.copy(aseq = bad)
+                    is MealFact -> f.copy(aseq = bad)
+                    is MealDeleteFact -> f.copy(aseq = bad)
+                    is CardAttemptFact -> f.copy(aseq = bad)
+                    is ProductVersionFact -> f.copy(aseq = bad)
+                    is ProductDeleteFact -> f.copy(aseq = bad)
+                    is MealEntryFact -> f.copy(aseq = bad)
+                    is MealEntryDeleteFact -> f.copy(aseq = bad)
+                }
+                assertFalse("$bad $f", SyncRules.acceptFact(copy, me, "cur", peer))
+            }
+        }
+        // Свои факты нумеруются с 1: первый факт нового хранилища и после восстановления копии.
+        val a = MemorySyncStore("aaa")
+        assertEquals(1L, a.addMeal().aseq)
+        a.restoreFrom(a.snapshot())
+        assertEquals(1L, a.saveProduct("Х").aseq)
+    }
+
+    @Test
+    fun repeatedWriteWithSameUidIsIdempotent() {
+        // Как запись после поворота экрана: uid задан заранее, повтор не создаёт второй факт и не тратит номер.
+        val a = MemorySyncStore("aaa")
+        val meal = a.addMeal()
+        val v1 = a.saveProduct("Рис", kcal = 130, uid = "ver-1")
+        val again = a.saveProduct("Рис", kcal = 130, uid = "ver-1")
+        assertEquals(v1, again)
+        val e1 = a.addEntry(meal.uid, v1, grams = 100, uid = "entry-1")
+        assertEquals(e1, a.addEntry(meal.uid, v1, grams = 100, uid = "entry-1"))
+        assertEquals(3, a.facts.size)
+        assertEquals(listOf(1L, 2L, 3L), a.facts.values.map { it.aseq })
+        // Следующая запись — следующий номер, без пропуска.
+        assertEquals(4L, a.addEntry(meal.uid, v1, uid = "entry-2").aseq)
+        val b = MemorySyncStore("bbb")
+        ok(exchange(a, b))
+        assertEquals(2, b.visibleEntries().size)
+    }
+
+    @Test
+    fun rejectedFactDoesNotBlockLaterOnesInGroup() {
+        val a = MemorySyncStore("aaa")
+        val meal = a.addMeal()
+        val p = a.saveProduct("Рис", kcal = 130)
+        val e = a.addEntry(meal.uid, p, grams = 100)
+        // Посередине пакета — испорченная версия карточки (недопустимое название): отклоняется, остальные принимаются.
+        val broken = p.copy(uid = "broken", aseq = 2, name = " ")
+        val b = MemorySyncStore("bbb")
+        b.applyFacts("aaa", listOf(meal, broken, p.copy(aseq = 3), e.copy(aseq = 4)))
+        assertTrue("broken" !in b.facts)
+        assertEquals(listOf("Рис"), b.liveProducts().map { it.name })
+        assertEquals(listOf(e.uid), b.visibleEntries().map { it.entry.uid })
+    }
+
+    @Test
     fun codecRoundTripAndVersion() {
         assertEquals(4, SyncCodec.PROTOCOL_VERSION)
         val m = SyncMessage.Facts(

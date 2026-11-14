@@ -170,13 +170,17 @@ class MemorySyncStore(
         val CLOCK = java.util.concurrent.atomic.AtomicLong()
     }
 
-    /** Своя версия карточки (как Products.save): новый продукт при [productUid] null. */
+    /**
+     * Своя версия карточки (как Products.save): новый продукт при [productUid] null. Повтор с тем же [uid] версии
+     * возвращает записанную, без второго факта и номера.
+     */
     fun saveProduct(
         name: String, productUid: String? = null, barcode: String? = null, kcal: Int? = null, proteinDg: Int? = null,
-        fatDg: Int? = null, carbsDg: Int? = null, portionG: Int? = null,
+        fatDg: Int? = null, carbsDg: Int? = null, portionG: Int? = null, uid: String = UUID.randomUUID().toString(),
     ): ProductVersionFact {
+        (facts[uid] as? ProductVersionFact)?.let { return it }
         val f = ProductVersionFact(
-            uid = UUID.randomUUID().toString(), author = deviceId, epoch = factsEpoch, aseq = ++factSeq,
+            uid = uid, author = deviceId, epoch = factsEpoch, aseq = ++factSeq,
             productUid = productUid ?: UUID.randomUUID().toString(), utcMs = nowMs(), day = day, zoneId = "UTC",
             name = name, barcode = barcode, kcal = kcal, proteinDg = proteinDg, fatDg = fatDg, carbsDg = carbsDg,
             portionG = portionG,
@@ -192,10 +196,14 @@ class MemorySyncStore(
         return f
     }
 
-    /** Своя позиция приёма (как Products.addEntry): вес — указанный или порция по умолчанию версии. */
-    fun addEntry(mealUid: String, version: ProductVersionFact, grams: Int? = null): MealEntryFact {
+    /**
+     * Своя позиция приёма (как Products.addEntry): вес — указанный или порция по умолчанию версии. Повтор с тем же
+     * [uid] возвращает записанную позицию, без второго факта и номера.
+     */
+    fun addEntry(mealUid: String, version: ProductVersionFact, grams: Int? = null, uid: String = UUID.randomUUID().toString()): MealEntryFact {
+        (facts[uid] as? MealEntryFact)?.let { return it }
         val f = MealEntryFact(
-            UUID.randomUUID().toString(), deviceId, factsEpoch, ++factSeq, mealUid, version.uid,
+            uid, deviceId, factsEpoch, ++factSeq, mealUid, version.uid,
             ProductsMath.entryGrams(grams, version.toVersion()), nowMs(), day, "UTC",
         )
         facts[f.uid] = f

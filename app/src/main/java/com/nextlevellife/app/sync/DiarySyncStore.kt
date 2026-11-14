@@ -249,6 +249,11 @@ class DiarySyncStore : SyncStore {
         Diary.write { db ->
             val me = deviceId
             val myEpoch = Diary.factsEpoch()
+            // Курсор группы (автор, поколение) двигается и по отклонённым фактам — намеренно: правило приёма —
+            // чистая функция факта (и этой пары), повторная доставка дала бы тот же отказ, а без курсора отклонённый
+            // факт в хвосте группы пересылался бы при каждом обмене. Выгрузка идёт по возрастанию номера, поэтому
+            // пропуск отказа не перескакивает непришедшие факты; курсор пишется в той же транзакции, что и вставки.
+            // Номер ≤ 0 отклоняется и курсор не двигает (maxOf с 0).
             val maxByGroup = HashMap<Pair<String, String>, Long>()
             for (f in rows) {
                 maxByGroup[f.author to f.epoch] = maxOf(maxByGroup[f.author to f.epoch] ?: 0L, f.aseq)
