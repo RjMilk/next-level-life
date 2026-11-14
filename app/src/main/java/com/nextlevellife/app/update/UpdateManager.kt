@@ -523,7 +523,8 @@ object UpdateManager {
         _state.update {
             it.copy(
                 phase = Phase.READY,
-                confirmIntent = if (started) null else confirm,
+                // Окно системы могло не открыться без ошибки (запуск из фона запрещён): кнопка подтверждения остаётся.
+                confirmIntent = confirm,
                 message = if (started) "Подтверди установку в окне системы" else "Нажми «Подтвердить установку»",
                 isError = false,
             )

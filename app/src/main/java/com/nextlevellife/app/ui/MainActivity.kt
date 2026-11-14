@@ -94,7 +94,9 @@ class MainActivity : ComponentActivity() {
         // Служба блокировки может быть выключена — транспорт и обмен поднимаем и отсюда (повтор безопасен).
         com.nextlevellife.app.sync.SyncBoot.ensure(this)
         // Новая версия на GitHub: проверка не чаще раза в сутки (показывается в «Настройках» → «Обновление»).
-        com.nextlevellife.app.update.UpdateManager.autoCheckIfDue(this)
+        // Чтение кеша и разбор списка релизов — не на главном потоке.
+        val appCtx = applicationContext
+        kotlin.concurrent.thread(name = "nll-update-check") { runCatching { com.nextlevellife.app.update.UpdateManager.autoCheckIfDue(appCtx) } }
         enableEdgeToEdge()
         if (savedInstanceState == null && isRationaleIntent(intent)) {
             showRationale = true

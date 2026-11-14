@@ -766,7 +766,7 @@ private fun UpdateSection() {
     val ui by UpdateManager.state.collectAsState()
     val installed = remember { UpdateManager.installedVersionName(context) }
     var canInstall by remember { mutableStateOf(UpdateManager.canInstall(context)) }
-    LaunchedEffect(Unit) { UpdateManager.autoCheckIfDue(context) }
+    LaunchedEffect(Unit) { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { UpdateManager.autoCheckIfDue(context) } }
     // Вернулись из системных настроек «Установка неизвестных приложений» — перечитать разрешение.
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { canInstall = UpdateManager.canInstall(context) }
     val buttonMod = Modifier
