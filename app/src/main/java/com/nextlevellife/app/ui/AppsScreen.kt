@@ -43,6 +43,9 @@ fun AppsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val version by Store.version.collectAsState()
     val blocked = remember(version) { Store.blockedPackages() }
+    // Порядок списка — по тому, что было закрыто при открытии экрана: переключатель не перебрасывает строку
+    // в другое место списка, пока экран открыт.
+    val blockedAtOpen = remember { Store.blockedPackages() }
     var query by remember { mutableStateOf("") }
 
     val apps by produceState<List<AppEntry>?>(null) {
@@ -87,8 +90,8 @@ fun AppsScreen(onBack: () -> Unit) {
         } else {
             val filtered = list
                 .filter { query.isBlank() || it.label.contains(query, ignoreCase = true) }
-                // Заблокированные сверху, чтобы сразу видеть, что закрыто.
-                .sortedByDescending { it.packageName in blocked }
+                // Заблокированные (на момент открытия экрана) сверху, чтобы сразу видеть, что закрыто.
+                .sortedByDescending { it.packageName in blockedAtOpen }
             LazyColumn(Modifier.fillMaxSize()) {
                 items(filtered, key = { it.packageName }) { app ->
                     AppRow(app, app.packageName in blocked) { Store.setBlocked(app.packageName, it) }
