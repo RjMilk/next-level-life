@@ -4,6 +4,7 @@ import com.nextlevellife.app.data.ActivityDay
 import com.nextlevellife.app.data.BlockEvent
 import com.nextlevellife.app.data.ComplexRun
 import com.nextlevellife.app.data.Measurement
+import com.nextlevellife.app.data.Routines
 import com.nextlevellife.app.data.SaitamaMath
 import com.nextlevellife.app.data.SetEntry
 import com.nextlevellife.app.sleep.NightMode
@@ -140,9 +141,12 @@ object StatsMath {
      * 3 — источник ходьбы и при 0 шагов (штраф выносливости отличает «мало шагов» от «нет данных»).
      * 4 — полный день «Сайтамы» (100 отжиманий, 100 на пресс, 100 приседаний и 10 км бега) засчитывается силе
      *     как завершённый комплекс (+[COMPLEX_BONUS], один раз за день); выносливости длительность не добавляет.
+     * 5 — программы мягкой подвижности (ЛФК и йога, [Routines]) не дают ни силы, ни выносливости: их прохождения
+     *     не считаются завершёнными комплексами (+[COMPLEX_BONUS]) и не добавляют времени комплексов, их подходы
+     *     (exercise_id `lfk_…` / `yoga_…`) не входят ни в повторения, ни в планку.
      * Правила дисциплины с версии 1 не менялись: её очки из кеша прежних версий переносятся ([keepOldDiscipline]).
      */
-    const val RULE_VERSION = 4
+    const val RULE_VERSION = 5
 
     /** Потолок очков одной характеристики за день. */
     const val DAY_CAP = 10
@@ -389,12 +393,14 @@ object StatsMath {
      * ([SaitamaMath.isFullDay] по тем же подходам и строке активности дня [activity]).
      */
     fun strengthInput(sets: List<SetEntry>, runs: List<ComplexRun>, activity: ActivityDay? = null): StrengthInput {
-        val repSets = sets.filter { it.measurement == Measurement.REPS }
+        // Программы ЛФК и йоги силы не дают (с версии правил 5).
+        val ownSets = sets.filterNot { Routines.isRoutineExercise(it.exerciseId) }
+        val repSets = ownSets.filter { it.measurement == Measurement.REPS }
         val saitama = if (SaitamaMath.isFullDay(sets, activity)) 1 else 0
         return StrengthInput(
             reps = repSets.sumOf { it.reps.coerceAtLeast(0) },
-            heldMs = sets.filter { it.measurement == Measurement.HOLD }.sumOf { it.heldMs.coerceAtLeast(0L) },
-            completedComplexes = runs.count { it.completed } + saitama,
+            heldMs = ownSets.filter { it.measurement == Measurement.HOLD }.sumOf { it.heldMs.coerceAtLeast(0L) },
+            completedComplexes = runs.count { it.completed && !Routines.isRoutineId(it.complexId) } + saitama,
             bestSet = repSets.maxOfOrNull { it.reps } ?: 0,
         )
     }
@@ -403,7 +409,8 @@ object StatsMath {
         steps = activity?.steps,
         runSteps = activity?.runSteps ?: 0L,
         runMeters = activity?.runDistanceM ?: 0L,
-        complexMs = runs.filter { it.completed }.sumOf { it.durationMs.coerceAtLeast(0L) },
+        complexMs = runs.filter { it.completed && !Routines.isRoutineId(it.complexId) }
+            .sumOf { it.durationMs.coerceAtLeast(0L) },
     )
 
     /**

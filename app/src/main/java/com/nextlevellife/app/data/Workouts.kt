@@ -201,6 +201,46 @@ object Workouts {
     }
 
     /**
+     * Программа ЛФК или йоги ([Routines]): прохождение в complex_runs (complex_id = [Routine.id], completed —
+     * все обязательные шаги подтверждены не меньше чем на [RoutineMath.DONE_PERCENT] %), шаги — подходами
+     * (HOLD с held_ms или REPS), награда — по ценам [RoutineMath] с общим дневным пределом
+     * [RoutineMath.DAILY_CAP_MS] на все программы. Одна транзакция, идемпотентно по [sessionId]
+     * (ключ `complex:<sessionId>`). Ничего не подтверждено — ничего не пишется (saved = true, награда 0);
+     * предел исчерпан — прохождение пишется с наградой 0. Опыт и сила не начисляются.
+     */
+    @Synchronized
+    fun recordRoutine(
+        routine: Routine, results: List<RoutineStepResult>, durationMs: Long, sessionId: String? = null,
+    ): WorkoutResult {
+        val score = RoutineMath.score(routine, results)
+        if (!score.hasWork) return NOTHING
+        val key = LedgerMath.complexKey(sessionId ?: UUID.randomUUID().toString())
+        return persist(key, routine.title) {
+            // Один снимок доверенного времени и учётного пояса: сутки прохождения, предела и операции совпадают.
+            val time = TrustedClock.snapshot()
+            val now = time.utcMs
+            val day = time.day
+            val already = Diary.runsForDay(day).filter { Routines.isRoutineId(it.complexId) }.sumOf { it.earnedMs }
+            val earnedMs = RoutineMath.capped(score.rawEarnedMs, already)
+            val runId = Diary.addRun(
+                timeMs = now, day = day, complexId = routine.id, weightKg = null,
+                durationMs = durationMs.coerceAtLeast(0L), rounds = null, extraReps = null,
+                totalReps = score.totalReps, earnedMs = earnedMs, xp = 0L, completed = score.completed,
+                sets = RoutineMath.sets(routine, results, earnedMs),
+            )
+            val result = WorkoutResult(earnedMs, 0L)
+            credit(
+                OpKind.COMPLEX_REWARD, key, result, sourceType = "complex_run", sourceId = runId.toString(), time = time,
+                details = mapOf(
+                    "complex_id" to routine.id, "completed" to score.completed, "duration_ms" to durationMs,
+                    "held_ms" to score.heldMs, "reps" to score.totalReps, "raw_earned_ms" to score.rawEarnedMs,
+                ),
+            )
+            result
+        }
+    }
+
+    /**
      * Одна транзакция: если операция с ключом [key] уже есть — возвращает её сохранённый результат,
      * иначе выполняет [block] (дневник + [credit]). После успешной новой записи обновляет серию дней.
      * Любая ошибка — откат и [FAILED].
