@@ -59,5 +59,8 @@ dependencies {
     // Шаги и пробежки с часов Garmin и телефона: только чтение из Health Connect, данные не покидают телефон.
     implementation("androidx.health.connect:connect-client:1.1.0")
 
+    // QR-код сопряжения двух телефонов: рисование и распознавание, чистая Java, без сети и сервисов Google.
+    implementation("com.google.zxing:core:3.5.3")
+
     testImplementation("junit:junit:4.13.2")
 }
