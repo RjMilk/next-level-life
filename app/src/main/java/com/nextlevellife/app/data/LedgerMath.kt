@@ -23,7 +23,18 @@ enum class OpKind {
      * Перенос расхода при восстановлении копии (отрицательная дельта): расход, сделанный после копии,
      * дописывается в восстановленный журнал по своим суткам и приложениям — баланс и дневной расход не откатываются.
      */
-    RESTORE_CARRY;
+    RESTORE_CARRY,
+    /**
+     * Перенос минут на второй телефон (отрицательная дельта, пишется отправителем первым). source_id — device_id
+     * получателя (metadata `to`). Не расход: в дневной лимит и статистику не входит.
+     */
+    TRANSFER_OUT,
+    /**
+     * Минуты, полученные со второго телефона (положительная дельта), ровно один раз на исходящую операцию:
+     * ключ `transfer_in:<id исходящей>`, source_id — id исходящей (metadata `from` — device_id отправителя).
+     * Не заработок: в «заработано за день» и статистику не входит.
+     */
+    TRANSFER_IN;
 
     companion object {
         /** Начисления за занятия: их сумма — «заработано за день». */
@@ -31,7 +42,30 @@ enum class OpKind {
 
         /** Расход экранного времени: из них считаются дневной расход (лимит) и расход по приложениям. */
         val SPENDING = setOf(USAGE, RESTORE_CARRY)
+
+        /** Переносы между телефонами пары: меняют кошелёк, но не заработок и не расход. */
+        val TRANSFERS = setOf(TRANSFER_OUT, TRANSFER_IN)
+
+        /** Вид по имени из базы или с другого телефона; неизвестное имя (из более новой версии) — null. */
+        fun parse(name: String?): OpKind? = entries.firstOrNull { it.name == name }
     }
+}
+
+/** Подпись операции журнала для экранов. */
+fun OpKind.label(): String = when (this) {
+    OpKind.OPENING -> "Перенос баланса"
+    OpKind.SET_REWARD -> "Подходы"
+    OpKind.COMPLEX_REWARD -> "Комплекс"
+    OpKind.USAGE -> "Расход"
+    OpKind.STEPS_REWARD -> "Шаги и бег"
+    OpKind.RUN_REWARD -> "Бег"
+    OpKind.CARD_REWARD -> "Карточки"
+    OpKind.DEV_ADJUSTMENT -> "Поправка"
+    OpKind.REVERSAL -> "Отмена начисления"
+    OpKind.EMERGENCY_FEE -> "Аварийный доступ"
+    OpKind.RESTORE_CARRY -> "Расход после копии"
+    OpKind.TRANSFER_OUT -> "Отдано второму телефону"
+    OpKind.TRANSFER_IN -> "Получено со второго телефона"
 }
 
 /** Где сейчас «открытая» строка расхода: её дельту ещё можно наращивать. */
@@ -90,6 +124,36 @@ object LedgerMath {
     fun complexKey(sessionId: String) = "complex:$sessionId"
     fun usageKey(sessionId: String, index: Int) = "usage:$sessionId:$index"
     fun restoreCarryKey(restoreId: String, day: Long, packageName: String) = "restore_carry:$restoreId:$day:$packageName"
+    fun transferOutKey(transferId: String) = "transfer_out:$transferId"
+    /** Ключ входящего переноса: один на исходящую операцию [outOpId] второго телефона. */
+    fun transferInKey(outOpId: String) = "transfer_in:$outOpId"
+
+    /**
+     * Что осталось неоплаченным после списания [chargedMs] по плану [planCharges] (тот же порядок: долги [debts]
+     * по концу интервала, затем текущий просмотр [elapsedMs] приложения [packageName], закончившийся в [endMs]).
+     * У каждой части списывается её конец, поэтому остаток — начало интервала. Без остатка — пустой список.
+     * Так долг, на который не хватило баланса, не пропадает, а ждёт следующего списания.
+     */
+    fun leftoverDebts(
+        debts: List<UsageDebt>,
+        packageName: String,
+        sessionId: String,
+        endMs: Long,
+        elapsedMs: Long,
+        chargedMs: Long,
+    ): List<UsageDebt> {
+        var left = chargedMs.coerceAtLeast(0L)
+        val out = ArrayList<UsageDebt>()
+        for (d in debts.sortedBy { it.endMs }) {
+            val c = minOf(d.durationMs, left)
+            left -= c
+            if (d.durationMs - c > 0L) out += d.copy(endMs = d.endMs - c)
+        }
+        val current = elapsedMs.coerceAtLeast(0L)
+        val c = minOf(current, left)
+        if (current - c > 0L) out += UsageDebt(endMs - current, endMs - c, packageName, sessionId)
+        return out
+    }
 
     /**
      * Учётные сутки (LocalDate.toEpochDay) момента [timeMs] в поясе [zone].

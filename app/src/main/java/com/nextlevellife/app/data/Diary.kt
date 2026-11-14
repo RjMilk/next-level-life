@@ -13,6 +13,7 @@ import com.nextlevellife.app.sleep.PhoneEventType
 import com.nextlevellife.app.sleep.SleepNight
 import java.time.Instant
 import java.time.ZoneId
+import java.util.UUID
 
 /**
  * Единицы подхода (столбец `sets.measurement_type`): повторения или удержание позы.
@@ -705,7 +706,34 @@ object Diary {
      */
     @Synchronized
     internal fun addSet(timeMs: Long, day: Long, set: NewSet): Long =
-        insertSet(db(), timeMs, day, set, runId = null)
+        write { db -> insertSet(db, timeMs, day, set, runId = null) }
+
+    // ---------- Авторство фактов (синхронизация) ----------
+
+    /**
+     * Поколение своих фактов (подходов, прохождений, переносов лимита) — meta `facts_epoch`; меняется при
+     * восстановлении копии ([Backup.restore]): номера нового поколения начинаются заново, и второй телефон
+     * не путает их с номерами, потерянными вместе с подменённой базой.
+     */
+    @Synchronized
+    internal fun factsEpoch(): String =
+        metaGet(KEY_FACTS_EPOCH) ?: UUID.randomUUID().toString().also { metaPut(KEY_FACTS_EPOCH, it) }
+
+    /** Следующий номер своего факта (meta `facts_seq`). Только внутри транзакции записи — вместе со вставкой. */
+    @Synchronized
+    internal fun nextFactSeq(): Long {
+        val next = (metaGet(KEY_FACTS_SEQ)?.toLongOrNull() ?: 0L) + 1
+        metaPut(KEY_FACTS_SEQ, next.toString())
+        return next
+    }
+
+    /** Поля своего факта: автор, поколение, номер, uid. */
+    private fun putOwnFact(values: ContentValues, uid: String) {
+        values.put("author", Ledger.deviceId())
+        values.put("epoch", factsEpoch())
+        values.put("aseq", nextFactSeq())
+        values.put("uid", uid)
+    }
 
     /**
      * Прохождение и его подходы пишутся одной транзакцией: либо всё, либо ничего.
@@ -784,13 +812,18 @@ object Diary {
             put("xp", xp)
             put("completed", if (completed) 1 else 0)
         }
+        val runUid = UUID.randomUUID().toString()
+        // Свой факт: автор — эта установка, текущее поколение и следующий номер (номер растёт в той же транзакции).
+        putOwnFact(values, runUid)
         val runId = db.insertOrThrow("complex_runs", null, values)
-        for (set in sets) insertSet(db, timeMs, day, set, runId)
+        for (set in sets) insertSet(db, timeMs, day, set, runId, runUid)
         return runId
     }
 
-    private fun insertSet(db: SQLiteDatabase, timeMs: Long, day: Long, set: NewSet, runId: Long?): Long {
+    private fun insertSet(db: SQLiteDatabase, timeMs: Long, day: Long, set: NewSet, runId: Long?, runUid: String? = null): Long {
         val values = ContentValues().apply {
+            putOwnFact(this, UUID.randomUUID().toString())
+            if (runUid != null) put("run_uid", runUid) else putNull("run_uid")
             put("time_ms", timeMs)
             put("day", day)
             put("exercise_id", set.exerciseId)
@@ -912,6 +945,14 @@ object Diary {
 
     /** Отметка переноса старой JSON-истории (время последней перенесённой записи). */
     internal const val KEY_LEGACY_UNTIL = "diary_legacy_until"
+
+    /** meta: поколение и счётчик своих фактов (схема 8). */
+    internal const val KEY_FACTS_EPOCH = "facts_epoch"
+    internal const val KEY_FACTS_SEQ = "facts_seq"
+
+    /** meta: поколение и счётчик изменений своего журнала операций (схема 8). */
+    internal const val KEY_OPS_EPOCH = "ops_epoch"
+    internal const val KEY_OPS_REV = "ops_rev"
 
     /** Текущая версия схемы. */
     internal val SCHEMA_VERSION: Int get() = MIGRATIONS.size
@@ -1081,8 +1122,101 @@ object Diary {
         listOf(
             "ALTER TABLE activity_days ADD COLUMN runs_read INTEGER NOT NULL DEFAULT 0",
         ),
+        // 7 → 8: синхронизация двух телефонов. Всё — чистым SQL по мигрируемой базе (device_id и поколения
+        // создаются здесь же, без Ledger): UUID — из randomblob. Старые строки получают автора (эта установка),
+        // текущее поколение и номер; счётчики — в meta.
+        // balance_ops.rev — номер изменения у автора (растёт и при дописывании открытой USAGE), счётчик meta ops_rev.
+        // sets/complex_runs: author, epoch (поколение фактов facts_epoch), aseq (общий счётчик фактов facts_seq),
+        // uid; у подходов run_uid — uid прохождения (связь копий). peer_ops — копии операций второго телефона,
+        // limit_moves — переносы доли дневного лимита, shared_settings — общие настройки, sync_cursors — докуда принят журнал.
+        listOf(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES ('device_id', $SQL_UUID)",
+            "INSERT OR IGNORE INTO meta (key, value) VALUES ('ops_epoch', $SQL_UUID)",
+            "INSERT OR IGNORE INTO meta (key, value) VALUES ('facts_epoch', $SQL_UUID)",
+            "ALTER TABLE balance_ops ADD COLUMN rev INTEGER NOT NULL DEFAULT 0",
+            "UPDATE balance_ops SET rev = seq",
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('ops_rev', (SELECT CAST(COALESCE(MAX(seq), 0) AS TEXT) FROM balance_ops))",
+            "CREATE INDEX idx_ops_rev ON balance_ops(rev)",
+            "ALTER TABLE complex_runs ADD COLUMN author TEXT",
+            "ALTER TABLE complex_runs ADD COLUMN epoch TEXT",
+            "ALTER TABLE complex_runs ADD COLUMN aseq INTEGER",
+            "ALTER TABLE complex_runs ADD COLUMN uid TEXT",
+            "ALTER TABLE sets ADD COLUMN author TEXT",
+            "ALTER TABLE sets ADD COLUMN epoch TEXT",
+            "ALTER TABLE sets ADD COLUMN aseq INTEGER",
+            "ALTER TABLE sets ADD COLUMN uid TEXT",
+            "ALTER TABLE sets ADD COLUMN run_uid TEXT",
+            // Прохождения нумеруются первыми (aseq = id), подходы — после всех прохождений: подходы комплекса
+            // всегда идут после своего прохождения, и копия сначала получает прохождение.
+            "UPDATE complex_runs SET author = (SELECT value FROM meta WHERE key = 'device_id'), " +
+                "epoch = (SELECT value FROM meta WHERE key = 'facts_epoch'), aseq = id, uid = $SQL_UUID",
+            "UPDATE sets SET author = (SELECT value FROM meta WHERE key = 'device_id'), " +
+                "epoch = (SELECT value FROM meta WHERE key = 'facts_epoch'), " +
+                "aseq = id + (SELECT COALESCE(MAX(id), 0) FROM complex_runs), uid = $SQL_UUID",
+            "UPDATE sets SET run_uid = (SELECT r.uid FROM complex_runs r WHERE r.id = sets.run_id) WHERE run_id IS NOT NULL",
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('facts_seq', " +
+                "(SELECT CAST((SELECT COALESCE(MAX(id), 0) FROM complex_runs) + (SELECT COALESCE(MAX(id), 0) FROM sets) AS TEXT)))",
+            "CREATE UNIQUE INDEX idx_runs_uid ON complex_runs(uid)",
+            "CREATE UNIQUE INDEX idx_sets_uid ON sets(uid)",
+            "CREATE INDEX idx_runs_author ON complex_runs(author, epoch, aseq)",
+            "CREATE INDEX idx_sets_author ON sets(author, epoch, aseq)",
+            """CREATE TABLE peer_ops (
+                device_id TEXT NOT NULL,
+                id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                delta_ms INTEGER NOT NULL,
+                delta_xp INTEGER NOT NULL DEFAULT 0,
+                occurred_at_ms INTEGER NOT NULL,
+                recorded_at_ms INTEGER NOT NULL,
+                accounting_day INTEGER NOT NULL,
+                zone_id TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                rule_version INTEGER NOT NULL,
+                reverses_id TEXT,
+                metadata_json TEXT NOT NULL,
+                epoch TEXT NOT NULL,
+                rev INTEGER NOT NULL,
+                PRIMARY KEY (device_id, id)
+            )""",
+            "CREATE INDEX idx_peer_ops_day_kind ON peer_ops(device_id, accounting_day, kind)",
+            """CREATE TABLE limit_moves (
+                uid TEXT PRIMARY KEY NOT NULL,
+                author TEXT NOT NULL,
+                epoch TEXT NOT NULL,
+                aseq INTEGER NOT NULL,
+                to_device TEXT NOT NULL,
+                day INTEGER NOT NULL,
+                ms INTEGER NOT NULL,
+                created_utc_ms INTEGER NOT NULL
+            )""",
+            "CREATE INDEX idx_limit_moves_day ON limit_moves(day)",
+            "CREATE INDEX idx_limit_moves_author ON limit_moves(author, epoch, aseq)",
+            """CREATE TABLE shared_settings (
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                author TEXT NOT NULL
+            )""",
+            """CREATE TABLE sync_cursors (
+                log TEXT NOT NULL,
+                author TEXT NOT NULL,
+                epoch TEXT NOT NULL,
+                pos INTEGER NOT NULL,
+                PRIMARY KEY (log, author, epoch)
+            )""",
+        ),
     )
 }
+
+/**
+ * Случайный UUID версии 4 выражением SQLite (встроенной функции UUID в SQLite нет): для миграций,
+ * где Kotlin-код недоступен. Вычисляется заново для каждой строки UPDATE.
+ */
+private const val SQL_UUID =
+    "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' || " +
+        "substr('89ab', 1 + (random() & 3), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6)))"
 
 /** Чистая логика дневника, без Android: её проверяют юнит-тесты. */
 internal object DiaryMath {

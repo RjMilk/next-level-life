@@ -85,6 +85,7 @@ object Ledger {
     /** После подмены базы (восстановление копии): забыть кешированный device_id и закрыть открытую строку расхода. */
     internal fun onDatabaseReplaced() = synchronized(Diary) {
         cachedDeviceId = null
+        forgetPeerCache()
         // Номер строки в сессии сохраняется, чтобы ключи не повторились; сама строка считается закрытой.
         usageCursor = usageCursor?.copy(accumulatedMs = LedgerMath.USAGE_CHUNK_MS)
         reloadCacheQuietly()
@@ -108,36 +109,49 @@ object Ledger {
      */
     fun spentMs(day: Long): Long = synchronized(Diary) {
         Diary.query(
-            "SELECT COALESCE(-SUM(delta_ms), 0) FROM balance_ops WHERE kind IN ($SPENDING_KINDS_SQL) AND accounting_day = ?",
-            day.toString(),
+            "SELECT COALESCE(-SUM(delta_ms), 0) FROM ${bothJournals()} WHERE kind IN ($SPENDING_KINDS_SQL) AND accounting_day = ?",
+            peerArg(), day.toString(),
         ) { it.getLong(0) }.firstOrNull() ?: 0L
     }
 
-    /** Сколько заработано в сутки [day]: сумма начислений за занятия ([OpKind.REWARDS]), без переноса и поправок. */
+    /**
+     * Сколько заработано в сутки [day] (на обоих телефонах пары): сумма начислений за занятия ([OpKind.REWARDS]),
+     * без переноса, поправок и переводов между телефонами.
+     */
     fun earnedMs(day: Long): Long = synchronized(Diary) {
         Diary.query(
-            "SELECT COALESCE(SUM(delta_ms), 0) FROM balance_ops WHERE accounting_day = ? AND kind IN ($REWARD_KINDS_SQL)",
-            day.toString(),
+            "SELECT COALESCE(SUM(delta_ms), 0) FROM ${bothJournals()} WHERE accounting_day = ? AND kind IN ($REWARD_KINDS_SQL)",
+            peerArg(), day.toString(),
         ) { it.getLong(0) }.firstOrNull() ?: 0L
     }
 
-    /** Расход по дням (день → мс, положительное), только дни с расходом. */
+    /** Расход по дням на обоих телефонах пары (день → мс, положительное), только дни с расходом. */
     fun spendByDay(fromDay: Long, toDay: Long): Map<Long, Long> = synchronized(Diary) {
         Diary.query(
-            "SELECT accounting_day, -SUM(delta_ms) FROM balance_ops " +
+            "SELECT accounting_day, -SUM(delta_ms) FROM ${bothJournals()} " +
                 "WHERE kind IN ($SPENDING_KINDS_SQL) AND accounting_day BETWEEN ? AND ? GROUP BY accounting_day ORDER BY accounting_day",
-            fromDay.toString(), toDay.toString(),
+            peerArg(), fromDay.toString(), toDay.toString(),
         ) { it.getLong(0) to it.getLong(1) }.toMap()
     }
 
-    /** Расход по приложениям за дни [fromDay]..[toDay] (пакет → мс), по убыванию. */
+    /** Расход по приложениям за дни [fromDay]..[toDay] на обоих телефонах пары (пакет → мс), по убыванию. */
     fun usageByPackage(fromDay: Long, toDay: Long): Map<String, Long> = synchronized(Diary) {
         Diary.query(
-            "SELECT source_id, -SUM(delta_ms) AS spent FROM balance_ops " +
+            "SELECT source_id, -SUM(delta_ms) AS spent FROM ${bothJournals()} " +
                 "WHERE kind IN ($SPENDING_KINDS_SQL) AND accounting_day BETWEEN ? AND ? GROUP BY source_id ORDER BY spent DESC",
-            fromDay.toString(), toDay.toString(),
+            peerArg(), fromDay.toString(), toDay.toString(),
         ) { it.getString(0) to it.getLong(1) }.toMap(LinkedHashMap())
     }
+
+    /**
+     * Свой журнал и копия журнала связанного телефона одной выборкой (первый параметр запроса — [peerArg]).
+     * Без пары копия пуста: условие device_id = '' не совпадает ни с одной строкой.
+     */
+    private fun bothJournals(): String =
+        "(SELECT kind, delta_ms, accounting_day, source_id FROM balance_ops UNION ALL " +
+            "SELECT kind, delta_ms, accounting_day, source_id FROM peer_ops WHERE device_id = ?)"
+
+    private fun peerArg(): String = peerId() ?: ""
 
     /** Последние операции, новые сверху. */
     fun recentOps(limit: Int): List<BalanceOp> {
@@ -185,6 +199,7 @@ object Ledger {
     ): Boolean {
         require(kind != OpKind.USAGE) { "Расход пишется через Ledger.spend" }
         require(kind != OpKind.OPENING) { "OPENING создаётся только при переносе" }
+        require(kind !in OpKind.TRANSFERS) { "Переносы пишутся через Ledger.transferOut и transferIn" }
         require(idempotencyKey.isNotBlank())
         return synchronized(Diary) {
             Diary.write { db ->
@@ -230,12 +245,16 @@ object Ledger {
                         if (p.addToOpen > 0L) {
                             val open = cursor!!
                             val key = LedgerMath.usageKey(open.sessionId, open.index)
+                            // Только своя строка; новый номер изменения — второй телефон заберёт её свежее значение.
                             val changed = db.compileStatement(
-                                "UPDATE balance_ops SET delta_ms = delta_ms - ? WHERE idempotency_key = ? AND kind = ?",
+                                "UPDATE balance_ops SET delta_ms = delta_ms - ?, rev = ? " +
+                                    "WHERE idempotency_key = ? AND kind = ? AND device_id = ?",
                             ).use { st ->
                                 st.bindLong(1, p.addToOpen)
-                                st.bindString(2, key)
-                                st.bindString(3, OpKind.USAGE.name)
+                                st.bindLong(2, nextRev(db))
+                                st.bindString(3, key)
+                                st.bindString(4, OpKind.USAGE.name)
+                                st.bindString(5, ensureDeviceId())
                                 st.executeUpdateDelete()
                             }
                             check(changed == 1) { "Открытая строка расхода $key не найдена" }
@@ -278,13 +297,57 @@ object Ledger {
      * [OpKind.RESTORE_CARRY] по своим суткам и приложениям, не больше баланса копии. Account меняется
      * той же транзакцией. Возвращает сколько перенесено (мс).
      */
-    internal fun appendRestoreCarry(db: SQLiteDatabase, current: List<SpentRow>, deviceId: String, zone: ZoneId, nowMs: Long): Long {
+    internal fun appendRestoreCarry(
+        db: SQLiteDatabase, current: List<SpentRow>, deviceId: String, zone: ZoneId, nowMs: Long,
+        transfers: List<BalanceOp> = emptyList(),
+    ): Long {
         val backupSpent = HashMap<String, Long>()
         db.rawQuery("SELECT idempotency_key, -delta_ms FROM balance_ops WHERE kind IN ($SPENDING_KINDS_SQL)", null).use { c ->
             while (c.moveToNext()) backupSpent[c.getString(0)] = c.getLong(1)
         }
+        // Исходящие переносы, которых нет в копии: второй телефон их уже получил (или получит), поэтому они
+        // возвращаются в журнал как есть — та же операция (id и ключ), без ограничения балансом: иначе
+        // восстановление вернуло бы отданные минуты. Входящий перенос второй телефон по тому же id не повторит.
+        val backupKeys = HashSet<String>()
+        db.rawQuery("SELECT idempotency_key FROM balance_ops WHERE kind = ?", arrayOf(OpKind.TRANSFER_OUT.name)).use { c ->
+            while (c.moveToNext()) backupKeys += c.getString(0)
+        }
+        val missingTransfers = transfers.filter { it.kind == OpKind.TRANSFER_OUT && it.idempotencyKey !in backupKeys }
+        var carriedTransfers = 0L
+        if (missingTransfers.isNotEmpty()) {
+            db.beginTransaction()
+            try {
+                for (t in missingTransfers) {
+                    val values = ContentValues().apply {
+                        put("id", t.id)
+                        put("device_id", deviceId)
+                        put("idempotency_key", t.idempotencyKey)
+                        put("kind", t.kind.name)
+                        put("delta_ms", t.deltaMs)
+                        put("delta_xp", 0L)
+                        put("occurred_at_ms", t.occurredAtMs)
+                        put("recorded_at_ms", t.recordedAtMs)
+                        put("accounting_day", t.accountingDay)
+                        put("zone_id", t.zoneId)
+                        put("source_type", t.sourceType)
+                        put("source_id", t.sourceId)
+                        put("rule_version", t.ruleVersion)
+                        putNull("reverses_id")
+                        put("metadata_json", t.metadataJson)
+                        put("rev", nextRev(db))
+                    }
+                    db.insertWithOnConflict("balance_ops", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+                        .takeIf { it != -1L } ?: continue
+                    addToAccount(db, t.deltaMs, 0L, nowMs)
+                    carriedTransfers += -t.deltaMs
+                }
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        }
         val parts = LedgerMath.restoreCarry(current, backupSpent, readAccount(db).first)
-        if (parts.isEmpty()) return 0L
+        if (parts.isEmpty()) return carriedTransfers
         val restoreId = UUID.randomUUID().toString()
         db.beginTransaction()
         try {
@@ -307,6 +370,7 @@ object Ledger {
                     put("rule_version", LedgerMath.RULE_VERSION)
                     putNull("reverses_id")
                     put("metadata_json", JSONObject().put("restore_id", restoreId).toString())
+                    put("rev", nextRev(db))
                 }
                 db.insertOrThrow("balance_ops", null, values)
                 addToAccount(db, -p.ms, 0L, nowMs)
@@ -315,7 +379,145 @@ object Ledger {
         } finally {
             db.endTransaction()
         }
-        return parts.sumOf { it.ms }
+        return carriedTransfers + parts.sumOf { it.ms }
+    }
+
+    /** Исходящие переносы текущего журнала — для переноса при восстановлении копии. */
+    internal fun transfersForCarry(): List<BalanceOp> = synchronized(Diary) {
+        Diary.query("SELECT $OP_COLS FROM balance_ops WHERE kind = ?", OpKind.TRANSFER_OUT.name) { it.toOp() }
+    }
+
+    // ---------- Синхронизация ----------
+
+    /** Поколение своего журнала операций (meta `ops_epoch`); меняется при восстановлении копии. */
+    fun opsEpoch(): String = synchronized(Diary) {
+        Diary.metaGet(Diary.KEY_OPS_EPOCH) ?: UUID.randomUUID().toString().also { Diary.metaPut(Diary.KEY_OPS_EPOCH, it) }
+    }
+
+    /** Свои операции с номером изменения больше [afterRev], по возрастанию номера, не больше [limit]. */
+    internal fun opsAfter(afterRev: Long, limit: Int): List<Pair<BalanceOp, Long>> = synchronized(Diary) {
+        Diary.query(
+            "SELECT $OP_COLS, rev FROM balance_ops WHERE rev > ? ORDER BY rev LIMIT $limit",
+            afterRev.toString(),
+        ) { it.toOp() to it.getLong(OP_COL_COUNT) }
+    }
+
+    /**
+     * Перенос [ms] минут на второй телефон [peerId]: операция TRANSFER_OUT, не больше баланса за вычетом [reserveMs]
+     * (неоплаченный расход). Внутри уже открытой [Diary.write] — в той же транзакции. Возвращает сколько перенесено.
+     */
+    internal fun transferOut(peerId: String, ms: Long, reserveMs: Long, time: TimeSnapshot = TrustedClock.snapshot()): Long =
+        synchronized(Diary) {
+            Diary.write { db ->
+                val amount = minOf(ms, readAccount(db).first - reserveMs.coerceAtLeast(0L))
+                if (amount <= 0L) return@write 0L
+                val transferId = UUID.randomUUID().toString()
+                insertOp(
+                    db, OpKind.TRANSFER_OUT, LedgerMath.transferOutKey(transferId),
+                    deltaMs = -amount, deltaXp = 0L, sourceType = SOURCE_TRANSFER, sourceId = peerId,
+                    occurredAtMs = time.utcMs, metadataJson = JSONObject().put("to", peerId).toString(),
+                    zone = time.zone, day = time.day, recordedAtMs = time.utcMs,
+                )
+                amount
+            }
+        }
+
+    /**
+     * Входящий перенос по исходящей операции [outOpId] второго телефона [fromPeer]: TRANSFER_IN на [ms], один раз
+     * (ключ [LedgerMath.transferInKey]). Внутри открытой [Diary.write] — в той же транзакции. false — уже был.
+     */
+    internal fun transferIn(outOpId: String, fromPeer: String, ms: Long, time: TimeSnapshot = TrustedClock.snapshot()): Boolean =
+        synchronized(Diary) {
+            require(ms > 0L)
+            Diary.write { db ->
+                val key = LedgerMath.transferInKey(outOpId)
+                if (opByKey(key) != null) return@write false
+                insertOp(
+                    db, OpKind.TRANSFER_IN, key, deltaMs = ms, deltaXp = 0L, sourceType = SOURCE_TRANSFER, sourceId = outOpId,
+                    occurredAtMs = time.utcMs, metadataJson = JSONObject().put("from", fromPeer).toString(),
+                    zone = time.zone, day = time.day, recordedAtMs = time.utcMs,
+                )
+                true
+            }
+        }
+
+    /** Ключи своих входящих переносов (для проверки «уже получено»). */
+    internal fun transferInKeys(): Set<String> = synchronized(Diary) {
+        Diary.query("SELECT idempotency_key FROM balance_ops WHERE kind = ?", OpKind.TRANSFER_IN.name) { it.getString(0) }.toSet()
+    }
+
+    /**
+     * Связанный телефон для расчёта общих сумм (meta `sync_peer`, кеш в памяти); null — пары нет.
+     * Пишет [setPeer] (обмен при сопряжении и разрыве).
+     */
+    fun peerId(): String? = cachedPeer.let { if (it == NO_PEER_LOADED) loadPeer() else it }
+
+    private fun loadPeer(): String? = synchronized(Diary) {
+        val v = runCatching { Diary.metaGet(KEY_SYNC_PEER) }.getOrNull()
+        cachedPeer = v
+        v
+    }
+
+    internal fun setPeer(peerId: String?) = synchronized(Diary) {
+        if (peerId == null) Diary.metaDelete(KEY_SYNC_PEER) else Diary.metaPut(KEY_SYNC_PEER, peerId)
+        cachedPeer = peerId
+    }
+
+    /** Кошелёк второго телефона по копии его журнала (сумма peer_ops); 0 — пары или копии нет. */
+    fun peerBalanceMs(): Long {
+        val peer = peerId() ?: return 0L
+        return synchronized(Diary) {
+            Diary.query("SELECT COALESCE(SUM(delta_ms), 0) FROM peer_ops WHERE device_id = ?", peer) { it.getLong(0) }
+                .firstOrNull() ?: 0L
+        }
+    }
+
+    /** Свой расход в учётные сутки [day] (только этот телефон; [spentMs] — общий для пары). */
+    fun ownSpentMs(day: Long): Long = synchronized(Diary) {
+        Diary.query(
+            "SELECT COALESCE(-SUM(delta_ms), 0) FROM balance_ops WHERE kind IN ($SPENDING_KINDS_SQL) AND accounting_day = ?",
+            day.toString(),
+        ) { it.getLong(0) }.firstOrNull() ?: 0L
+    }
+
+    /** Расход второго телефона по копии в сутки [day]; 0 — пары нет. */
+    fun peerSpentMs(day: Long): Long {
+        val peer = peerId() ?: return 0L
+        return synchronized(Diary) {
+            Diary.query(
+                "SELECT COALESCE(-SUM(delta_ms), 0) FROM peer_ops WHERE device_id = ? AND kind IN ($SPENDING_KINDS_SQL) AND accounting_day = ?",
+                peer, day.toString(),
+            ) { it.getLong(0) }.firstOrNull() ?: 0L
+        }
+    }
+
+    /** Переносы доли лимита за сутки [day]: (получено этим телефоном, отдано этим телефоном). */
+    fun limitMoves(day: Long): Pair<Long, Long> {
+        val me = deviceId()
+        val peer = peerId()
+        return synchronized(Diary) {
+            val outgoing = Diary.query(
+                "SELECT COALESCE(SUM(ms), 0) FROM limit_moves WHERE author = ? AND day = ?", me, day.toString(),
+            ) { it.getLong(0) }.firstOrNull() ?: 0L
+            val incoming = if (peer == null) 0L else Diary.query(
+                "SELECT COALESCE(SUM(ms), 0) FROM limit_moves WHERE author = ? AND to_device = ? AND day = ?",
+                peer, me, day.toString(),
+            ) { it.getLong(0) }.firstOrNull() ?: 0L
+            incoming to outgoing
+        }
+    }
+
+    /**
+     * Сколько ещё этот телефон может потратить в сутки [day] по своей доле дневного лимита ([SharedWalletMath.shareLeftMs]);
+     * null — лимита нет. Несвязанный телефон — лимит целиком.
+     */
+    fun shareLeftMs(day: Long, limitMin: Int = Settings.dailyLimitMin): Long? {
+        val peer = peerId()
+        val (incoming, outgoing) = if (peer == null) 0L to 0L else limitMoves(day)
+        return SharedWalletMath.shareLeftMs(
+            limitMs = limitMin * 60_000L, me = deviceId(), peer = peer,
+            incomingMs = incoming, outgoingMs = outgoing, ownSpentMs = ownSpentMs(day),
+        )
     }
 
     // ---------- Внутреннее ----------
@@ -359,10 +561,12 @@ object Ledger {
         zone: ZoneId = TrustedClock.zone(),
         day: Long = LedgerMath.accountingDay(occurredAtMs, zone),
         recordedAtMs: Long = TrustedClock.nowMs(),
+        id: String = UUID.randomUUID().toString(),
     ) {
         val now = recordedAtMs
         val values = ContentValues().apply {
-            put("id", UUID.randomUUID().toString())
+            put("id", id)
+            put("rev", nextRev(db))
             put("device_id", ensureDeviceId())
             put("idempotency_key", key)
             put("kind", kind.name)
@@ -382,7 +586,38 @@ object Ledger {
         addToAccount(db, deltaMs, deltaXp, now)
     }
 
+    /**
+     * Следующий номер изменения своего журнала (meta `ops_rev` базы [db], не меньше наибольшего rev в журнале).
+     * Только внутри транзакции записи — вместе с самим изменением: номера видны второму телефону по порядку.
+     */
+    internal fun nextRev(db: SQLiteDatabase): Long {
+        val meta = db.rawQuery("SELECT value FROM meta WHERE key = ?", arrayOf(Diary.KEY_OPS_REV)).use { c ->
+            if (c.moveToFirst()) c.getString(0).toLongOrNull() else null
+        } ?: 0L
+        val max = db.rawQuery("SELECT COALESCE(MAX(rev), 0) FROM balance_ops", null).use { c ->
+            if (c.moveToFirst()) c.getLong(0) else 0L
+        }
+        val next = maxOf(meta, max) + 1
+        db.execSQL("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", arrayOf<Any>(Diary.KEY_OPS_REV, next.toString()))
+        return next
+    }
+
     internal const val KEY_DEVICE_ID = "device_id"
+
+    /** meta: device_id связанного телефона (нет ключа — пары нет). Локальное значение: копия его не переносит. */
+    internal const val KEY_SYNC_PEER = "sync_peer"
+
+    /** source_type переносов между телефонами. */
+    internal const val SOURCE_TRANSFER = "transfer"
+
+    /** Маркер «значение ещё не читали» для [cachedPeer]. */
+    private const val NO_PEER_LOADED = "\u0000"
+    @Volatile private var cachedPeer: String? = NO_PEER_LOADED
+
+    /** После подмены базы связанный телефон перечитывается из meta. */
+    internal fun forgetPeerCache() {
+        cachedPeer = NO_PEER_LOADED
+    }
 
     private val REWARD_KINDS_SQL = OpKind.REWARDS.joinToString(",") { "'${it.name}'" }
     private val SPENDING_KINDS_SQL = OpKind.SPENDING.joinToString(",") { "'${it.name}'" }
@@ -390,6 +625,7 @@ object Ledger {
     private const val OP_COLS =
         "seq, id, device_id, idempotency_key, kind, delta_ms, delta_xp, occurred_at_ms, recorded_at_ms, " +
             "accounting_day, zone_id, source_type, source_id, rule_version, reverses_id, metadata_json"
+    private const val OP_COL_COUNT = 16
 
     private fun Cursor.toOp() = BalanceOp(
         seq = getLong(0), id = getString(1), deviceId = getString(2), idempotencyKey = getString(3),
