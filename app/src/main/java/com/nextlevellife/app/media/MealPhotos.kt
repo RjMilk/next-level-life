@@ -184,3 +184,33 @@ object MealProcessing {
 
     fun forget(uid: String) { results.remove(uid) }
 }
+
+/**
+ * Запись подтверждённого приёма вне экрана (как [MealProcessing]): поворот или пересоздание экрана её не отменяют,
+ * экран ждёт итог по uid в режиме «Сохраняю приём…». Повторный запуск того же uid, пока идёт запись, игнорируется.
+ */
+object MealSaving {
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+    private val results = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val running = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Запустить запись [work] приёма [uid]; итог — успешно ли она прошла. */
+    fun start(uid: String, work: () -> Unit) {
+        if (!running.add(uid)) return
+        results.remove(uid)
+        scope.launch {
+            val ok = runCatching { work() }
+                .onFailure { android.util.Log.e("MealSaving", "Не удалось записать приём", it) }
+                .isSuccess
+            results[uid] = ok
+            running.remove(uid)
+        }
+    }
+
+    /** Итог записи [uid]: true — записан, false — сбой, null — ещё идёт или не запускалась (например, после перезапуска процесса). */
+    fun result(uid: String): Boolean? = results[uid]
+
+    fun isRunning(uid: String): Boolean = uid in running
+
+    fun forget(uid: String) { results.remove(uid) }
+}

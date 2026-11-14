@@ -63,6 +63,7 @@ import com.nextlevellife.app.data.TimeSnapshot
 import com.nextlevellife.app.data.TrustedClock
 import com.nextlevellife.app.media.MealPhotos
 import com.nextlevellife.app.media.MealProcessing
+import com.nextlevellife.app.media.MealSaving
 import com.nextlevellife.app.pose.CameraPermissionGate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -122,8 +123,6 @@ fun NutritionScreen(onBack: () -> Unit) {
     var pickMessage by remember { mutableStateOf<String?>(null) }
     // Сеанс сканирования: итог поиска по коду применяется, только если этот сеанс ещё открыт.
     var scanKey by rememberSaveable { mutableStateOf("") }
-    // Идёт запись приёма в этом экземпляре экрана; после пересоздания — false, и экран возвращается к ленте.
-    var saving by remember { mutableStateOf(false) }
 
     // Фото удалённых приёмов (в том числе удалённых на втором телефоне) и брошенные снимки — убрать.
     LaunchedEffect(Unit) { withContext(Dispatchers.IO) { runCatching { MealPhotos.prune(context) } } }
@@ -259,8 +258,36 @@ fun NutritionScreen(onBack: () -> Unit) {
                 }
             }
             MODE_SAVING -> {
-                // Экран пересоздан во время записи: запись дошла до конца в фоне, итог — в ленте.
-                if (!saving) LaunchedEffect(Unit) { pendingUid = null; note = ""; mode = MODE_LIST }
+                // Запись идёт в [MealSaving] (переживает пересоздание экрана); здесь — ожидание итога по uid.
+                val uid = pendingUid
+                LaunchedEffect(uid) {
+                    if (uid == null) { mode = MODE_LIST; return@LaunchedEffect }
+                    while (MealSaving.isRunning(uid)) kotlinx.coroutines.delay(100)
+                    val ok = MealSaving.result(uid)
+                    MealSaving.forget(uid)
+                    when {
+                        ok == true -> {
+                            day = runCatching {
+                                TimeSnapshot(pendingUtc, ZoneId.of(pendingZone)).day
+                            }.getOrDefault(day)
+                            pendingUid = null
+                            note = ""
+                            message = null
+                            mode = MODE_LIST
+                        }
+                        ok == false -> {
+                            withContext(Dispatchers.IO) {
+                                runCatching { MealPhotos.delete(context, listOf(NutritionMath.photoNameFor(uid))) }
+                            }
+                            dropPending()
+                            message = "Не удалось записать приём"
+                            mode = MODE_LIST
+                        }
+                        // Итога нет (процесс перезапущен до записи): снимок ещё не перенесён — вернуться к подтверждению.
+                        MealPhotos.pendingFile(context, uid).isFile -> mode = MODE_CONFIRM
+                        else -> { pendingUid = null; note = ""; mode = MODE_LIST }
+                    }
+                }
                 Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         CircularProgressIndicator()
@@ -297,28 +324,12 @@ fun NutritionScreen(onBack: () -> Unit) {
                     Button(
                         onClick = {
                             val n = note
-                            saving = true
-                            mode = MODE_SAVING
-                            scope.launch {
-                                val ok = withContext(Dispatchers.IO) {
-                                    runCatching {
-                                        val hasPhoto = MealPhotos.commit(context, uid)
-                                        Nutrition.addMeal(uid, time, hasPhoto, n)
-                                    }.onFailure { Log.e(TAG, "Не удалось записать приём", it) }.isSuccess
-                                }
-                                if (ok) {
-                                    pendingUid = null
-                                    note = ""
-                                    day = time.day
-                                    message = null
-                                } else {
-                                    runCatching { MealPhotos.delete(context, listOf(NutritionMath.photoNameFor(uid))) }
-                                    dropPending()
-                                    message = "Не удалось записать приём"
-                                }
-                                saving = false
-                                mode = MODE_LIST
+                            val app = context.applicationContext
+                            MealSaving.start(uid) {
+                                val hasPhoto = MealPhotos.commit(app, uid)
+                                Nutrition.addMeal(uid, time, hasPhoto, n)
                             }
+                            mode = MODE_SAVING
                         },
                         shape = ButtonShape,
                         modifier = Modifier.weight(1f).heightIn(min = 52.dp),
