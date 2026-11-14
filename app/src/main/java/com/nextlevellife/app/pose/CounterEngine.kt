@@ -104,9 +104,14 @@ internal class ExerciseConfig(
     val finish: List<Cond>,
     val depth: (Sample) -> Float,
     val minRepMs: Long = 300L,
+    val sideMode: AngularSide = AngularSide.BEST_VISIBLE,
+    val extraRequired: Set<Limb> = emptySet(),
+    val minConfidence: Float = JointTuning.MIN_CONFIDENCE,
+    val requireFresh: Boolean = false,
+    val resetOnSideSwitch: Boolean = false,
 ) {
     /** Главные суставы: те, что нужны условиям переходов. Без них человека «не видно». */
-    val required: Set<Limb> = (far + finish + rest.orEmpty()).flatMap { it.feature.joints }.toSet()
+    val required: Set<Limb> = (far + finish + rest.orEmpty()).flatMap { it.feature.joints }.toSet() + extraRequired
 
     /** Остальные суставы (поза, масштаб) — используются, если видны. */
     val optional: Set<Limb> = Limb.entries.toSet() - required
@@ -119,8 +124,10 @@ internal class ExerciseConfig(
 private class Latches(private val conds: List<Cond>) {
     private val at = LongArray(conds.size) { NEVER }
 
-    fun update(prev: Sample?, cur: Sample) {
-        conds.forEachIndexed { i, c -> if (c.confirmed(prev, cur)) at[i] = cur.timeMs }
+    fun update(tracks: List<SideTrack>, now: Long) {
+        conds.forEachIndexed { i, c ->
+            if (tracks.all { track -> track.cur?.let { c.confirmed(track.prev, it) } == true }) at[i] = now
+        }
     }
 
     /** Все условия подтверждены не раньше [since] и не дальше [EngineTuning.LATCH_MS] назад. */
@@ -144,11 +151,12 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         private set
 
     /** Фильтры другой стороны не смешиваем: при смене стороны защёлки и сглаживание начинаются заново. */
-    private val sides = SideSelector(cfg.required) {
+    private val sides = SideSelector(cfg.required, minConfidence = cfg.minConfidence) {
         restLatch.clear()
         farLatch.clear()
         finishLatch.clear()
         depthEma = Float.NaN
+        if (cfg.resetOnSideSwitch) resetMotion(Latches.NEVER)
     }
 
     private var count = 0
@@ -192,9 +200,9 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
 
         // Пустой кадр — человека нет совсем: устаревшие суставы его не заменяют
         // (они только для кратко пропавших отдельных суставов).
-        val track = if (frame.points.isEmpty()) null else sides.choose(t)
-        val s = track?.cur
-        if (track == null || s == null) {
+        val tracks = if (frame.points.isEmpty()) emptyList() else selectTracks(t)
+        val samples = tracks.mapNotNull { it.cur }
+        if (samples.isEmpty()) {
             val closest = sides.closest()
             val hint = if (frame.points.isEmpty()) {
                 BodyLocator.HINT_NOT_IN_FRAME
@@ -207,11 +215,11 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
 
         // Поза: строго на входе, дальше держится, пока нарушение не длится дольше POSTURE_GRACE_MS.
         if (!engaged) {
-            if (cfg.enter(s)) {
+            if (samples.all(cfg.enter)) {
                 engaged = true
                 violationSince = null
             }
-        } else if (cfg.hold(s)) {
+        } else if (samples.all(cfg.hold)) {
             violationSince = null
         } else {
             val since = violationSince ?: t.also { violationSince = it }
@@ -224,12 +232,11 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
             return emit(tracking = true, inPosition = false, hint = cfg.postureHint, depth = 0f, atStart = false)
         }
 
-        val depth = smoothDepth(t, cfg.depth(s))
-        val prev = track.prev
-        restLatch.update(prev, s)
-        farLatch.update(prev, s)
-        finishLatch.update(prev, s)
-        val inRest = cfg.restZone.all { it.holds(s[it.feature]) }
+        val depth = smoothDepth(t, samples.minOf(cfg.depth))
+        restLatch.update(tracks, t)
+        farLatch.update(tracks, t)
+        finishLatch.update(tracks, t)
+        val inRest = samples.all { s -> cfg.restZone.all { it.holds(s[it.feature]) } }
 
         when (phase) {
             Phase.NEED_START -> if (restLatch.all(t, Latches.NEVER)) enterPhase(Phase.WAIT_FAR, t)
@@ -282,6 +289,18 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         val hint = if (phase == Phase.NEED_START) cfg.startHint else moveHint
         val atStart = inRest && phase != Phase.WAIT_RETURN
         return emit(tracking = true, inPosition = true, hint = hint, depth = depth, atStart = atStart)
+    }
+
+    private fun selectTracks(t: Long): List<SideTrack> {
+        val selected = when (cfg.sideMode) {
+            AngularSide.BEST_VISIBLE -> listOfNotNull(sides.choose(t))
+            AngularSide.LEFT -> listOf(sides.tracks.first { it.side == Side.LEFT })
+            AngularSide.RIGHT -> listOf(sides.tracks.first { it.side == Side.RIGHT })
+            AngularSide.BOTH -> sides.tracks
+        }
+        return selected.takeIf { tracks ->
+            tracks.all { it.available(cfg.required) && (!cfg.requireFresh || it.allFresh(cfg.required)) }
+        }.orEmpty()
     }
 
     private fun smoothDepth(t: Long, raw: Float): Float {

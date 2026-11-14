@@ -73,6 +73,54 @@ data class GuideProps(
     val mat: Boolean = false,
     val bar: Boolean = false,
     val chair: Chair? = null,
+    val barbell: Barbell? = null,
+    val dumbbells: Dumbbells? = null,
+    val bench: Bench? = null,
+    val cableMachine: CableMachine? = null,
+)
+
+/** Опора грифа: кисти для тяг/жимов или плечи для приседа. */
+enum class BarbellGrip { HANDS, SHOULDERS }
+
+/**
+ * Гриф с блинами. [offset] задаёт положение относительно середины кистей или плеч.
+ * [halfLength] — видимая половина грифа с учётом проекции выбранного ракурса.
+ */
+data class Barbell(
+    val grip: BarbellGrip = BarbellGrip.HANDS,
+    val offset: Pt = Pt(0f, 0f),
+    val halfLength: Float = 0.22f,
+    val plateRadius: Float = 0.06f,
+)
+
+enum class DumbbellGrip { EACH_HAND, RIGHT_HAND, LEFT_HAND, BOTH_HANDS, GOBLET }
+
+/**
+ * Гантели поворачиваются вместе с предплечьем, середина рукояти остаётся в кисти.
+ * [DumbbellGrip.GOBLET] — одна вертикальная гантель, обе кисти поддерживают верхний диск.
+ */
+data class Dumbbells(val grip: DumbbellGrip = DumbbellGrip.EACH_HAND)
+
+/**
+ * Мягкая опора скамьи от таза [hip] к голове [head]. Разные y задают наклон.
+ * [seatEnd] добавляет отдельное горизонтальное сиденье от [hip] для наклонного/сидячего жима.
+ */
+data class Bench(val hip: Pt, val head: Pt, val seatEnd: Pt? = null)
+
+enum class CableGrip { HANDS, RIGHT_HAND, LEFT_HAND }
+
+/**
+ * Схема блочного тренажёра: стойка [base]–[top], блок [pulley], трос к кистям и сиденье.
+ * [cableVia] — неподвижные промежуточные блоки между верхом стойки и рабочим блоком.
+ * Низкий [pulley] подходит горизонтальной тяге, высокий — верхней тяге.
+ */
+data class CableMachine(
+    val base: Pt,
+    val top: Pt,
+    val pulley: Pt,
+    val seat: Chair? = null,
+    val grip: CableGrip = CableGrip.HANDS,
+    val cableVia: List<Pt> = emptyList(),
 )
 
 /**

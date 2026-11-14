@@ -89,6 +89,9 @@ internal enum class Feature(val isAngle: Boolean, vararg limbs: Limb) {
      * (верх ягодичного моста), лёжа с согнутыми ногами ≈ 130. В отличие от [HIP_ANGLE] не зависит от голени.
      */
     HIP_FLEXION(true, Limb.SHOULDER, Limb.HIP, Limb.KNEE),
+
+    /** Отведение руки от корпуса: таз–плечо–локоть, 0 — рука вдоль тела, 90 — на уровне плеча. */
+    SHOULDER_ANGLE(true, Limb.HIP, Limb.SHOULDER, Limb.ELBOW),
     ;
 
     val joints: Set<Limb> = limbs.toSet()
@@ -160,6 +163,7 @@ internal enum class Feature(val isAngle: Boolean, vararg limbs: Limb) {
                 v[SHOULDER_OVER_ELBOW.ordinal] = Geometry.heightAbove(s, e, scale)
                 v[ELBOW_SHOULDER_DX.ordinal] = Geometry.horizontalGap(e, s, scale)
             }
+            if (h != null && s != null && e != null) v[SHOULDER_ANGLE.ordinal] = Geometry.jointAngle(h, s, e)
             return v
         }
     }
@@ -197,7 +201,7 @@ internal object JointTuning {
  * и признак «свежий» (достоверен в этом кадре) или «устарел» (взят из прошлого, не старше [JointTuning.STALE_MS]).
  * Точка с нечисловыми координатами или за краем кадра ([JointTuning.usable]) считается отсутствующей.
  */
-internal class JointTracker(val side: Side) {
+internal class JointTracker(val side: Side, private val minConfidence: Float = JointTuning.MIN_CONFIDENCE) {
     private val n = Limb.entries.size
     private val pos = arrayOfNulls<PosePoint>(n)
     private val freshAt = LongArray(n)
@@ -209,7 +213,7 @@ internal class JointTracker(val side: Side) {
             val i = limb.ordinal
             val p = frame.points[side.joint(limb)]?.takeIf { JointTuning.usable(it, frame) }
             confNow[i] = p?.confidence ?: 0f
-            if (p != null && p.confidence >= JointTuning.MIN_CONFIDENCE) {
+            if (p != null && p.confidence >= minConfidence) {
                 pos[i] = p
                 freshAt[i] = frame.timeMs
                 freshNow[i] = true
@@ -265,8 +269,8 @@ internal class Sample(
 }
 
 /** Всё, что счётчик ведёт по одной стороне тела: суставы и два последних замера. Стороны не смешиваются. */
-internal class SideTrack(val side: Side) {
-    val joints = JointTracker(side)
+internal class SideTrack(val side: Side, minConfidence: Float = JointTuning.MIN_CONFIDENCE) {
+    val joints = JointTracker(side, minConfidence)
     var cur: Sample? = null
         private set
     var prev: Sample? = null
@@ -306,9 +310,10 @@ internal class SideTrack(val side: Side) {
 internal class SideSelector(
     private val need: Set<Limb>,
     private val lostSwitchMs: Long = EngineTuning.SIDE_LOST_MS,
+    minConfidence: Float = JointTuning.MIN_CONFIDENCE,
     private val onSwitch: () -> Unit = {},
 ) {
-    val tracks = Side.entries.map { SideTrack(it) }
+    val tracks = Side.entries.map { SideTrack(it, minConfidence) }
 
     var active: SideTrack? = null
         private set

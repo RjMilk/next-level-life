@@ -50,6 +50,7 @@ import com.nextlevellife.app.data.Cindy
 import com.nextlevellife.app.data.CustomPrograms
 import com.nextlevellife.app.data.Saitama
 import com.nextlevellife.app.data.Diary
+import com.nextlevellife.app.data.Equipment
 import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.data.Exercises
 import com.nextlevellife.app.data.GymHistory
@@ -663,7 +664,32 @@ private fun EarnSection(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 4.dp),
             )
-            CardGrid(Exercises.gym, columns) { ex, m -> GymExerciseCard(ex, gymSummaries[ex.id], m, onExercise) }
+            listOf(
+                Equipment.BARBELL to "Штанга",
+                Equipment.DUMBBELL to "Гантели",
+                Equipment.MACHINE to "Тренажёры",
+            ).forEach { (equipment, title) ->
+                val exercises = Exercises.gym.filter { ex ->
+                    val group = when (ex.gym?.equipment) {
+                        Equipment.ASSISTED -> Equipment.MACHINE
+                        else -> ex.gym?.equipment
+                    }
+                    group == equipment
+                }
+                if (exercises.isNotEmpty()) {
+                    ExpandableCard(
+                        key = "home_gym_${equipment.name.lowercase()}",
+                        title = title,
+                        summary = ExpandableText.exerciseNames(exercises),
+                        contentPadding = GroupBodyPadding,
+                        contentSpacing = 12.dp,
+                    ) {
+                        CardGrid(exercises, columns) { ex, m ->
+                            GymExerciseCard(ex, gymSummaries[ex.id], m, onExercise)
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -37,7 +37,7 @@ New-Item -ItemType Directory -Force -Path $classes, $frames | Out-Null
 $sources = @(Get-ChildItem app/src/main/java/com/nextlevellife/app/guide -Filter '*.kt' | Where-Object Name -ne 'GuidePrefs.kt' | Select-Object -ExpandProperty FullName)
 # Routines' real PoseSide type depends on the pure pose engine. No Android stubs are used.
 $sources += @(Get-ChildItem app/src/main/java/com/nextlevellife/app/pose -Filter '*.kt' | Where-Object Name -notin @('PoseCamera.kt', 'PoseLog.kt', 'RepSound.kt') | Select-Object -ExpandProperty FullName)
-$sources += @('app/src/main/java/com/nextlevellife/app/data/Exercises.kt', 'app/src/main/java/com/nextlevellife/app/data/Routines.kt')
+$sources += @('app/src/main/java/com/nextlevellife/app/data/Exercises.kt', 'app/src/main/java/com/nextlevellife/app/data/Routines.kt', 'app/src/main/java/com/nextlevellife/app/data/Gym.kt')
 $testSources = @(Get-ChildItem app/src/test/java/com/nextlevellife/app/guide -Filter '*.kt')
 $sources += $testSources.FullName
 
