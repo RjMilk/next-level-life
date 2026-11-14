@@ -50,6 +50,7 @@ import com.nextlevellife.app.pose.CameraPermissionGate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 private const val TAG = "ProductsScreen"
 
@@ -241,6 +242,15 @@ internal fun ProductEditorView(
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    // uid новой версии — на весь сеанс правки и переживает поворот: запись, начатая до поворота (её корутина
+    // отменилась, а транзакция могла дойти до конца), и повторное «Сохранить» дают одну версию, а не две.
+    val saveUid by rememberSaveable(editKey) { mutableStateOf(UUID.randomUUID().toString()) }
+
+    // Пересоздание экрана посреди записи: версия уже записана — туда же, куда после успешного сохранения.
+    LaunchedEffect(editKey, saveUid) {
+        val done = withContext(Dispatchers.IO) { runCatching { Products.version(saveUid) }.getOrNull() }
+        if (done != null) onSaved(done)
+    }
 
     val fields = listOf(name, barcode, kcal, protein, fat, carbs, portion)
     val form = ProductsMath.parseForm(name, barcode, kcal, protein, fat, carbs, portion) { code ->
@@ -259,7 +269,7 @@ internal fun ProductEditorView(
         busy = true
         scope.launch {
             val saved = withContext(Dispatchers.IO) {
-                runCatching { Products.save(stored?.productUid, form) }
+                runCatching { Products.save(stored?.productUid, form, versionUid = saveUid) }
                     .onFailure { Log.e(TAG, "Не удалось сохранить продукт", it) }
             }
             busy = false
@@ -414,14 +424,22 @@ private fun NumberField(
 /**
  * Порция выбранного продукта: вес подставлен из порции по умолчанию, можно поменять или стереть (пусто — порция
  * по умолчанию, а без неё — «без веса»). [version] null — ещё загружается.
+ * [onAdd] — вес и uid позиции: uid задан на весь сеанс [key] и переживает поворот, запись по нему идемпотентна.
+ * [onAlreadyAdded] — экран пересоздан, а позиция с этим uid уже записана (запись дошла до конца до поворота).
  */
 @Composable
 internal fun PortionView(
     key: String,
     version: ProductVersion?,
     onCancel: () -> Unit,
-    onAdd: (Int?) -> Unit,
+    onAdd: (grams: Int?, entryUid: String) -> Unit,
+    onAlreadyAdded: () -> Unit,
 ) {
+    val entryUid by rememberSaveable(key) { mutableStateOf(UUID.randomUUID().toString()) }
+    LaunchedEffect(key, entryUid) {
+        val done = withContext(Dispatchers.IO) { runCatching { Products.entry(entryUid) }.getOrNull() }
+        if (done != null) onAlreadyAdded()
+    }
     if (version == null) {
         ProductHeader("Порция", "Отмена", onCancel)
         CircularProgressIndicator(Modifier.padding(16.dp))
@@ -444,7 +462,7 @@ internal fun PortionView(
         )
         Text(preview, style = MaterialTheme.typography.titleLarge.merge(Tabular), color = Accent)
         Button(
-            onClick = { busy = true; onAdd(value) },
+            onClick = { busy = true; onAdd(value, entryUid) },
             enabled = error == null && !busy,
             shape = ButtonShape,
             modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),

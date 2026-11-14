@@ -120,6 +120,8 @@ fun NutritionScreen(onBack: () -> Unit) {
     // Выбранная версия продукта для позиции приёма [viewUid].
     var pickVersionUid by rememberSaveable { mutableStateOf<String?>(null) }
     var pickMessage by remember { mutableStateOf<String?>(null) }
+    // Сеанс сканирования: итог поиска по коду применяется, только если этот сеанс ещё открыт.
+    var scanKey by rememberSaveable { mutableStateOf("") }
     // Идёт запись приёма в этом экземпляре экрана; после пересоздания — false, и экран возвращается к ленте.
     var saving by remember { mutableStateOf(false) }
 
@@ -382,18 +384,22 @@ fun NutritionScreen(onBack: () -> Unit) {
                 live = products,
                 message = pickMessage,
                 onCancel = { mode = MODE_VIEW },
-                onScan = { pickMessage = null; mode = MODE_SCAN },
+                onScan = { pickMessage = null; scanKey = UUID.randomUUID().toString(); mode = MODE_SCAN },
                 onNew = { openEditor(null, null, forMeal = true) },
                 onPick = { openPortion(it) },
             )
             MODE_SCAN -> BarcodeScanView(
                 onCancel = { openPicker() },
                 onCode = { code ->
+                    // Поиск привязан к сеансу сканирования: после «Отмены» (или нового сканирования) его итог экран
+                    // уже не переключает.
+                    val session = scanKey
                     scope.launch {
                         val found = withContext(Dispatchers.IO) {
                             runCatching { ProductsMath.findByBarcode(Products.live(), code) }
                                 .onFailure { Log.e(TAG, "Не удалось найти продукт по штрихкоду", it) }
                         }
+                        if (mode != MODE_SCAN || scanKey != session) return@launch
                         found.fold(
                             // Знакомый — сразу порция; незнакомый — новая карточка с этим кодом.
                             onSuccess = { v -> if (v != null) openPortion(v) else openEditor(null, code, forMeal = true) },
@@ -411,17 +417,21 @@ fun NutritionScreen(onBack: () -> Unit) {
                     key = editKey,
                     version = v,
                     onCancel = { openPicker() },
-                    onAdd = { grams ->
+                    onAdd = { grams, entryUid ->
                         val meal = viewUid
                         val ver = v
+                        val session = editKey
                         if (meal == null || ver == null) {
                             mode = MODE_LIST
                         } else {
                             scope.launch {
+                                // Запись идемпотентна по entryUid: повтор после поворота не создаст вторую позицию.
                                 val ok = withContext(Dispatchers.IO) {
-                                    runCatching { Products.addEntry(meal, ver, grams) }
+                                    runCatching { Products.addEntry(meal, ver, grams, entryUid) }
                                         .onFailure { Log.e(TAG, "Не удалось добавить продукт в приём", it) }.isSuccess
                                 }
+                                // Пользователь ушёл с этого экрана, пока шла запись, — экран не переключаем.
+                                if (mode != MODE_PORTION || editKey != session) return@launch
                                 if (ok) {
                                     mode = MODE_VIEW
                                 } else {
@@ -431,6 +441,8 @@ fun NutritionScreen(onBack: () -> Unit) {
                             }
                         }
                     },
+                    // Экран пересоздан посреди записи, а позиция уже есть — туда же, куда после успешной записи.
+                    onAlreadyAdded = { if (mode == MODE_PORTION) mode = MODE_VIEW },
                 )
             }
             else -> MealList(

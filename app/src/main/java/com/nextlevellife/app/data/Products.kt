@@ -90,11 +90,22 @@ object Products {
      * Сохраняет карточку [form] (без ошибок): новый продукт при [productUid] null, иначе — новая версия того же
      * продукта. Если значения не изменились — возвращает текущую версию без нового факта. Удалённый продукт не
      * правится — null.
+     *
+     * [versionUid] — uid новой версии, заданный заранее (экран хранит его в сохраняемом состоянии): повтор с тем же
+     * uid (поворот экрана посреди записи, второе нажатие) не пишет второй факт и не тратит номер — возвращает уже
+     * записанную версию.
      */
-    fun save(productUid: String?, form: ProductForm, time: TimeSnapshot = TrustedClock.snapshot()): ProductVersion? {
+    fun save(
+        productUid: String?,
+        form: ProductForm,
+        versionUid: String = UUID.randomUUID().toString(),
+        time: TimeSnapshot = TrustedClock.snapshot(),
+    ): ProductVersion? {
         require(form.ok) { "Карточка с ошибками" }
+        require(NutritionMath.isSafeUid(versionUid)) { "Недопустимый uid версии" }
         val result = synchronized(Diary) {
             Diary.write { db ->
+                versions(db, "uid = ?", versionUid).firstOrNull()?.let { return@write it }
                 val pUid = productUid ?: UUID.randomUUID().toString()
                 require(NutritionMath.isSafeUid(pUid)) { "Недопустимый uid продукта" }
                 if (productUid != null) {
@@ -103,7 +114,7 @@ object Products {
                     if (current != null && ProductsMath.sameValues(current, form)) return@write current
                 }
                 val v = ProductVersion(
-                    versionUid = UUID.randomUUID().toString(), productUid = pUid, author = Ledger.deviceId(),
+                    versionUid = versionUid, productUid = pUid, author = Ledger.deviceId(),
                     utcMs = time.utcMs, name = form.name, barcode = form.barcode, kcal = form.kcal,
                     proteinDg = form.proteinDg, fatDg = form.fatDg, carbsDg = form.carbsDg, portionG = form.portionG,
                 )
@@ -153,30 +164,56 @@ object Products {
     /**
      * Добавляет в приём [mealUid] позицию: версия [version], порция [grams] (null — порция по умолчанию продукта,
      * а если её нет — «без веса»). Возвращает позицию.
+     *
+     * [entryUid] — uid позиции, заданный заранее (экран хранит его в сохраняемом состоянии): повтор с тем же uid
+     * не пишет второй факт и не тратит номер — возвращает уже записанную позицию.
      */
-    fun addEntry(mealUid: String, version: ProductVersion, grams: Int?, time: TimeSnapshot = TrustedClock.snapshot()): MealEntry {
+    fun addEntry(
+        mealUid: String,
+        version: ProductVersion,
+        grams: Int?,
+        entryUid: String = UUID.randomUUID().toString(),
+        time: TimeSnapshot = TrustedClock.snapshot(),
+    ): MealEntry {
         require(NutritionMath.isSafeUid(mealUid)) { "Недопустимый uid приёма" }
+        require(NutritionMath.isSafeUid(entryUid)) { "Недопустимый uid позиции" }
         val g = ProductsMath.entryGrams(grams, version)
-        val entry = MealEntry(UUID.randomUUID().toString(), Ledger.deviceId(), mealUid, version.versionUid, g, time.utcMs)
-        synchronized(Diary) {
+        val fresh = MealEntry(entryUid, Ledger.deviceId(), mealUid, version.versionUid, g, time.utcMs)
+        val saved = synchronized(Diary) {
             Diary.write { db ->
+                entry(db, entryUid)?.let { return@write it }
                 db.insertOrThrow("meal_entries", null, ContentValues().apply {
-                    put("uid", entry.uid)
+                    put("uid", fresh.uid)
                     put("meal_uid", mealUid)
                     put("version_uid", version.versionUid)
                     if (g != null) put("grams", g) else putNull("grams")
-                    put("author", entry.author)
+                    put("author", fresh.author)
                     put("epoch", Diary.factsEpoch())
                     put("aseq", Diary.nextFactSeq())
                     put("utc_ms", time.utcMs)
                     put("day", time.day)
                     put("zone_id", time.zone.id)
                 })
+                fresh
             }
         }
         Store.notifyChanged()
-        return entry
+        return saved
     }
+
+    /** Позиция по uid (в том числе убранная); null — не записана. */
+    fun entry(entryUid: String): MealEntry? = synchronized(Diary) { entry(Diary.db(), entryUid) }
+
+    /** Позиция по uid в транзакции [db]. */
+    private fun entry(db: SQLiteDatabase, entryUid: String): MealEntry? =
+        db.rawQuery(
+            "SELECT uid, author, meal_uid, version_uid, grams, utc_ms FROM meal_entries WHERE uid = ? LIMIT 1", arrayOf(entryUid),
+        ).use { c ->
+            if (!c.moveToFirst()) null else MealEntry(
+                uid = c.getString(0), author = c.getString(1), mealUid = c.getString(2), versionUid = c.getString(3),
+                grams = if (c.isNull(4)) null else c.getInt(4), utcMs = c.getLong(5),
+            )
+        }
 
     /** Убирает позицию [entryUid] из приёма: отдельный факт удаления. */
     fun deleteEntry(entryUid: String, time: TimeSnapshot = TrustedClock.snapshot()): Unit = synchronized(Diary) {
