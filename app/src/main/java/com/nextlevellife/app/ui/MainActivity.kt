@@ -62,6 +62,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.unit.dp
+import com.nextlevellife.app.data.Routines
 import com.nextlevellife.app.data.Saitama
 import com.nextlevellife.app.data.SaitamaRepository
 import com.nextlevellife.app.data.Store
@@ -90,6 +91,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
+        // Служба блокировки может быть выключена — транспорт и обмен поднимаем и отсюда (повтор безопасен).
+        com.nextlevellife.app.sync.SyncBoot.ensure(this)
         enableEdgeToEdge()
         if (savedInstanceState == null && isRationaleIntent(intent)) {
             showRationale = true
@@ -175,8 +178,7 @@ class MainActivity : ComponentActivity() {
                                             )
                                         }
                                         screen == APPS -> AppsScreen(onBack = goHome)
-                                        // Заглушка: настоящий экран сопряжения подключит режиссёр.
-                                        screen == PAIRING -> PairingPlaceholder(onBack = goHome)
+                                        screen == PAIRING -> PairingScreen(onBack = goHome)
                                         screen.startsWith(STAT_INFO) -> StatInfoScreen(
                                             topic = screen.removePrefix(STAT_INFO),
                                             resumeCount = resumeCount,
@@ -187,6 +189,17 @@ class MainActivity : ComponentActivity() {
                                             onExercise = { screen = "$EXERCISE$it$FROM_SAITAMA" },
                                             onBack = goHome,
                                         )
+                                        screen.startsWith(COMPLEX) && Routines.isRoutineId(screen.removePrefix(COMPLEX)) -> {
+                                            var guideFor by rememberSaveable { mutableStateOf<String?>(null) }
+                                            RoutineScreen(
+                                                routineId = screen.removePrefix(COMPLEX),
+                                                onDone = goHome,
+                                                onShowGuide = { guideFor = it },
+                                            )
+                                            guideFor?.let { id ->
+                                                GuideDialog(exerciseId = id, onClose = { guideFor = null })
+                                            }
+                                        }
                                         screen.startsWith(COMPLEX) -> ComplexScreen(
                                             complexId = screen.removePrefix(COMPLEX),
                                             onDone = goHome,
@@ -255,20 +268,6 @@ class MainActivity : ComponentActivity() {
 
         /** Health Connect (Android 13 и старше) просит показать, зачем приложению разрешения. */
         const val ACTION_SHOW_RATIONALE = "androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE"
-    }
-}
-
-/** Временный экран вместо сопряжения: его заменит настоящий. */
-@Composable
-private fun PairingPlaceholder(onBack: () -> Unit) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text("Экран сопряжения", style = MaterialTheme.typography.headlineMedium)
-        Button(onClick = onBack, shape = ButtonShape) { Text("Назад") }
     }
 }
 

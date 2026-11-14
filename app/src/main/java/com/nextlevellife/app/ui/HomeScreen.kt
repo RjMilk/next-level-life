@@ -205,8 +205,11 @@ fun HomeScreen(
             widthClass.gridColumns,
             onExercise,
             onComplex,
-            complexesSummary = "Минотавр, Синди, Сайтама",
-            extraComplexes = { SaitamaCard(onClick = { onComplex(Saitama.ID) }) },
+            complexesSummary = "Минотавр, Синди, Сайтама, ЛФК, йога",
+            extraComplexes = {
+                SaitamaCard(onClick = { onComplex(Saitama.ID) })
+                RoutineCards(onOpen = onComplex, showHeader = true)
+            },
         )
     }
 

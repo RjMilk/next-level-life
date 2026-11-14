@@ -204,6 +204,8 @@ class BlockerService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         Store.init(this)
+        // Синхронизация со вторым телефоном: служба живёт постоянно — сервер должен отвечать и при закрытом приложении.
+        com.nextlevellife.app.sync.SyncBoot.ensure(this)
         SpendBridge.register(bridge)
         refreshIgnored()
         registerTimeReceiver()

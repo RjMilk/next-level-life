@@ -9,6 +9,7 @@ import com.nextlevellife.app.data.ExerciseRecord
 import com.nextlevellife.app.data.ExerciseTotal
 import com.nextlevellife.app.data.Measurement
 import com.nextlevellife.app.data.Minotaur
+import com.nextlevellife.app.data.Routines
 import com.nextlevellife.app.data.SetEntry
 import com.nextlevellife.app.health.ActivityMath
 import com.nextlevellife.app.sleep.NightStatus
@@ -222,7 +223,8 @@ internal object ProgressMath {
                 if (rounds != null) "Синди — ${cindyResult(rounds, r.extraReps ?: 0)}"
                 else "Синди — ${r.totalReps} повт."
             }
-            else -> "${exerciseLabel("Комплекс", r.weightKg)} — ${r.totalReps} повт."
+            else -> Routines.byId(r.complexId)?.let { "${it.title} — ${formatDuration(r.durationMs)}" }
+                ?: "${exerciseLabel("Комплекс", r.weightKg)} — ${r.totalReps} повт."
         }
         return if (r.completed) base else "$base · не завершён"
     }
@@ -257,7 +259,8 @@ internal object ProgressMath {
                 val rounds = r.rounds
                 "Синди" to (if (rounds != null) cindyResult(rounds, r.extraReps ?: 0) else "${r.totalReps} повт.")
             }
-            else -> exerciseLabel("Комплекс", r.weightKg) to "${r.totalReps} повт."
+            else -> Routines.byId(r.complexId)?.let { it.title to formatDuration(r.durationMs) }
+                ?: (exerciseLabel("Комплекс", r.weightKg) to "${r.totalReps} повт.")
         }
         return Cells(if (r.completed) label else "$label · не завершён", value)
     }
