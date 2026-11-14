@@ -155,7 +155,7 @@ class MealSyncTest {
 
     @Test
     fun codecRoundTripAndVersion() {
-        assertEquals(2, SyncCodec.PROTOCOL_VERSION)
+        assertTrue(SyncCodec.PROTOCOL_VERSION >= 2)
         val m = SyncMessage.Facts(
             listOf(
                 MealFact("m1", "a", "e", 1, 1_700_000_000_000, 19_700, "Europe/Moscow", true, "гречка с курицей"),

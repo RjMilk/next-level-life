@@ -37,7 +37,7 @@ data class OpRecord(
 
 /**
  * «Факт» — запись, которая не меняется и не удаляется: подход, прохождение комплекса, перенос доли лимита,
- * приём пищи и его удаление (удаление — тоже факт, сам приём остаётся в журнале).
+ * приём пищи и его удаление (удаление — тоже факт, сам приём остаётся в журнале), ответ на карточку.
  * Объединяется по (автор, поколение, номер); [uid] — постоянный идентификатор (повтор не дублирует).
  */
 sealed interface FactRecord {
@@ -131,6 +131,25 @@ data class MealDeleteFact(
 ) : FactRecord
 
 /**
+ * Первый ответ на карточку ([com.nextlevellife.app.data.Cards]). [cardId] — стабильный id карточки, [deck] — колода,
+ * [utcMs] — доверенное время ответа, [day] — учётные сутки, [zoneId] — учётный пояс. [paidMs] — сколько начислил
+ * телефон-автор (получатель по нему не начисляет, а только учитывает: карточка оплачена, потолок дня израсходован).
+ */
+data class CardAttemptFact(
+    override val uid: String,
+    override val author: String,
+    override val epoch: String,
+    override val aseq: Long,
+    val cardId: String,
+    val deck: String,
+    val utcMs: Long,
+    override val day: Long,
+    val zoneId: String,
+    val firstCorrect: Boolean,
+    val paidMs: Long,
+) : FactRecord
+
+/**
  * Докуда принят журнал [log] автора [author] в поколении [epoch]: [pos] — последний принятый номер
  * (rev у операций, aseq у фактов).
  */
@@ -196,8 +215,8 @@ class SyncProtocolException(message: String) : IOException(message)
  * необязательные поля — байт-признак. Неизвестный тип или обрезанное сообщение — [SyncProtocolException].
  */
 object SyncCodec {
-    /** 2 — приёмы пищи и их удаления ([MealFact], [MealDeleteFact]). */
-    const val PROTOCOL_VERSION = 2
+    /** 2 — приёмы пищи и их удаления ([MealFact], [MealDeleteFact]); 3 — ответы на карточки ([CardAttemptFact]). */
+    const val PROTOCOL_VERSION = 3
     private const val MAGIC = 0x4E // 'N'
 
     private const val T_HELLO = 1
@@ -213,6 +232,7 @@ object SyncCodec {
     private const val F_MOVE = 3
     private const val F_MEAL = 4
     private const val F_MEAL_DELETE = 5
+    private const val F_CARD = 6
 
     fun encode(m: SyncMessage): ByteArray {
         val bytes = ByteArrayOutputStream()
@@ -357,6 +377,11 @@ object SyncCodec {
                 o.writeByte(F_MEAL_DELETE); head(o, f)
                 o.str(f.mealUid); o.writeLong(f.day); o.writeLong(f.utcMs)
             }
+            is CardAttemptFact -> {
+                o.writeByte(F_CARD); head(o, f)
+                o.str(f.cardId); o.str(f.deck); o.writeLong(f.utcMs); o.writeLong(f.day); o.str(f.zoneId)
+                o.writeBoolean(f.firstCorrect); o.writeLong(f.paidMs)
+            }
         }
     }
 
@@ -387,6 +412,10 @@ object SyncCodec {
                 hasPhoto = i.readBoolean(), note = i.optStr(),
             )
             F_MEAL_DELETE -> MealDeleteFact(uid, author, epoch, aseq, mealUid = i.str(), day = i.readLong(), utcMs = i.readLong())
+            F_CARD -> CardAttemptFact(
+                uid, author, epoch, aseq, cardId = i.str(), deck = i.str(), utcMs = i.readLong(), day = i.readLong(),
+                zoneId = i.str(), firstCorrect = i.readBoolean(), paidMs = i.readLong(),
+            )
             else -> throw SyncProtocolException("Неизвестный вид факта $kind")
         }
     }

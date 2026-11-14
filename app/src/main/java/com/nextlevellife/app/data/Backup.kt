@@ -370,6 +370,26 @@ object Backup {
             Log.e(TAG, "Не удалось прочитать удаления приёмов пищи", e)
             emptyList()
         }
+        // Ответы на карточки текущей базы — тоже: оплаченные попытки и израсходованный потолок дня должны пережить
+        // восстановление (иначе карточку можно было бы оплатить второй раз), а расписание повторений — не откатиться.
+        val currentCardAttempts = try {
+            synchronized(Diary) {
+                Diary.query(
+                    "SELECT uid, author, epoch, aseq, card_id, deck, utc_ms, accounting_day, zone_id, first_correct, paid_ms " +
+                        "FROM card_attempts",
+                ) { c ->
+                    android.content.ContentValues().apply {
+                        put("uid", c.getString(0)); put("author", c.getString(1)); put("epoch", c.getString(2))
+                        put("aseq", c.getLong(3)); put("card_id", c.getString(4)); put("deck", c.getString(5))
+                        put("utc_ms", c.getLong(6)); put("accounting_day", c.getLong(7)); put("zone_id", c.getString(8))
+                        put("first_correct", c.getInt(9)); put("paid_ms", c.getLong(10))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось прочитать ответы на карточки", e)
+            emptyList()
+        }
         var carriedMs = 0L
         val oldPrefsJson = Store.exportPrefs()
         val oldPrefs = Store.parsePrefs(oldPrefsJson)
@@ -411,6 +431,7 @@ object Backup {
                 for (meal in currentMeals) db.insertWithOnConflict("meals", null, meal, SQLiteDatabase.CONFLICT_IGNORE)
                 for (del in currentMealDeletes) db.insertWithOnConflict("meal_deletes", null, del, SQLiteDatabase.CONFLICT_IGNORE)
                 db.execSQL("UPDATE meals SET deleted = 1 WHERE uid IN (SELECT meal_uid FROM meal_deletes)")
+                for (a in currentCardAttempts) db.insertWithOnConflict("card_attempts", null, a, SQLiteDatabase.CONFLICT_IGNORE)
                 if (localPeer != null) putMeta(Ledger.KEY_SYNC_PEER, localPeer) else db.delete("meta", "key = ?", arrayOf(Ledger.KEY_SYNC_PEER))
                 db.delete("shared_settings", "key = ?", arrayOf(SharedSettings.ACTIVITY_SOURCE))
                 if (localSource != null) db.insertWithOnConflict("shared_settings", null, localSource, SQLiteDatabase.CONFLICT_REPLACE)
@@ -692,6 +713,10 @@ object BackupMath {
     const val MEALS_SCHEMA = 9
     val MEAL_TABLES = setOf("meals", "meal_deletes")
 
+    /** С версии 10 — ответы на карточки. */
+    const val CARDS_SCHEMA = 10
+    val CARD_TABLES = setOf("card_attempts")
+
     /** Предел одного фото и всех фото в копии (байт). */
     const val MAX_PHOTO_BYTES = 16L * 1024 * 1024
     const val MAX_PHOTOS_TOTAL_BYTES = 8L * 1024 * 1024 * 1024
@@ -701,6 +726,7 @@ object BackupMath {
         var t = REQUIRED_TABLES
         if (schema >= SLEEP_SCHEMA) t = t + SLEEP_TABLES
         if (schema >= MEALS_SCHEMA) t = t + MEAL_TABLES
+        if (schema >= CARDS_SCHEMA) t = t + CARD_TABLES
         return t
     }
 

@@ -2,6 +2,10 @@ package com.nextlevellife.app.sync
 
 import com.nextlevellife.app.data.ActivityDay
 import com.nextlevellife.app.data.ActivityRun
+import com.nextlevellife.app.data.CardAttempt
+import com.nextlevellife.app.data.CardReward
+import com.nextlevellife.app.data.CardRewardReason
+import com.nextlevellife.app.data.CardsMath
 import com.nextlevellife.app.data.LedgerMath
 import com.nextlevellife.app.data.OpKind
 import com.nextlevellife.app.data.SharedWalletMath
@@ -128,6 +132,30 @@ class MemorySyncStore(
         return f
     }
 
+    /** Попытки на карточки всех авторов (свои и копии второго телефона) — как строки card_attempts. */
+    fun cardAttempts(): List<CardAttempt> = facts.values.filterIsInstance<CardAttemptFact>().map {
+        CardAttempt(it.uid, it.author, it.cardId, it.deck, it.utcMs, it.day, it.zoneId, it.firstCorrect, it.paidMs)
+    }
+
+    /** Сколько начислено за карточки по своему журналу (CARD_REWARD). */
+    fun cardEarned(): Long = ops.values.filter { it.kind == OpKind.CARD_REWARD.name }.sumOf { it.deltaMs }
+
+    /**
+     * Первый ответ на карточку (как Cards.recordAttempt): награда по [CardsMath.reward] с учётом попыток второго
+     * телефона за сутки, попытка и операция CARD_REWARD — вместе. [paired] — есть ли пара.
+     */
+    fun answerCard(cardId: String, correct: Boolean, paired: Boolean = true, uid: String = UUID.randomUUID().toString()): CardReward {
+        facts[uid]?.let { f -> return CardReward((f as CardAttemptFact).paidMs, CardRewardReason.PAID) }
+        val reward = CardsMath.reward(cardId, correct, deviceId, cardAttempts().filter { it.day == day }, paired)
+        val f = CardAttemptFact(
+            uid, deviceId, factsEpoch, ++factSeq, cardId, cardId.substringBefore(':'), day * 86_400_000L + factSeq,
+            day, "UTC", correct, reward.paidMs,
+        )
+        facts[f.uid] = f
+        if (reward.paidMs > 0L) addOp(OpKind.CARD_REWARD, reward.paidMs, key = CardsMath.rewardKey(uid), sourceId = cardId)
+        return reward
+    }
+
     /** Видимые приёмы: без удалённых (удаление могло прийти раньше приёма). */
     fun visibleMeals(): List<MealFact> {
         val deleted = facts.values.filterIsInstance<MealDeleteFact>().mapTo(HashSet()) { it.mealUid }
@@ -141,8 +169,8 @@ class MemorySyncStore(
     fun restoreFrom(backup: MemorySyncStore) {
         val current = ops.values.toList()
         val currentMoves = facts.values.filterIsInstance<LimitMoveFact>()
-        // Приёмы пищи и удаления текущей базы переносятся в восстановленную (как в Backup.swap).
-        val currentMeals = facts.values.filter { it is MealFact || it is MealDeleteFact }
+        // Приёмы пищи, удаления и ответы на карточки текущей базы переносятся в восстановленную (как в Backup.swap).
+        val currentMeals = facts.values.filter { it is MealFact || it is MealDeleteFact || it is CardAttemptFact }
         ops.clear()
         ops.putAll(backup.ops)
         rev = maxOf(rev, backup.rev)

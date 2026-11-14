@@ -1,5 +1,6 @@
 package com.nextlevellife.app.sync
 
+import com.nextlevellife.app.data.CardsMath
 import com.nextlevellife.app.data.LedgerMath
 import com.nextlevellife.app.data.NutritionMath
 import com.nextlevellife.app.data.OpKind
@@ -117,6 +118,12 @@ object SyncRules {
             (f.note?.length ?: 0) <= NutritionMath.MAX_NOTE_CHARS
         is MealDeleteFact -> (f.author == me || f.author == peer) && !(f.author == me && f.epoch == myFactsEpoch) &&
             NutritionMath.isSafeUid(f.uid) && NutritionMath.isSafeUid(f.mealUid)
+        // Ответы на карточки — как приёмы пищи (только этой пары, свои — только прежних поколений), плюс проверка
+        // оплаты: не больше одной награды за попытку и только за верный ответ. Получатель по ним не начисляет.
+        is CardAttemptFact -> (f.author == me || f.author == peer) && !(f.author == me && f.epoch == myFactsEpoch) &&
+            NutritionMath.isSafeUid(f.uid) && CardsMath.isValidCardId(f.cardId) && f.deck.length in 1..16 &&
+            f.utcMs > 0L && TrustedClockMath.isValidZoneId(f.zoneId) &&
+            f.paidMs in 0L..CardsMath.REWARD_MS && (f.firstCorrect || f.paidMs == 0L)
     }
 
     /** Понятная причина отказа, когда версии обмена у телефонов разные. */

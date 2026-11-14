@@ -121,7 +121,7 @@ class NutritionMathTest {
 
     @Test
     fun migration9AddsMealTables() {
-        assertEquals(9, Diary.SCHEMA_VERSION)
+        assertTrue(Diary.SCHEMA_VERSION >= 9)
         val sql = Diary.MIGRATIONS[8].joinToString("\n")
         for (part in listOf(
             "CREATE TABLE meals", "uid TEXT PRIMARY KEY NOT NULL", "author TEXT NOT NULL", "epoch TEXT NOT NULL",

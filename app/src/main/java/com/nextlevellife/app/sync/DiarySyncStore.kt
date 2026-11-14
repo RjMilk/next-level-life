@@ -5,6 +5,7 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.util.Log
 import com.nextlevellife.app.block.SpendBridge
+import com.nextlevellife.app.data.Cards
 import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.Nutrition
@@ -59,7 +60,7 @@ class DiarySyncStore : SyncStore {
             "SELECT author, epoch, MAX(aseq) FROM (" +
                 "SELECT author, epoch, aseq FROM sets UNION ALL SELECT author, epoch, aseq FROM complex_runs " +
                 "UNION ALL SELECT author, epoch, aseq FROM limit_moves UNION ALL SELECT author, epoch, aseq FROM meals " +
-                "UNION ALL SELECT author, epoch, aseq FROM meal_deletes) " +
+                "UNION ALL SELECT author, epoch, aseq FROM meal_deletes UNION ALL SELECT author, epoch, aseq FROM card_attempts) " +
                 "WHERE author IS NOT NULL AND epoch IS NOT NULL AND aseq IS NOT NULL GROUP BY author, epoch",
         ) { LogCursor(LogCursor.FACTS, it.getString(0), it.getString(1), it.getLong(2)) }
         val stored = Diary.query("SELECT log, author, epoch, pos FROM sync_cursors WHERE log = ?", LogCursor.FACTS) {
@@ -130,7 +131,18 @@ class DiarySyncStore : SyncStore {
                 "WHERE author = ? AND epoch = ? AND aseq > ? ORDER BY aseq LIMIT $limit",
             *args,
         ) { MealDeleteFact(it.getString(0), it.getString(1), it.getString(2), it.getLong(3), it.getString(4), it.getLong(5), it.getLong(6)) }
-        (runs + sets + moves + meals + mealDeletes).sortedBy { it.aseq }.take(limit)
+        val cardAttempts = Diary.query(
+            "SELECT uid, author, epoch, aseq, card_id, deck, utc_ms, accounting_day, zone_id, first_correct, paid_ms " +
+                "FROM card_attempts WHERE author = ? AND epoch = ? AND aseq > ? ORDER BY aseq LIMIT $limit",
+            *args,
+        ) {
+            CardAttemptFact(
+                it.getString(0), it.getString(1), it.getString(2), it.getLong(3), cardId = it.getString(4),
+                deck = it.getString(5), utcMs = it.getLong(6), day = it.getLong(7), zoneId = it.getString(8),
+                firstCorrect = it.getInt(9) != 0, paidMs = it.getLong(10),
+            )
+        }
+        (runs + sets + moves + meals + mealDeletes + cardAttempts).sortedBy { it.aseq }.take(limit)
     }
 
     override fun applyOps(peerId: String, epoch: String, reset: Boolean, rows: List<OpRecord>): Long {
@@ -196,7 +208,8 @@ class DiarySyncStore : SyncStore {
                     Log.w(TAG, "Отклонён факт ${f.uid} автора ${f.author}")
                     continue
                 }
-                // Приёмы пищи на характеристики и серию не влияют: их сутки не пересчитываются.
+                // Приёмы пищи на характеристики и серию не влияют: их сутки не пересчитываются. Ответы на карточки
+                // влияют на «Знание»: их сутки пересчитываются.
                 if (insertFact(db, f) && f !is MealFact && f !is MealDeleteFact) days += f.day
             }
             for ((k, pos) in maxByGroup) {
@@ -257,6 +270,9 @@ class DiarySyncStore : SyncStore {
                 db, f.uid, f.author, f.epoch, f.aseq, f.capturedUtcMs, f.day, f.zoneId, f.hasPhoto, f.note,
             )
             is MealDeleteFact -> Nutrition.insertDeleteCopy(db, f.uid, f.mealUid, f.author, f.epoch, f.aseq, f.day, f.utcMs)
+            is CardAttemptFact -> Cards.insertAttemptCopy(
+                db, f.uid, f.author, f.epoch, f.aseq, f.cardId, f.deck, f.utcMs, f.day, f.zoneId, f.firstCorrect, f.paidMs,
+            )
         }
     }
 

@@ -473,14 +473,15 @@ object Diary {
     ) { it.toRun() }
 
     /**
-     * Самый ранний день с данными для характеристик: подход, комплекс, день активности или ночь
-     * (по дню пробуждения). null — данных нет.
+     * Самый ранний день с данными для характеристик: подход, комплекс, день активности, ночь
+     * (по дню пробуждения) или ответ на карточку. null — данных нет.
      */
     @Synchronized
     fun firstDataDay(): Long? = query(
         "SELECT MIN(d) FROM (" +
             "SELECT MIN(day) AS d FROM sets UNION ALL SELECT MIN(day) FROM complex_runs " +
-            "UNION ALL SELECT MIN(day) FROM activity_days UNION ALL SELECT MIN(wake_day) FROM sleep_nights)",
+            "UNION ALL SELECT MIN(day) FROM activity_days UNION ALL SELECT MIN(wake_day) FROM sleep_nights " +
+            "UNION ALL SELECT MIN(accounting_day) FROM card_attempts)",
     ) { if (it.isNull(0)) null else it.getLong(0) }.firstOrNull()
 
     /** Служебные значения meta, ключ которых начинается с [prefix] (ключ → значение). */
@@ -1242,6 +1243,28 @@ object Diary {
             )""",
             "CREATE INDEX idx_meal_deletes_meal ON meal_deletes(meal_uid)",
             "CREATE INDEX idx_meal_deletes_author ON meal_deletes(author, epoch, aseq)",
+        ),
+        // 9 → 10: карточки. card_attempts — первые ответы на карточки (факты: author, epoch, aseq из общего счётчика
+        // facts_seq, uid). card_id — стабильный id карточки (`en:apple`, `mul:7x8`), deck — колода; first_correct —
+        // первый ответ в сессии верный; paid_ms — сколько начислено за попытку на телефоне-авторе (0 — без оплаты).
+        // Расписание повторений здесь не хранится: оно выводится из истории попыток ([CardsMath.schedule]).
+        listOf(
+            """CREATE TABLE card_attempts (
+                uid TEXT PRIMARY KEY NOT NULL,
+                author TEXT NOT NULL,
+                epoch TEXT NOT NULL,
+                aseq INTEGER NOT NULL,
+                card_id TEXT NOT NULL,
+                deck TEXT NOT NULL,
+                utc_ms INTEGER NOT NULL,
+                accounting_day INTEGER NOT NULL,
+                zone_id TEXT NOT NULL,
+                first_correct INTEGER NOT NULL,
+                paid_ms INTEGER NOT NULL DEFAULT 0
+            )""",
+            "CREATE INDEX idx_card_attempts_day ON card_attempts(accounting_day, card_id)",
+            "CREATE INDEX idx_card_attempts_card ON card_attempts(card_id, utc_ms)",
+            "CREATE INDEX idx_card_attempts_author ON card_attempts(author, epoch, aseq)",
         ),
     )
 }
