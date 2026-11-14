@@ -97,6 +97,8 @@ fun HomeScreen(
     onStatInfo: (String) -> Unit = {},
     /** Открыть «Питание». */
     onNutrition: () -> Unit = {},
+    /** Открыть «Карточки». */
+    onCards: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val version by Store.version.collectAsState()
@@ -214,6 +216,7 @@ fun HomeScreen(
                 SaitamaCard(onClick = { onComplex(Saitama.ID) })
                 RoutineCards(onOpen = onComplex, showHeader = true)
             },
+            cards = { CardsHomeCard(onOpen = onCards) },
         )
     }
 
@@ -583,9 +586,12 @@ private fun EarnSection(
     onComplex: (String) -> Unit,
     complexesSummary: String = "Минотавр, Синди",
     extraComplexes: @Composable () -> Unit = {},
+    /** Карточка «Карточки» — первой, до групп упражнений: она одна и открывает свой экран. */
+    cards: @Composable () -> Unit = {},
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Заработать минуты", style = MaterialTheme.typography.titleMedium)
+        cards()
         ExpandableCard(
             key = "home_complexes",
             title = "Комплексы",
