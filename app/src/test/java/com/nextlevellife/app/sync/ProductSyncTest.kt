@@ -324,7 +324,7 @@ class ProductSyncTest {
 
     @Test
     fun codecRoundTripAndVersion() {
-        assertEquals(4, SyncCodec.PROTOCOL_VERSION)
+        assertTrue(SyncCodec.PROTOCOL_VERSION >= 4)
         val m = SyncMessage.Facts(
             listOf(
                 ProductVersionFact("v1", "a", "e", 1, "p1", 1_700_000_000_000, 19_676, "Europe/Moscow", "Творог 5 %", "96385074", 121, 160, 50, 30, 180),

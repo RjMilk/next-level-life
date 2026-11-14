@@ -49,7 +49,10 @@ sealed interface FactRecord {
     val day: Long
 }
 
-/** Подход. [runUid] — uid прохождения комплекса (null — отдельный подход). */
+/**
+ * Подход. [runUid] — uid прохождения комплекса (null — отдельный подход).
+ * [loadG] — заявленный вес подхода зала в граммах (протокол 5); у остальных упражнений null.
+ */
 data class SetFact(
     override val uid: String,
     override val author: String,
@@ -67,6 +70,7 @@ data class SetFact(
     val runUid: String?,
     val measurement: String,
     val heldMs: Long,
+    val loadG: Int? = null,
 ) : FactRecord
 
 /** Прохождение комплекса. */
@@ -284,9 +288,9 @@ object SyncCodec {
     /**
      * 2 — приёмы пищи и их удаления ([MealFact], [MealDeleteFact]); 3 — ответы на карточки ([CardAttemptFact]);
      * 4 — свои продукты и позиции приёмов ([ProductVersionFact], [ProductDeleteFact], [MealEntryFact],
-     * [MealEntryDeleteFact]).
+     * [MealEntryDeleteFact]); 5 — вес подхода зала ([SetFact.loadG]).
      */
-    const val PROTOCOL_VERSION = 4
+    const val PROTOCOL_VERSION = 5
     private const val MAGIC = 0x4E // 'N'
 
     private const val T_HELLO = 1
@@ -431,7 +435,7 @@ object SyncCodec {
                 o.writeByte(F_SET); head(o, f)
                 o.writeLong(f.timeMs); o.writeLong(f.day); o.str(f.exerciseId); o.str(f.exerciseName); o.optInt(f.weightKg)
                 o.writeInt(f.reps); o.writeLong(f.durationMs); o.writeLong(f.earnedMs); o.writeLong(f.xp); o.optStr(f.runUid)
-                o.str(f.measurement); o.writeLong(f.heldMs)
+                o.str(f.measurement); o.writeLong(f.heldMs); o.optInt(f.loadG)
             }
             is RunFact -> {
                 o.writeByte(F_RUN); head(o, f)
@@ -492,6 +496,7 @@ object SyncCodec {
                 uid, author, epoch, aseq, timeMs = i.readLong(), day = i.readLong(), exerciseId = i.str(),
                 exerciseName = i.str(), weightKg = i.optInt(), reps = i.readInt(), durationMs = i.readLong(),
                 earnedMs = i.readLong(), xp = i.readLong(), runUid = i.optStr(), measurement = i.str(), heldMs = i.readLong(),
+                loadG = i.optInt(),
             )
             F_RUN -> RunFact(
                 uid, author, epoch, aseq, timeMs = i.readLong(), day = i.readLong(), complexId = i.str(),

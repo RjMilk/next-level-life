@@ -109,11 +109,13 @@ class MemorySyncStore(
         ops[last.id] = last.copy(deltaMs = last.deltaMs - ms, rev = ++rev)
     }
 
-    fun addSet(reps: Int): SetFact {
+    /** Свой подход (как Workouts.recordSet); [loadG] — вес подхода зала. */
+    fun addSet(reps: Int, exerciseId: String = "pushups", exerciseName: String = "Отжимания", loadG: Int? = null): SetFact {
         val f = SetFact(
             uid = UUID.randomUUID().toString(), author = deviceId, epoch = factsEpoch, aseq = ++factSeq,
-            timeMs = day * 86_400_000L, day = day, exerciseId = "pushups", exerciseName = "Отжимания", weightKg = null,
+            timeMs = day * 86_400_000L, day = day, exerciseId = exerciseId, exerciseName = exerciseName, weightKg = null,
             reps = reps, durationMs = 0L, earnedMs = 0L, xp = 0L, runUid = null, measurement = "REPS", heldMs = 0L,
+            loadG = loadG,
         )
         facts[f.uid] = f
         return f

@@ -1,6 +1,7 @@
 package com.nextlevellife.app.sync
 
 import com.nextlevellife.app.data.CardsMath
+import com.nextlevellife.app.data.GymMath
 import com.nextlevellife.app.data.LedgerMath
 import com.nextlevellife.app.data.NutritionMath
 import com.nextlevellife.app.data.OpKind
@@ -114,9 +115,10 @@ object SyncRules {
         // переносятся локально, а подделка «от моего имени» с отрицательной долей обнулила бы мои отданные.
         is LimitMoveFact -> f.author == peer && f.toDevice == me && f.author != f.toDevice && f.ms > 0L
         // Подходы и прохождения: без отрицательных чисел; свои — только прежних поколений (возврат потерянных
-        // при восстановлении; наград импорт не начисляет).
+        // при восстановлении; наград импорт не начисляет). Вес зала — null или 0..400 кг, кратно 0,5 кг, и не у
+        // известных упражнений «не зала» ([GymMath.acceptsLoad]).
         is SetFact -> f.reps >= 0 && f.earnedMs >= 0L && f.xp >= 0L && f.heldMs >= 0L && f.durationMs >= 0L &&
-            !(f.author == me && f.epoch == myFactsEpoch)
+            !(f.author == me && f.epoch == myFactsEpoch) && GymMath.acceptsLoad(f.exerciseId, f.loadG)
         is RunFact -> f.totalReps >= 0 && f.earnedMs >= 0L && f.xp >= 0L && f.durationMs >= 0L &&
             (f.rounds ?: 0) >= 0 && (f.extraReps ?: 0) >= 0 && !(f.author == me && f.epoch == myFactsEpoch)
         // Приёмы пищи и удаления: только этой пары (автор — я или второй телефон), свои — только прежних поколений.

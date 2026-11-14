@@ -24,8 +24,11 @@ data class WorkoutResult(
     val strengthToday: Int? = null,
 )
 
-/** Один подход для [Workouts.recordSets]. Вес учитывается только для гиревых упражнений. */
-data class SetInput(val exercise: Exercise, val weightKg: Int, val reps: Int, val durationMs: Long = 0L)
+/**
+ * Один подход для [Workouts.recordSets]. Вес гири учитывается только для гиревых упражнений.
+ * [loadG] — заявленный вес подхода зала (граммы): пишется в подход, на награду не влияет; у остальных — игнорируется.
+ */
+data class SetInput(val exercise: Exercise, val weightKg: Int, val reps: Int, val durationMs: Long = 0L, val loadG: Int? = null)
 
 /**
  * Единая точка записи результатов: награда по ценам, запись в [Diary] и операция в [Ledger]
@@ -44,8 +47,9 @@ object Workouts {
 
     /** Записать один подход: награда по ценам, баланс и опыт, серия, дневник. */
     @Synchronized
-    fun recordSet(exercise: Exercise, weightKg: Int, reps: Int, durationMs: Long, sessionId: String? = null): WorkoutResult =
-        recordSets(listOf(SetInput(exercise, weightKg, reps, durationMs)), sessionId)
+    fun recordSet(
+        exercise: Exercise, weightKg: Int, reps: Int, durationMs: Long, sessionId: String? = null, loadG: Int? = null,
+    ): WorkoutResult = recordSets(listOf(SetInput(exercise, weightKg, reps, durationMs, loadG)), sessionId)
 
     /**
      * Несколько подходов (например, незавершённый комплекс) по обычным ценам: все подходы
@@ -63,6 +67,7 @@ object Workouts {
                 durationMs = s.durationMs.coerceAtLeast(0L),
                 earnedMs = earned,
                 xp = 0L, // опыт за минуты не начисляется с 0.6
+                loadG = WorkoutMath.setLoad(s.exercise, s.loadG),
             )
         }
         if (newSets.isEmpty()) return NOTHING
@@ -356,6 +361,13 @@ internal object WorkoutMath {
     const val CINDY_TOLERANCE_MS = 5_000L
 
     fun cindyCompleted(durationMs: Long): Boolean = durationMs >= Cindy.DURATION_MS - CINDY_TOLERANCE_MS
+
+    /**
+     * Вес подхода для дневника: только у упражнений зала, в пределах и на шаге их способа учёта ([GymMath.normalize]);
+     * у остальных — null. На награду не влияет.
+     */
+    fun setLoad(exercise: Exercise, loadG: Int?): Int? =
+        exercise.gym?.let { spec -> loadG?.let { GymMath.normalize(spec.loadMode, it) } }
 
     /**
      * Сколько удержания засчитать в дневник и награду: целые секунды, не больше полного времени

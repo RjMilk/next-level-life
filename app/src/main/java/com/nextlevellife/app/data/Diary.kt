@@ -32,6 +32,7 @@ enum class Measurement {
  * Один подход одного упражнения. [runId] — прохождение комплекса, в которое входит подход.
  * [measurement] — единицы: у [Measurement.HOLD] (планка) [reps] = 0, [heldMs] — засчитанное
  * время удержания, [durationMs] — полное время подхода. У повторений [heldMs] = 0.
+ * [loadG] — заявленный вес подхода зала в граммах ([Gym]); у остальных упражнений null.
  */
 data class SetEntry(
     val id: Long, val timeMs: Long, val day: Long,
@@ -39,6 +40,7 @@ data class SetEntry(
     val reps: Int, val durationMs: Long, val earnedMs: Long, val xp: Long, val runId: Long?,
     val measurement: Measurement = Measurement.REPS,
     val heldMs: Long = 0L,
+    val loadG: Int? = null,
 )
 
 /** Одно прохождение комплекса (Минотавр, Синди). */
@@ -138,12 +140,14 @@ data class BlockEvent(
 /**
  * Подход, который ещё не записан: время, день и прохождение проставляет [Diary].
  * Удержание — [measurement] = HOLD, [reps] = 0, [heldMs] — засчитанное время.
+ * [loadG] — заявленный вес подхода зала (граммы); у остальных упражнений null.
  */
 data class NewSet(
     val exerciseId: String, val exerciseName: String, val weightKg: Int?,
     val reps: Int, val durationMs: Long, val earnedMs: Long, val xp: Long,
     val measurement: Measurement = Measurement.REPS,
     val heldMs: Long = 0L,
+    val loadG: Int? = null,
 )
 
 /**
@@ -699,6 +703,22 @@ object Diary {
     fun exerciseRecords(): List<ExerciseRecord> =
         DiaryMath.records(query("SELECT $SET_COLS FROM sets ORDER BY time_ms, id") { it.toSetEntry() })
 
+    /**
+     * Подходы-повторения упражнений зала [exerciseIds] для истории весов ([GymMath]): по упражнению, по времени.
+     * Подходов зала немного — читаются все.
+     */
+    @Synchronized
+    fun gymSets(exerciseIds: Collection<String>): Map<String, List<GymSet>> {
+        if (exerciseIds.isEmpty()) return emptyMap()
+        val marks = exerciseIds.joinToString(",") { "?" }
+        val rows = query(
+            "SELECT exercise_id, day, time_ms, reps, load_g FROM sets " +
+                "WHERE measurement_type = 'REPS' AND exercise_id IN ($marks) ORDER BY time_ms, id",
+            *exerciseIds.toTypedArray(),
+        ) { it.getString(0) to GymSet(day = it.getLong(1), timeMs = it.getLong(2), reps = it.getInt(3), loadG = it.intOrNull(4)) }
+        return rows.groupBy({ it.first }, { it.second })
+    }
+
     // ---------- Запись (только для Workouts и переноса старой истории) ----------
 
     /**
@@ -837,6 +857,7 @@ object Diary {
             put("run_id", runId)
             put("measurement_type", set.measurement.name)
             put("held_ms", set.heldMs)
+            if (set.loadG != null) put("load_g", set.loadG) else putNull("load_g")
         }
         return db.insertOrThrow("sets", null, values)
     }
@@ -853,7 +874,7 @@ object Diary {
 
     private const val SET_COLS =
         "id, time_ms, day, exercise_id, exercise_name, weight_kg, reps, duration_ms, earned_ms, xp, run_id, " +
-            "measurement_type, held_ms"
+            "measurement_type, held_ms, load_g"
     private const val RUN_COLS =
         "id, time_ms, day, complex_id, weight_kg, duration_ms, rounds, extra_reps, total_reps, earned_ms, xp, completed"
 
@@ -864,6 +885,7 @@ object Diary {
         runId = longOrNull(10),
         measurement = Measurement.parse(getString(11)),
         heldMs = getLong(12),
+        loadG = intOrNull(13),
     )
 
     private const val ACTIVITY_COLS =
@@ -1331,6 +1353,12 @@ object Diary {
             )""",
             "CREATE INDEX idx_meal_entry_deletes_entry ON meal_entry_deletes(entry_uid)",
             "CREATE INDEX idx_meal_entry_deletes_author ON meal_entry_deletes(author, epoch, aseq)",
+        ),
+        // 11 → 12: зал. load_g — заявленный вес подхода в граммах (общий вес штанги, вес гантели, стек или
+        // противовес — по способу учёта упражнения, [LoadMode]); у остальных упражнений и старых подходов — NULL.
+        // Только новая колонка: прежние данные шаг не трогает.
+        listOf(
+            "ALTER TABLE sets ADD COLUMN load_g INTEGER",
         ),
     )
 }

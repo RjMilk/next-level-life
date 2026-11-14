@@ -103,7 +103,8 @@ class DiarySyncStore : SyncStore {
         }
         val sets = Diary.query(
             "SELECT uid, author, epoch, aseq, time_ms, day, exercise_id, exercise_name, weight_kg, reps, duration_ms, " +
-                "earned_ms, xp, run_uid, measurement_type, held_ms FROM sets WHERE author = ? AND epoch = ? AND aseq > ? ORDER BY aseq LIMIT $limit",
+                "earned_ms, xp, run_uid, measurement_type, held_ms, load_g FROM sets " +
+                "WHERE author = ? AND epoch = ? AND aseq > ? ORDER BY aseq LIMIT $limit",
             *args,
         ) {
             SetFact(
@@ -111,6 +112,7 @@ class DiarySyncStore : SyncStore {
                 exerciseId = it.getString(6), exerciseName = it.getString(7), weightKg = it.intOrNull(8), reps = it.getInt(9),
                 durationMs = it.getLong(10), earnedMs = it.getLong(11), xp = it.getLong(12),
                 runUid = if (it.isNull(13)) null else it.getString(13), measurement = it.getString(14), heldMs = it.getLong(15),
+                loadG = it.intOrNull(16),
             )
         }
         val moves = Diary.query(
@@ -308,6 +310,7 @@ class DiarySyncStore : SyncStore {
                     put("weight_kg", f.weightKg); put("reps", f.reps); put("duration_ms", f.durationMs); put("earned_ms", f.earnedMs)
                     put("xp", f.xp); put("run_id", runId); put("run_uid", f.runUid); put("measurement_type", f.measurement)
                     put("held_ms", f.heldMs)
+                    if (f.loadG != null) put("load_g", f.loadG) else putNull("load_g")
                 })
                 true
             }
