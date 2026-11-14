@@ -12,6 +12,7 @@ import com.nextlevellife.app.pose.PoseSide
 enum class RoutineKind(val title: String) {
     LFK("ЛФК"),
     YOGA("Йога"),
+    WARMUP("Разминка"),
 }
 
 /** Шаг программы: упражнение (удержание или повторения) или отдых/переход без оплаты. */
@@ -111,7 +112,7 @@ data class Routine(
      * один блок), у йоги — поз (каждая сторона — отдельная поза, как в каталоге).
      */
     val blocks: Int
-        get() = if (kind == RoutineKind.LFK) exercises.map { it.exerciseId }.distinct().size else exercises.size
+        get() = if (kind != RoutineKind.YOGA) exercises.map { it.exerciseId }.distinct().size else exercises.size
 
     /** Шаг [i] и следующий упражнение после него (для «Следующее: …»). */
     fun nextExercise(i: Int): RoutineExercise? = steps.drop(i + 1).filterIsInstance<RoutineExercise>().firstOrNull()
@@ -462,9 +463,9 @@ object Routines {
      */
     val gymWarmup = Routine(
         id = "gym_warmup",
-        title = "Зал · общая подвижность",
-        subtitle = "Разминка перед залом: плечи, таз и колени, затем движения на коврике",
-        kind = RoutineKind.LFK,
+        title = "Разминка перед залом",
+        subtitle = "Плечи, таз и колени, затем движения на коврике",
+        kind = RoutineKind.WARMUP,
         declaredMinutes = 9,
         steps = listOf(
             RestStep(20, "Подготовка", "Телефон на высоте 50–90 см, в 2,5–3 м. Встань лицом к нему; всё тело и поднятые руки должны помещаться в кадре."),

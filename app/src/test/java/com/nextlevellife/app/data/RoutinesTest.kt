@@ -25,7 +25,7 @@ class RoutinesTest {
                 assertFalse(e.exerciseId, e.exerciseId in foreign)
                 assertFalse("id упражнения совпадает с id программы: ${e.exerciseId}", e.exerciseId in routineIds)
                 assertTrue(e.exerciseId, Routines.isRoutineExercise(e.exerciseId))
-                val prefix = if (r.kind == RoutineKind.LFK) Routines.LFK_PREFIX else Routines.YOGA_PREFIX
+                val prefix = if (r.kind != RoutineKind.YOGA) Routines.LFK_PREFIX else Routines.YOGA_PREFIX
                 assertTrue(e.exerciseId, e.exerciseId.startsWith(prefix))
             }
         }

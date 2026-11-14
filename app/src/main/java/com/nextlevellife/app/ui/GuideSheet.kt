@@ -78,7 +78,7 @@ fun GuideSheet(
         return
     }
     val name = remember(exerciseId) {
-        Exercises.all.firstOrNull { it.id == exerciseId }?.name ?: guide.title ?: ""
+        Exercises.byIdOrNull(exerciseId)?.name ?: guide.title ?: ""
     }
     val widthClass = currentWidthClass()
     val wide = widthClass == WidthClass.EXPANDED

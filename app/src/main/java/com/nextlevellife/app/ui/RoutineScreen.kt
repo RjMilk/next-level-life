@@ -125,7 +125,7 @@ internal object RoutineText {
     /** «9 мин · 8 упражнений», «10 мин · 8 поз». */
     fun summary(r: Routine): String {
         val n = r.blocks
-        val what = if (r.kind == RoutineKind.LFK) pluralRu(n, "упражнение", "упражнения", "упражнений") else pluralRu(n, "поза", "позы", "поз")
+        val what = if (r.kind != RoutineKind.YOGA) pluralRu(n, "упражнение", "упражнения", "упражнений") else pluralRu(n, "поза", "позы", "поз")
         return "${r.kind.title} · ${r.declaredMinutes} мин · $n $what"
     }
 
@@ -599,7 +599,7 @@ private fun RoutinePrep(routine: Routine, onBack: () -> Unit, onStart: () -> Uni
                 Text(routine.subtitle, style = MaterialTheme.typography.bodyLarge)
                 Card(colors = CardDefaults.cardColors(containerColor = RoutineCardColor)) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        if (routine.kind == RoutineKind.LFK) {
+                        if (routine.kind != RoutineKind.YOGA) {
                             Text("Безопасность", style = MaterialTheme.typography.titleMedium, color = Warn)
                             Text(Routines.LFK_WARNING, style = MaterialTheme.typography.bodyMedium)
                             Text(Routines.NOT_MEDICAL, style = MaterialTheme.typography.bodySmall, color = muted)
