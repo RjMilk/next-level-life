@@ -136,6 +136,12 @@ object SyncTransport : SyncLink {
                 // Сервер в прошлый раз не поднялся (не было сети или разрешения) — ещё попытка.
                 val app = appContext
                 if (app != null && serverSocket == null && serverThread?.isAlive != true) launchServer(app)
+                // Сервер поднят, но объявиться в сети не вышло (на Android 17 — не было разрешения «Устройства в
+                // локальной сети»; экран сопряжения запрашивает его и снова зовёт start) — ещё попытка.
+                else if (app != null && serverSocket != null && registration == null) {
+                    val run = runId
+                    handler?.post { if (runId == run) registerNsd(app) }
+                }
                 return
             }
             val app = context.applicationContext
