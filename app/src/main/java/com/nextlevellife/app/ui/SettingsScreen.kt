@@ -457,6 +457,13 @@ private fun StepsSection(version: Int) {
     val day by produceState<ActivityDay?>(null, version, today) {
         value = withContext(Dispatchers.IO) { runCatching { Diary.activityDay(today) }.getOrNull() }
     }
+    // В паре Health Connect читает только телефон-источник. null — ещё не известно (чтение базы — не на главном потоке).
+    val readsHere by produceState<Boolean?>(null, version) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { com.nextlevellife.app.data.SharedSettings.isActivitySource() }.getOrDefault(true)
+        }
+    }
+    val exchange by SyncEngine.state.collectAsState()
     var denied by rememberSaveable { mutableStateOf(false) }
     var showDiagnostics by rememberSaveable { mutableStateOf(false) }
     val connect = rememberHealthConnectAction(onDenied = { denied = true })
@@ -520,37 +527,33 @@ private fun StepsSection(version: Int) {
             SettingsText(ActivityMath.sourcesLine(d?.sources.orEmpty()))
             SettingsText(ActivityMath.updatedLine(sync.lastSyncMs, System.currentTimeMillis(), ZoneId.systemDefault()))
             sync.error?.let { SettingsText(it, color = Bad) }
-            // В паре Health Connect читает только телефон-источник; здесь «Обновить» забирает его шаги обменом.
-            val readsHere = remember(version) {
-                runCatching { com.nextlevellife.app.data.SharedSettings.isActivitySource() }.getOrDefault(true)
-            }
-            if (!readsHere) {
-                SettingsText(
-                    "Шаги и бег сейчас читает второй телефон, сюда они приходят при обмене. " +
-                        "Если часы подключены к этому телефону — выбери его источником выше",
-                )
-            }
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+            if (readsHere != false) Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
                 OutlinedButton(
-                    onClick = {
-                        if (readsHere) ActivitySync.request(appContext, force = true)
-                        else SyncEngine.requestSync("шаги", force = true)
-                    },
-                    enabled = !sync.running,
+                    onClick = { ActivitySync.request(appContext, force = true) },
+                    enabled = !sync.running && readsHere == true,
                     shape = ButtonShape,
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 48.dp),
-                ) {
-                    Text(
-                        when {
-                            sync.running -> "Обновляю…"
-                            readsHere -> "Обновить"
-                            else -> "Получить шаги со второго телефона"
-                        },
-                    )
-                }
+                ) { Text(if (sync.running) "Обновляю…" else "Обновить") }
                 if (sync.running) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 4.dp))
+            }
+        }
+        // Телефон не читает Health Connect (в паре источник — второй): шаги приходят обменом — показываем всегда,
+        // даже без своего Health Connect и без сегодняшних данных.
+        if (readsHere == false) {
+            SettingsText(
+                "Шаги и бег сейчас читает второй телефон, сюда они приходят при обмене. " +
+                    "Если часы подключены к этому телефону — выбери его источником выше",
+            )
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                OutlinedButton(
+                    onClick = { SyncEngine.requestSync("шаги", force = true) },
+                    enabled = !exchange.running,
+                    shape = ButtonShape,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                ) { Text(if (exchange.running) "Обмен…" else "Получить шаги со второго телефона") }
+                if (exchange.running) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 4.dp))
             }
         }
         SettingsText(
