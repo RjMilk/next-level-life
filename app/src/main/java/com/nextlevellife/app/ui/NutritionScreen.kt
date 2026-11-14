@@ -285,7 +285,26 @@ fun NutritionScreen(onBack: () -> Unit) {
                         }
                         // Итога нет (процесс перезапущен до записи): снимок ещё не перенесён — вернуться к подтверждению.
                         MealPhotos.pendingFile(context, uid).isFile -> mode = MODE_CONFIRM
-                        else -> { pendingUid = null; note = ""; mode = MODE_LIST }
+                        // Снимок уже перенесён, а итога нет (процесс оборвался между переносом и записью): дописать
+                        // приём по тому же uid — запись идемпотентна (второй раз ничего не пишет).
+                        else -> {
+                            val n = note
+                            val restored = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val hasPhoto = MealPhotos.exists(context, NutritionMath.photoNameFor(uid))
+                                    if (hasPhoto) {
+                                        Nutrition.addMeal(uid, TimeSnapshot(pendingUtc, ZoneId.of(pendingZone)), true, n)
+                                    }
+                                    hasPhoto
+                                }.onFailure { Log.e(TAG, "Не удалось дописать приём", it) }.getOrDefault(false)
+                            }
+                            if (restored) {
+                                day = runCatching { TimeSnapshot(pendingUtc, ZoneId.of(pendingZone)).day }.getOrDefault(day)
+                            }
+                            pendingUid = null
+                            note = ""
+                            mode = MODE_LIST
+                        }
                     }
                 }
                 Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
