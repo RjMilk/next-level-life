@@ -735,7 +735,8 @@ private fun StepHeader(s: RoutineRunState, onShowGuide: (String) -> Unit, compac
                 modifier = Modifier.weight(1f),
             )
             val guide = (step as? RoutineExercise)?.guideId ?: routine.nextExercise(s.stepIndex)?.guideId
-            if (guide != null) {
+            // ▶ — только если у шага есть показ техники.
+            if (guide != null && com.nextlevellife.app.guide.Guides.of(guide) != null) {
                 TextButton(onClick = { onShowGuide(guide) }) { Text("▶ Как выполнять") }
             }
         }

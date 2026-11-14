@@ -77,7 +77,9 @@ fun GuideSheet(
         LaunchedEffect(exerciseId) { onStart() }
         return
     }
-    val name = remember(exerciseId) { Exercises.all.firstOrNull { it.id == exerciseId }?.name ?: "" }
+    val name = remember(exerciseId) {
+        Exercises.all.firstOrNull { it.id == exerciseId }?.name ?: guide.title ?: ""
+    }
     val widthClass = currentWidthClass()
     val wide = widthClass == WidthClass.EXPANDED
     var playing by rememberSaveable(exerciseId) { mutableStateOf(true) }

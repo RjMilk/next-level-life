@@ -68,7 +68,23 @@ data class Bell(val grip: BellGrip, val hang: BellHang = BellHang.GRAVITY)
  * Реквизит в сцене. Предмет на рисунке не значит, что камера его распознаёт у пользователя.
  * [mat] — коврик под фигуркой; [bar] — перекладина на уровне кистей первого кадра (пол тогда не рисуется).
  */
-data class GuideProps(val bell: Bell? = null, val mat: Boolean = false, val bar: Boolean = false)
+data class GuideProps(
+    val bell: Bell? = null,
+    val mat: Boolean = false,
+    val bar: Boolean = false,
+    val chair: Chair? = null,
+)
+
+/**
+ * Стул (вид сбоку): сиденье от [x0] до [x1] на высоте [seatY], ножки до пола, спинка над концом
+ * сиденья — слева ([backLeft]) или справа.
+ */
+data class Chair(val x0: Float, val x1: Float, val seatY: Float, val backLeft: Boolean = true) {
+    companion object {
+        /** Высота спинки над сиденьем. */
+        const val BACK = 0.2f
+    }
+}
 
 /** Что подсвечивать акцентным цветом: рабочая часть тела. */
 enum class GuideHighlight {
@@ -109,6 +125,8 @@ data class ExerciseGuide(
     val focus: String,
     val tips: List<String>,
     val mistakes: List<String>,
+    /** Заголовок карточки, если [exerciseId] — не упражнение из каталога (позы и движения программ). */
+    val title: String? = null,
 ) {
     /** Строка для карточки: «Камера: 2–3 м · сбоку». */
     val cameraLine: String get() = "Камера: $distance · $angle"

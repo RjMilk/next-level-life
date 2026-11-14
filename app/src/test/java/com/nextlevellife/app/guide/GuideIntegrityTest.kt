@@ -22,6 +22,26 @@ class GuideIntegrityTest {
         for (ex in Exercises.all) assertNotNull(ex.id, Guides.of(ex.id))
         assertNull(Guides.of("нет такого"))
         assertEquals("id гидов не повторяются", all.size, all.map { it.exerciseId }.toSet().size)
+        // Встроенные наборы не перекрывают друг друга одинаковыми id (иначе один гид молча заменит другой).
+        val builtIn = listOf(BodyweightGuides, KettlebellGuides, RoutineGuides).flatMap { p -> p.guides.map { it.exerciseId } }
+        assertEquals("повторы id: ${builtIn.groupBy { it }.filter { it.value.size > 1 }.keys}", builtIn.size, builtIn.toSet().size)
+    }
+
+    @Test
+    fun everyRoutineStepHasGuide() {
+        val ids = com.nextlevellife.app.data.Routines.all.flatMap { r -> r.exercises.mapNotNull { it.guideId } }.toSet()
+        assertTrue("в программах нет шагов с гидом", ids.size >= 20)
+        val missing = ids.filter { Guides.of(it) == null }
+        assertTrue("нет гида для $missing", missing.isEmpty())
+        // Расстояние и ракурс гида не противоречат шагу.
+        val conflicts = com.nextlevellife.app.data.Routines.all.flatMap { it.exercises }.mapNotNull { step ->
+            val g = Guides.of(step.guideId ?: return@mapNotNull null)!!
+            val sameAngle = step.camera.lowercase().startsWith(g.angle)
+            if (g.distance != step.distance || !sameAngle) "${step.guideId}: «${step.cameraLine}» ≠ «${g.cameraLine}»" else null
+        }
+        assertTrue(conflicts.joinToString("\n", prefix = "\n"), conflicts.isEmpty())
+        // У поз программ — свой заголовок.
+        for (id in ids) assertTrue(id, !Guides.of(id)!!.title.isNullOrBlank())
     }
 
     @Test

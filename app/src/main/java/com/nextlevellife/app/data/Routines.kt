@@ -201,6 +201,8 @@ object Routines {
             RestStep(12),
             RepsStep(
                 "lfk_glute_bridge", "Мягкий ягодичный мост", "glute_bridge", 8,
+                // Свой показ: id «glute_bridge» занят мостом с гирей (у него гиря и другие подсказки).
+                guideId = "soft_bridge",
                 distance = FLOOR_DIST, camera = FLOOR_SIDE,
                 tips = listOf("Подними таз без прогиба", "Не задерживай дыхание"),
             ),

@@ -21,6 +21,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import com.nextlevellife.app.guide.BellGrip
 import com.nextlevellife.app.guide.BellHang
+import com.nextlevellife.app.guide.Chair
 import com.nextlevellife.app.guide.ExerciseGuide
 import com.nextlevellife.app.guide.GuideHighlight
 import com.nextlevellife.app.guide.GuideJoint
@@ -51,6 +52,7 @@ private val FigureBody = Color(0xFFECEEF2)
 private val FloorColor = Color(0xFFA3A9B6).copy(alpha = 0.35f)
 private val MatColor = Color(0xFF2C3140)
 private val BarColor = Color(0xFFA3A9B6)
+private val ChairColor = Color(0xFF6B7385)
 
 /** Дальняя сторона на виде сбоку — приглушённо, чтобы читалась глубина. */
 private const val FAR_ALPHA = 0.42f
@@ -102,6 +104,17 @@ private fun DrawScope.drawGuide(guide: ExerciseGuide, pose: GuidePose) {
         drawLine(BarColor.copy(alpha = 0.5f), Offset(ox + 0.82f * s, y), Offset(ox + 0.82f * s, 0f), 0.01f * s)
     } else {
         drawLine(FloorColor, Offset(0f, floorY), Offset(size.width, floorY), 0.006f * s, StrokeCap.Round)
+    }
+    props.chair?.let { ch ->
+        val w = 0.014f * s
+        val seat = oy + ch.seatY * s
+        val x0 = ox + ch.x0 * s
+        val x1 = ox + ch.x1 * s
+        val back = if (ch.backLeft) x0 else x1
+        drawLine(ChairColor, Offset(x0, seat), Offset(x1, seat), w, StrokeCap.Round)
+        drawLine(ChairColor, Offset(x0 + w, seat), Offset(x0 + w, floorY), w * 0.8f, StrokeCap.Round)
+        drawLine(ChairColor, Offset(x1 - w, seat), Offset(x1 - w, floorY), w * 0.8f, StrokeCap.Round)
+        drawLine(ChairColor, Offset(back, seat), Offset(back, seat - Chair.BACK * s), w, StrokeCap.Round)
     }
     if (props.mat) {
         val h = 0.014f * s
