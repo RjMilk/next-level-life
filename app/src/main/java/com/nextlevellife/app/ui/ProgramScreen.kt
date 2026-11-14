@@ -54,6 +54,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.nextlevellife.app.data.CustomProgramMath
 import com.nextlevellife.app.data.Program
 import com.nextlevellife.app.data.ProgramMath
 import com.nextlevellife.app.data.ProgramSetResult
@@ -253,11 +254,14 @@ internal class ProgramRunState(val program: Program) {
                     restMs = v[5] as Long
                     count = v[6] as Int
                     liveHeldMs = v[7] as Long
-                    reps = v[8] as IntArray
-                    held = v[9] as LongArray
-                    earned = v[10] as LongArray
-                    durations = v[11] as LongArray
-                    status = v[12] as IntArray
+                    // Под число подходов программы: состав мог измениться (защита; свою программу
+                    // экран восстанавливает по снимку состава, так что обычно размеры совпадают).
+                    val n = program.slots.size
+                    reps = (v[8] as IntArray).copyOf(n)
+                    held = (v[9] as LongArray).copyOf(n)
+                    earned = (v[10] as LongArray).copyOf(n)
+                    durations = (v[11] as LongArray).copyOf(n)
+                    status = (v[12] as IntArray).copyOf(n)
                     strengthGain = v[13] as Int
                     strengthToday = v[14] as Int
                     finished = v[15] as Boolean
@@ -285,10 +289,18 @@ internal class ProgramRunState(val program: Program) {
  * «Пропустить подход» — дальше без отдыха (засчитанное записывается), «Закончить» — итог и прохождение
  * в complex_runs ([Workouts.recordProgram]) без бонуса. Пока открыт гид или идёт отдых, счёт не ведётся.
  * [onEdit] — у своей программы: «Изменить» перед стартом открывает редактор.
+ *
+ * Своя программа может измениться или исчезнуть, пока экран пересоздаётся (правка, восстановление копии),
+ * поэтому при старте её состав запоминается снимком ([CustomProgramMath.encodeOne]) в сохраняемом состоянии,
+ * и начатое прохождение доводится и записывается по снимку, даже если программы в каталоге уже нет.
  */
 @Composable
 fun ProgramScreen(programId: String, onDone: () -> Unit, onEdit: (() -> Unit)? = null) {
-    val program = remember(programId) { Programs.byId(programId) }
+    // Снимок состава своей программы с момента старта ("" — не начата или готовая программа).
+    var snapshot by rememberSaveable(programId) { mutableStateOf("") }
+    val program = remember(programId, snapshot) {
+        snapshot.takeIf { it.isNotEmpty() }?.let { CustomProgramMath.decodeOne(it) } ?: Programs.byId(programId)
+    }
     if (program == null) {
         LaunchedEffect(Unit) { onDone() }
         return
@@ -387,7 +399,9 @@ fun ProgramScreen(programId: String, onDone: () -> Unit, onEdit: (() -> Unit)? =
         if (s.finished) return
         val t = SystemClock.elapsedRealtime()
         // Начатый подход с засчитанной работой не теряется.
-        if (!s.resting && s.status[s.slot] == SET_NONE && (s.count > 0 || s.liveHeldMs > 0L)) closeSet()
+        if (!s.resting && s.slot in program.slots.indices && s.status[s.slot] == SET_NONE && (s.count > 0 || s.liveHeldMs > 0L)) {
+            closeSet()
+        }
         s.finished = true
         s.finishedElapsed = (t - s.startedAt).coerceAtLeast(0L)
         s.confirmQuit = false
@@ -495,9 +509,21 @@ fun ProgramScreen(programId: String, onDone: () -> Unit, onEdit: (() -> Unit)? =
         BackHandler { s.confirmQuit = true }
     }
 
+    // Защита: подход вне состава программы (не должно случаться — своя программа идёт по снимку) —
+    // не падать, а закончить прохождение и записать итог по уже записанным подходам.
+    val slotOk = s.slot in program.slots.indices
+    if (s.started && !slotOk) {
+        LaunchedEffect(Unit) {
+            Log.e(TAG, "Подход ${s.slot} вне программы ${program.id} (${program.slots.size} подходов)")
+            finish()
+        }
+    }
+
     if (!s.started) {
         ProgramPrep(program, weight = s.weight, onWeight = { s.weight = it }, onBack = onDone, onEdit = onEdit, onStart = {
             haptics.tap()
+            // Своя программа: дальше прохождение идёт по этому составу, что бы ни случилось с каталогом.
+            if (CustomProgramMath.isCustomId(program.id)) snapshot = CustomProgramMath.encodeOne(program)
             val t = SystemClock.elapsedRealtime()
             s.slot = 0
             s.startedAt = t
@@ -505,6 +531,8 @@ fun ProgramScreen(programId: String, onDone: () -> Unit, onEdit: (() -> Unit)? =
             now = t
             announce(ProgramText.announceSet(program, 0), 300L)
         })
+    } else if (!slotOk) {
+        Box(Modifier.fillMaxSize())
     } else {
         ProgramRun(
             s = s,
