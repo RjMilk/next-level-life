@@ -41,6 +41,9 @@ object CustomProgramMath {
     /** Версия формата хранения. */
     private const val FORMAT = 1
 
+    /** Наибольшая длина сохранённой строки (символов): больше — испорчена, читается как пустой список. */
+    const val MAX_TEXT_LENGTH = 64 * 1024
+
     /**
      * Упражнения, из которых собирается программа: «Свой вес» и «Гиря» — все их считает камера
      * (у каждого есть счётчик в pose/Counters.kt, это проверяет тест).
@@ -192,10 +195,11 @@ object CustomProgramMath {
      * Разбор [encode] без падений: испорченная строка — пустой список. Шаг с неизвестным упражнением
      * отбрасывается, программа без шагов или с неправильным id — целиком; числа вне диапазонов прижимаются
      * к границам, лишние шаги и программы (сверх 10) отбрасываются, повтор id — тоже. Пустое название
-     * становится «Своя программа».
+     * становится «Своя программа». Строка длиннее [MAX_TEXT_LENGTH], глубже [MiniJson.MAX_DEPTH] или
+     * больше [MiniJson.MAX_NODES] значений — пустой список (10 программ по 10 шагов — около 8 КиБ).
      */
     fun decode(text: String?): List<Program> {
-        if (text.isNullOrBlank()) return emptyList()
+        if (text.isNullOrBlank() || text.length > MAX_TEXT_LENGTH) return emptyList()
         val root = runCatching { MiniJson.parse(text) }.getOrNull() as? Map<*, *> ?: return emptyList()
         val list = root["programs"] as? List<*> ?: return emptyList()
         val seen = HashSet<String>()
@@ -205,7 +209,8 @@ object CustomProgramMath {
             val o = item as? Map<*, *> ?: continue
             val id = o["id"] as? String ?: continue
             if (!isValidId(id) || id in seen) continue
-            val steps = (o["steps"] as? List<*>).orEmpty().mapNotNull(::decodeStep).take(STEPS_MAX)
+            // Лениво: разбор шагов останавливается на десятом подходящем.
+            val steps = (o["steps"] as? List<*>).orEmpty().asSequence().mapNotNull(::decodeStep).take(STEPS_MAX).toList()
             if (steps.isEmpty()) continue
             val title = (o["title"] as? String).orEmpty().trim().take(TITLE_MAX).trim().ifEmpty { SUBTITLE }
             seen += id
@@ -213,6 +218,12 @@ object CustomProgramMath {
         }
         return out
     }
+
+    /** Снимок одной своей программы (состав на момент старта прохождения) — тот же формат, что [encode]. */
+    fun encodeOne(program: Program): String = encode(listOf(program))
+
+    /** Программа из снимка [encodeOne]; null — снимок испорчен. */
+    fun decodeOne(text: String): Program? = decode(text).firstOrNull()
 
     private fun decodeStep(item: Any?): ProgramStep? {
         val o = item as? Map<*, *> ?: return null
@@ -237,9 +248,16 @@ enum class StepField { SETS, TARGET, REST }
 
 /**
  * Маленький разбор JSON без Android (org.json в юнит-тестах — заглушка): объекты → Map, массивы → List,
- * строки, числа (Double), true/false/null. Ошибка формата — исключение.
+ * строки, числа (Double), true/false/null. Ошибка формата — исключение; глубина вложенности больше
+ * [MAX_DEPTH] или больше [MAX_NODES] значений — тоже (защита от переполнения стека и памяти).
  */
 internal object MiniJson {
+    /** Наибольшая вложенность объектов и массивов (у своих программ — 5). */
+    const val MAX_DEPTH = 8
+
+    /** Наибольшее число значений в документе (у 10 программ по 10 шагов — около 600). */
+    const val MAX_NODES = 20_000
+
     fun writeString(sb: StringBuilder, s: String) {
         sb.append('"')
         for (c in s) {
@@ -265,6 +283,8 @@ internal object MiniJson {
 
     private class Parser(val s: String) {
         var i = 0
+        private var depth = 0
+        private var nodes = 0
 
         fun ws() {
             while (i < s.length && s[i].isWhitespace()) i++
@@ -273,15 +293,23 @@ internal object MiniJson {
         fun value(): Any? {
             ws()
             require(i < s.length) { "Конец JSON" }
+            require(++nodes <= MAX_NODES) { "Слишком много значений в JSON" }
             return when (val c = s[i]) {
-                '{' -> obj()
-                '[' -> arr()
+                '{' -> nested(::obj)
+                '[' -> nested(::arr)
                 '"' -> str()
                 't' -> word("true", true)
                 'f' -> word("false", false)
                 'n' -> word("null", null)
                 else -> if (c == '-' || c.isDigit()) num() else throw IllegalArgumentException("Неожиданный символ $c")
             }
+        }
+
+        private fun nested(parse: () -> Any?): Any? {
+            require(++depth <= MAX_DEPTH) { "Слишком глубокая вложенность JSON" }
+            val v = parse()
+            depth--
+            return v
         }
 
         private fun word(w: String, v: Any?): Any? {
@@ -407,40 +435,45 @@ object CustomPrograms {
     /**
      * Сохранить программу: с id из списка — заменить на месте, иначе — добавить новую (id выдаётся здесь).
      * Возвращает сохранённую программу или null — нельзя (невалидна, уже 10 программ, запись не удалась).
+     * Чтение, изменение и запись — под [Store.customProgramsLock]: восстановление копии не вклинится между ними.
      */
-    @Synchronized
     fun save(program: Program): Program? {
         if (!Store.isReady()) return null
-        val list = all()
-        val existing = list.indexOfFirst { it.id == program.id }
-        val id = if (existing >= 0) program.id else CustomProgramMath.newId(list.map { it.id }.toSet())
-        val saved = CustomProgramMath.build(id, program.title, program.steps)
-        if (!CustomProgramMath.isValid(saved)) return null
-        val next = when {
-            existing >= 0 -> list.toMutableList().also { it[existing] = saved }
-            CustomProgramMath.canCreate(list.size) -> list + saved
-            else -> return null
+        val saved = synchronized(Store.customProgramsLock) {
+            val list = all()
+            val existing = list.indexOfFirst { it.id == program.id }
+            val id = if (existing >= 0) program.id else CustomProgramMath.newId(list.map { it.id }.toSet())
+            val saved = CustomProgramMath.build(id, program.title, program.steps)
+            if (!CustomProgramMath.isValid(saved)) return null
+            val next = when {
+                existing >= 0 -> list.toMutableList().also { it[existing] = saved }
+                CustomProgramMath.canCreate(list.size) -> list + saved
+                else -> return null
+            }
+            if (!write(next)) return null
+            saved
         }
-        if (!write(next)) return null
+        Store.notifyChanged()
         return saved
     }
 
-    /** Удалить программу; история прохождений в дневнике остаётся. */
-    @Synchronized
+    /** Удалить программу; история прохождений в дневнике остаётся. Под той же блокировкой, что [save]. */
     fun delete(id: String): Boolean {
         if (!Store.isReady()) return false
-        val list = all()
-        if (list.none { it.id == id }) return false
-        return write(list.filterNot { it.id == id })
+        val ok = synchronized(Store.customProgramsLock) {
+            val list = all()
+            if (list.none { it.id == id }) return false
+            write(list.filterNot { it.id == id })
+        }
+        if (ok) Store.notifyChanged()
+        return ok
     }
 
+    /** Записать список; вызывается только под [Store.customProgramsLock]. Под ней других блокировок не берём. */
     private fun write(list: List<Program>): Boolean {
         val raw = CustomProgramMath.encode(list)
         val ok = Store.prefs().edit().putString(KEY, raw).commit()
-        if (ok) {
-            cache = raw to CustomProgramMath.decode(raw)
-            Store.notifyChanged()
-        }
+        if (ok) cache = raw to CustomProgramMath.decode(raw)
         return ok
     }
 }

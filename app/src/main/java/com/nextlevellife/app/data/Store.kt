@@ -280,11 +280,20 @@ object Store {
      */
     internal fun restoredStepsSince(enabled: Boolean, sinceDay: Long?): Long? = if (enabled) sinceDay else null
 
+    /**
+     * Блокировка записи списка своих программ: её берут [commitPrefs] (снимок копии пишет и этот список)
+     * и чтение-изменение-запись в [CustomPrograms.save] / [CustomPrograms.delete] — сохранение программы
+     * не перезапишет старым списком только что восстановленный. Блокировка «листовая»: под ней не берутся
+     * другие (Diary, SharedSettings), поэтому порядок захвата «Diary → эта» (восстановление) взаимной
+     * блокировки не даёт.
+     */
+    internal val customProgramsLock = Any()
+
     /** Записывает снимок синхронно; false — запись не удалась. */
-    internal fun commitPrefs(snapshot: PrefsSnapshot): Boolean {
+    internal fun commitPrefs(snapshot: PrefsSnapshot): Boolean = synchronized(customProgramsLock) {
         val editor = sp.edit()
         snapshot.applyTo(editor)
-        return editor.commit()
+        editor.commit()
     }
 
     // Уровень n начинается с 50·(n−1)² очков: 0, 50, 200, 450, 800… С 0.6 — очки характеристик, не опыт.

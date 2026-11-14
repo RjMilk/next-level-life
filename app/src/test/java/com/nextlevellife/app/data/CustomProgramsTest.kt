@@ -214,6 +214,52 @@ class CustomProgramsTest {
     }
 
     @Test
+    fun hugeInputGivesEmptyList() {
+        // 100 000 шагов: строка в мегабайты — больше предела, сразу пустой список, без разбора.
+        val step = "{\"ex\":\"squats\",\"sets\":3,\"target\":10,\"rest\":60}"
+        val huge = "{\"programs\":[{\"id\":\"home_c_aaaaaaaa\",\"title\":\"Много\",\"steps\":[" +
+            List(100_000) { step }.joinToString(",") + "]}]}"
+        assertTrue(huge.length > m.MAX_TEXT_LENGTH)
+        assertEquals(emptyList<Program>(), m.decode(huge))
+        // Огромное название — тоже.
+        val longTitle = "{\"programs\":[{\"id\":\"home_c_aaaaaaaa\",\"title\":\"" + "x".repeat(1_000_000) +
+            "\",\"steps\":[$step]}]}"
+        assertEquals(emptyList<Program>(), m.decode(longTitle))
+    }
+
+    @Test
+    fun manyStepsWithinSizeLimitStopAtTen() {
+        // 3000 коротких шагов укладываются в 64 КиБ: берутся первые 10 подходящих.
+        val text = "{\"programs\":[{\"id\":\"home_c_aaaaaaaa\",\"title\":\"Много\",\"steps\":[" +
+            List(3_000) { "{\"ex\":\"abs\"}" }.joinToString(",") + "]}]}"
+        assertTrue(text.length <= m.MAX_TEXT_LENGTH)
+        val p = m.decode(text).single()
+        assertEquals(m.STEPS_MAX, p.steps.size)
+        // Значений больше предела парсера — испорчено, пустой список.
+        val nodes = "{\"programs\":[" + List(MiniJson.MAX_NODES + 10) { "0" }.joinToString(",") + "]}"
+        assertTrue(nodes.length <= m.MAX_TEXT_LENGTH)
+        assertEquals(emptyList<Program>(), m.decode(nodes))
+    }
+
+    @Test
+    fun deepNestingNoCrash() {
+        // 30 000 вложенных массивов: без ограничения глубины — переполнение стека.
+        val deep = "[".repeat(30_000) + "]".repeat(30_000)
+        assertEquals(emptyList<Program>(), m.decode(deep))
+        val deepInside = "{\"programs\":[{\"id\":\"home_c_aaaaaaaa\",\"title\":\"x\",\"steps\":" +
+            "[".repeat(20) + "]".repeat(20) + "}]}"
+        assertEquals(emptyList<Program>(), m.decode(deepInside))
+        // Обычная глубина своих программ (5) проходит.
+        assertEquals(listOf(sample), m.decode(m.encode(listOf(sample))))
+    }
+
+    @Test
+    fun snapshotOfOneProgram() {
+        assertEquals(sample, m.decodeOne(m.encodeOne(sample)))
+        assertNull(m.decodeOne("испорчено"))
+    }
+
+    @Test
     fun editorTexts() {
         val nb = ' '
         // «Новичок»: 3090 с награды, ≈20 мин.
