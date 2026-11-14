@@ -368,7 +368,7 @@ class StatsMathTest {
         assertEquals(210L, summary.overall)
         assertEquals(3, summary.overallLevel)
         // Каждая характеристика отдельно — уровень 2 и 2 и 1; общий — по сумме.
-        assertEquals(listOf(2, 2, 1), Stat.entries.map { StatsMath.levelFor(summary.total(it)) })
+        assertEquals(listOf(2, 2, 1, 1), Stat.entries.map { StatsMath.levelFor(summary.total(it)) })
         assertEquals(1, StatsSummary.empty(day).overallLevel)
     }
 

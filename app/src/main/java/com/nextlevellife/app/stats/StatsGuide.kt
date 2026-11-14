@@ -1,5 +1,6 @@
 package com.nextlevellife.app.stats
 
+import com.nextlevellife.app.data.CardsMath
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.health.ActivityMath
 
@@ -34,6 +35,32 @@ object StatsGuide {
         Stat.STRENGTH -> strength()
         Stat.ENDURANCE -> endurance()
         Stat.DISCIPLINE -> discipline(limitMin)
+        Stat.KNOWLEDGE -> knowledge()
+    }
+
+    private fun knowledge(): StatGuide {
+        val per = StatsMath.CARDS_PER_POINT
+        val reward = CardsMath.REWARD_MS / 1000
+        return StatGuide(
+            stat = Stat.KNOWLEDGE,
+            subtitle = "Карточки: слова и счёт",
+            rules = listOf(
+                Rule(
+                    "Каждые $per разные карточки с верным первым ответом",
+                    points(1),
+                    "Английские слова, таблица умножения, устный счёт. Считаются ответы на обоих телефонах; " +
+                        "одна и та же карточка за день — один раз, повтор после ошибки не считается",
+                ),
+            ),
+            limits = listOf(
+                "Всего — не больше ${points(StatsMath.DAY_CAP)} в день (${StatsMath.DAY_CAP * per} карточек)",
+                "Минуты за карточки — отдельно: $reward${NBSP}с за верный первый ответ, каждая карточка оплачивается раз " +
+                    "в день, всего до ${CardsMath.DAY_CAP_MS / 60_000}${NBSP}мин в день на оба телефона. Знание растёт " +
+                    "и после потолка минут",
+            ),
+            penalty = "Простой знание не снимает: дни без карточек проходят без штрафа.",
+            example = "Сессия из 20 карточек, 16 верно с первого раза → ${points(16 / per)}",
+        )
     }
 
     private fun strength() = StatGuide(
@@ -152,12 +179,12 @@ object StatsGuide {
 
     /** Что входит в уровень — абзацы экрана уровня. */
     val levelFacts: List<String> = listOf(
-        "Общий уровень — это сумма очков силы, выносливости и дисциплины за всё время.",
+        "Общий уровень — это сумма очков силы, выносливости, дисциплины и знания за всё время.",
         "Каждая характеристика даёт до ${points(StatsMath.DAY_CAP)} в день, всего до " +
             "${points(StatsMath.DAY_CAP * Stat.entries.size)} в день.",
         "Если забросить характеристику, простой медленно снимает очки: ${StatsMath.IDLE_FREE_DAYS} дня без штрафа, " +
             "на ${StatsMath.IDLE_CYCLE_DAYS}-й — минус ${points(StatsMath.IDLE_PENALTY)}, и так по кругу. " +
-            "Уровень может опуститься.",
+            "Уровень может опуститься. Знание простой не снимает.",
         "Минуты экранного времени в уровень не входят: минуты ты тратишь, а очки копятся.",
         "У каждой характеристики свой уровень по той же лестнице.",
     )

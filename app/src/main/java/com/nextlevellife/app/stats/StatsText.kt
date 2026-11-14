@@ -13,9 +13,13 @@ object StatsText {
     /** «7/10» — очки за день из потолка. */
     fun ofCap(points: Int): String = "$points/${StatsMath.DAY_CAP}"
 
-    /** «Сила +7 · Выносливость +3 · Дисциплина +4»: внутри пункта переносов нет, только по « · ». */
+    /**
+     * «Сила +7 · Выносливость +3 · Дисциплина +4 · Знание +2»: внутри пункта переносов нет, только по « · ».
+     * Знание — только в дни с карточками: остальные дни без лишнего «Знание +0».
+     */
     fun dayLine(p: DayPoints): String =
-        Stat.entries.joinToString(" · ") { "${it.title}$NBSP${signed(p.of(it))}" }
+        Stat.entries.filter { it != Stat.KNOWLEDGE || p.knowledge != 0 || p.sourcesOf(it).isNotEmpty() }
+            .joinToString(" · ") { "${it.title}$NBSP${signed(p.of(it))}" }
 
     /** «+7», «−2», «+0». */
     fun signed(n: Int): String = if (n < 0) "−${-n}" else "+$n"
@@ -33,6 +37,7 @@ object StatsText {
         Stat.STRENGTH -> "без очков силы"
         Stat.ENDURANCE -> "без очков выносливости"
         Stat.DISCIPLINE -> "без очков дисциплины"
+        Stat.KNOWLEDGE -> "без очков знания"
     }
 
     /** «1 день», «3 дня», «6 дней». */
@@ -67,6 +72,7 @@ object StatsText {
             SourceKind.PHONE_FREE_NIGHT -> "Ночь без телефона"
             SourceKind.LIMIT_KEPT -> "расход ${s.amount}$NBSP% лимита"
             SourceKind.NIGHT_NO_BLOCKS -> "ночью без блокировок"
+            SourceKind.CARDS -> "${ActivityMath.formatThousands(s.amount)}$NBSP${cardsWord(s.amount)} верно с первого раза"
             SourceKind.STRENGTH_IDLE -> "${daysLabel(s.amount)} подряд ${idleWhat(Stat.STRENGTH)}"
             SourceKind.ENDURANCE_IDLE -> "${daysLabel(s.amount)} подряд ${idleWhat(Stat.ENDURANCE)}"
             SourceKind.DISCIPLINE_IDLE -> "${daysLabel(s.amount)} подряд ${idleWhat(Stat.DISCIPLINE)}"
@@ -78,6 +84,7 @@ object StatsText {
                 " (нет подхода от ${StatsMath.FULL_SET_REPS})"
             s.kind == SourceKind.PLANK && s.amount < StatsMath.PLANK_MIN_SECONDS -> " (меньше минуты)"
             s.kind == SourceKind.WALK -> " (меньше ${ActivityMath.formatThousands(StatsMath.WALK_FIRST_POINT_STEPS)})"
+            s.kind == SourceKind.CARDS -> " (меньше ${StatsMath.CARDS_PER_POINT})"
             else -> ""
         }
         val pts = if (s.points < 0) signed(s.points) else s.points.toString()
@@ -101,6 +108,8 @@ object StatsText {
     private fun formatSeconds(sec: Long): String = "%d:%02d".format(sec / 60, sec % 60)
 
     private fun repsWord(n: Long): String = plural(n, "повторение", "повторения", "повторений")
+
+    private fun cardsWord(n: Long): String = plural(n, "карточка", "карточки", "карточек")
 
     private fun plural(n: Long, one: String, few: String, many: String): String {
         val mod100 = n % 100

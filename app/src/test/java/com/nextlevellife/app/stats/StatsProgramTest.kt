@@ -63,6 +63,6 @@ class StatsProgramTest {
 
     @Test
     fun ruleVersionRaised() {
-        assertEquals(6, StatsMath.RULE_VERSION)
+        assertTrue(StatsMath.RULE_VERSION >= 6)
     }
 }

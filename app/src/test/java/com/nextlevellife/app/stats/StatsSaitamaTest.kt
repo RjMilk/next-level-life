@@ -60,7 +60,7 @@ class StatsSaitamaTest {
     fun ruleVersionIsFourAndGuideMentionsSaitama() {
         // 5 — программы ЛФК и йоги исключены из силы и выносливости (StatsRoutineTest).
         // 6 — прохождения домашних программ тоже исключены (StatsProgramTest).
-        assertEquals(6, StatsMath.RULE_VERSION)
+        assertTrue(StatsMath.RULE_VERSION >= 6)
         val rule = StatsGuide.forStat(Stat.STRENGTH, 0).rules.single { it.what == "Завершённый комплекс" }
         assertTrue(rule.note.orEmpty().contains("«Сайтамы»"))
     }

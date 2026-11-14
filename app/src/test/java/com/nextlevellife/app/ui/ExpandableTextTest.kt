@@ -13,7 +13,7 @@ class ExpandableTextTest {
 
     @Test
     fun statsSummaryListsAllThreeStatsWithoutBreaksInsideItems() {
-        val points = mapOf(Stat.entries[0] to 0L, Stat.entries[1] to 500L, Stat.entries[2] to 5_000L)
+        val points = Stat.entries.associateWith { listOf(0L, 500L, 5_000L, 50L)[it.ordinal] }
         val line = ExpandableText.statsSummary { points.getValue(it) }
         val items = line.split(" · ")
         assertEquals(Stat.entries.size, items.size)

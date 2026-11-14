@@ -2,6 +2,7 @@ package com.nextlevellife.app.stats
 
 import com.nextlevellife.app.data.ActivityDay
 import com.nextlevellife.app.data.BlockEvent
+import com.nextlevellife.app.data.CardAttempt
 import com.nextlevellife.app.data.ComplexRun
 import com.nextlevellife.app.data.Measurement
 import com.nextlevellife.app.data.Programs
@@ -19,19 +20,21 @@ import kotlin.math.sqrt
 /**
  * Характеристики персонажа — очки ПРИВЫЧЕК, а не оценка физических способностей.
  * Сила — повторения и планка, Выносливость — ходьба, бег и время комплексов,
- * Дисциплина — ночь без телефона, расход в пределах лимита и ночь без попыток открыть заблокированное.
+ * Дисциплина — ночь без телефона, расход в пределах лимита и ночь без попыток открыть заблокированное,
+ * Знание — верные первые ответы на карточки. [idlePenalized] — простой снимает очки ([StatsMath.withPenalties]).
  */
-enum class Stat(val title: String) {
+enum class Stat(val title: String, val idlePenalized: Boolean = true) {
     STRENGTH("Сила"),
     ENDURANCE("Выносливость"),
     DISCIPLINE("Дисциплина"),
+    KNOWLEDGE("Знание", idlePenalized = false),
 }
 
 /**
  * Откуда очки. [PointSource.amount] в своих единицах: REPS — повторения, PLANK — секунды,
  * COMPLEX_DONE — число завершённых комплексов, WALK — шаги ходьбы (без шагов бега), RUN — метры,
  * COMPLEX_TIME — мс завершённых комплексов, PHONE_FREE_NIGHT — 1, LIMIT_KEPT — процент лимита,
- * NIGHT_NO_BLOCKS — 0 (блокировок не было).
+ * NIGHT_NO_BLOCKS — 0 (блокировок не было), CARDS — число различных карточек с верным первым ответом.
  */
 enum class SourceKind(val stat: Stat) {
     REPS(Stat.STRENGTH),
@@ -43,6 +46,7 @@ enum class SourceKind(val stat: Stat) {
     PHONE_FREE_NIGHT(Stat.DISCIPLINE),
     LIMIT_KEPT(Stat.DISCIPLINE),
     NIGHT_NO_BLOCKS(Stat.DISCIPLINE),
+    CARDS(Stat.KNOWLEDGE),
 
     /** Штраф за простой: [PointSource.amount] — какой по счёту день подряд без очков, очки отрицательные. */
     STRENGTH_IDLE(Stat.STRENGTH),
@@ -61,7 +65,7 @@ data class StatDay(val points: Int, val sources: List<PointSource>)
 
 /**
  * Очки дня по характеристикам. [provisional] — день ещё идёт (сегодня): очки могут измениться,
- * дисциплина за сутки ещё не начислена.
+ * дисциплина за сутки ещё не начислена. [knowledge] — последним, чтобы прежние вызовы по позициям не менялись.
  */
 data class DayPoints(
     val day: Long,
@@ -70,14 +74,16 @@ data class DayPoints(
     val discipline: Int,
     val sources: List<PointSource>,
     val provisional: Boolean = false,
+    val knowledge: Int = 0,
 ) {
     fun of(stat: Stat): Int = when (stat) {
         Stat.STRENGTH -> strength
         Stat.ENDURANCE -> endurance
         Stat.DISCIPLINE -> discipline
+        Stat.KNOWLEDGE -> knowledge
     }
 
-    val total: Int get() = strength + endurance + discipline
+    val total: Int get() = strength + endurance + discipline + knowledge
 
     fun sourcesOf(stat: Stat): List<PointSource> = sources.filter { it.kind.stat == stat }
 
@@ -124,6 +130,9 @@ data class DisciplineInput(
     val dayObserved: Boolean = false,
 )
 
+/** Знание за день: [distinctCorrect] — различных карточек с верным первым ответом (оба телефона, оплаченные или нет). */
+data class KnowledgeInput(val distinctCorrect: Int)
+
 /** Уровень и путь до следующего: [from] — очки начала уровня, [to] — следующего. */
 data class LevelProgress(val level: Int, val points: Long, val from: Long, val to: Long) {
     val left: Long get() = (to - points).coerceAtLeast(0L)
@@ -148,9 +157,11 @@ object StatsMath {
      * 6 — прохождения домашних программ ([Programs], complex_id `home_…`) не считаются завершёнными комплексами
      *     (+[COMPLEX_BONUS]) и не добавляют времени комплексов выносливости: иначе короткая программа стала бы
      *     лазейкой. Их подходы — обычные подходы упражнений и идут в силу и «Сайтаму» по общим правилам.
+     * 7 — «Знание»: очко за каждые [CARDS_PER_POINT] различные карточки с верным первым ответом за сутки (оба
+     *     телефона), до [DAY_CAP]; простой не штрафуется. Строка кеша получила поле знания ([encode]).
      * Правила дисциплины с версии 1 не менялись: её очки из кеша прежних версий переносятся ([keepOldDiscipline]).
      */
-    const val RULE_VERSION = 6
+    const val RULE_VERSION = 7
 
     /** Потолок очков одной характеристики за день. */
     const val DAY_CAP = 10
@@ -177,6 +188,10 @@ object StatsMath {
     const val PHONE_FREE_POINTS = 4
     const val LIMIT_POINTS = 3
     const val NIGHT_NO_BLOCKS_POINTS = 3
+
+    // Знание
+    /** Различных карточек с верным первым ответом за очко знания. */
+    const val CARDS_PER_POINT = 3
 
     /** Расход не больше этой доли лимита (в процентах) — очки за лимит. */
     const val LIMIT_SHARE_PERCENT = 80
@@ -274,12 +289,30 @@ object StatsMath {
         return (spentMs.coerceAtLeast(0L) * 100 + limitMs / 2) / limitMs
     }
 
+    /** Знание: ⌊K/3⌋, не больше 10, K — различные карточки с верным первым ответом. Карточек не было — источника нет. */
+    fun knowledge(input: KnowledgeInput): StatDay {
+        if (input.distinctCorrect <= 0) return StatDay(0, emptyList())
+        val raw = input.distinctCorrect / CARDS_PER_POINT
+        val pts = minOf(raw, DAY_CAP)
+        return StatDay(pts, listOf(PointSource(SourceKind.CARDS, input.distinctCorrect.toLong(), pts, raw)))
+    }
+
+    /** Знание по попыткам суток (обоих телефонов): различные карточки с верным первым ответом. */
+    fun knowledgeInput(attempts: List<CardAttempt>): KnowledgeInput =
+        KnowledgeInput(attempts.filter { it.firstCorrect }.mapTo(HashSet()) { it.cardId }.size)
+
     /** Очки дня целиком. */
-    fun day(day: Long, s: StrengthInput, e: EnduranceInput, d: DisciplineInput, provisional: Boolean = false): DayPoints {
+    fun day(
+        day: Long, s: StrengthInput, e: EnduranceInput, d: DisciplineInput, provisional: Boolean = false,
+        k: KnowledgeInput = KnowledgeInput(0),
+    ): DayPoints {
         val st = strength(s)
         val en = endurance(e)
         val di = discipline(d)
-        return DayPoints(day, st.points, en.points, di.points, st.sources + en.sources + di.sources, provisional)
+        val kn = knowledge(k)
+        return DayPoints(
+            day, st.points, en.points, di.points, st.sources + en.sources + di.sources + kn.sources, provisional, kn.points,
+        )
     }
 
     // ---------- Уровни ----------
@@ -323,11 +356,15 @@ object StatsMath {
         else -> true
     }
 
-    private fun idleKind(stat: Stat): SourceKind = when (stat) {
+    private fun idleKind(stat: Stat): SourceKind? = when (stat) {
         Stat.STRENGTH -> SourceKind.STRENGTH_IDLE
         Stat.ENDURANCE -> SourceKind.ENDURANCE_IDLE
         Stat.DISCIPLINE -> SourceKind.DISCIPLINE_IDLE
+        Stat.KNOWLEDGE -> null
     }
+
+    /** Характеристики, которые простой штрафует (знание — нет). */
+    private val PENALIZED: List<Stat> = Stat.entries.filter { it.idlePenalized }
 
     /**
      * [days] — очки дней со штрафами; [risk] — какой штраф придёт, если сегодняшний день закончится
@@ -352,16 +389,17 @@ object StatsMath {
                 break
             }
             var q = p
-            for (stat in Stat.entries) {
+            for (stat in PENALIZED) {
                 val run = if (idle(p, stat) == true) (idleRun[stat] ?: 0) + 1 else 0
                 idleRun[stat] = run
                 val penalty = idlePenalty(run)
-                if (penalty == 0) continue
+                val kind = idleKind(stat)
+                if (penalty == 0 || kind == null) continue
                 q = q.copy(
                     strength = q.strength + if (stat == Stat.STRENGTH) penalty else 0,
                     endurance = q.endurance + if (stat == Stat.ENDURANCE) penalty else 0,
                     discipline = q.discipline + if (stat == Stat.DISCIPLINE) penalty else 0,
-                    sources = q.sources + PointSource(idleKind(stat), run.toLong(), penalty),
+                    sources = q.sources + PointSource(kind, run.toLong(), penalty),
                 )
             }
             if (q !== p) out[day] = q
@@ -371,8 +409,8 @@ object StatsMath {
             val t = days[today] ?: DayPoints.empty(today)
             for (stat in Stat.entries) {
                 // Сегодня ещё может набраться: риск — если день так и закончится без очков. День без данных
-                // о шагах счёт сбросит, поэтому риска для выносливости нет, пока шаги не пришли.
-                risk[stat] = if (idle(t, stat) == true) idlePenalty((idleRun[stat] ?: 0) + 1) else 0
+                // о шагах счёт сбросит, поэтому риска для выносливости нет, пока шаги не пришли. Знание не штрафуется.
+                risk[stat] = if (stat.idlePenalized && idle(t, stat) == true) idlePenalty((idleRun[stat] ?: 0) + 1) else 0
             }
         }
         return Penalized(out, risk)
@@ -476,22 +514,26 @@ object StatsMath {
     // ---------- Кеш итогов дня ----------
 
     /**
-     * Строка кеша итогов дня: «версия|сила|выносливость|дисциплина|источники», источники —
+     * Строка кеша итогов дня: «версия|сила|выносливость|дисциплина|знание|источники», источники —
      * «ВИД:количество:очки:без потолка» через «;». Неверная строка или другая версия правил — null.
+     * Строки до версии 7 — без поля знания («версия|сила|выносливость|дисциплина|источники»): читаются со знанием 0
+     * (нужны [keepOldDiscipline] — из них берётся только дисциплина).
      */
     fun encode(p: DayPoints, ruleVersion: Int = RULE_VERSION): String =
-        "$ruleVersion|${p.strength}|${p.endurance}|${p.discipline}|" +
+        "$ruleVersion|${p.strength}|${p.endurance}|${p.discipline}|${p.knowledge}|" +
             p.sources.joinToString(";") { "${it.kind.name}:${it.amount}:${it.points}:${it.raw}" }
 
     fun decode(day: Long, s: String, ruleVersion: Int = RULE_VERSION): DayPoints? = runCatching {
         val parts = s.split('|')
-        if (parts.size != 5 || parts[0].toInt() != ruleVersion) return null
-        val sources = if (parts[4].isEmpty()) emptyList() else parts[4].split(';').map { item ->
+        if (parts.size !in 5..6 || parts[0].toInt() != ruleVersion) return null
+        val knowledge = if (parts.size == 6) parts[4].toInt() else 0
+        val src = parts.last()
+        val sources = if (src.isEmpty()) emptyList() else src.split(';').map { item ->
             val f = item.split(':')
             require(f.size == 4)
             PointSource(SourceKind.valueOf(f[0]), f[1].toLong(), f[2].toInt(), f[3].toInt())
         }
-        DayPoints(day, parts[1].toInt(), parts[2].toInt(), parts[3].toInt(), sources)
+        DayPoints(day, parts[1].toInt(), parts[2].toInt(), parts[3].toInt(), sources, knowledge = knowledge)
     }.getOrNull()
 
     /**

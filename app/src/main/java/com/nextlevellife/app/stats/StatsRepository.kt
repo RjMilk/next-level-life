@@ -1,6 +1,7 @@
 package com.nextlevellife.app.stats
 
 import android.util.Log
+import com.nextlevellife.app.data.Cards
 import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.Settings
@@ -13,7 +14,7 @@ import com.nextlevellife.app.sleep.SleepRepository
 import java.time.ZoneId
 
 /**
- * Характеристики за всю историю. [strength], [endurance], [discipline] — очки за всё время,
+ * Характеристики за всю историю. [strength], [endurance], [discipline], [knowledge] — очки за всё время,
  * [days] — очки по дням (с первого дня с данными по [today]; сегодня — предварительно),
  * [legacyXp] — опыт до 0.6 (за минуты), только для истории.
  */
@@ -26,6 +27,8 @@ data class StatsSummary(
     val legacyXp: Long,
     /** Штраф, который придёт, если сегодня закончится без очков характеристики ([StatsMath.withPenalties]). */
     val risk: Map<Stat, Int> = emptyMap(),
+    /** Знание за всё время (последним: прежние вызовы по позициям не меняются). */
+    val knowledge: Long = 0L,
 ) {
     fun riskOf(stat: Stat): Int = risk[stat] ?: 0
 
@@ -33,10 +36,11 @@ data class StatsSummary(
         Stat.STRENGTH -> strength
         Stat.ENDURANCE -> endurance
         Stat.DISCIPLINE -> discipline
+        Stat.KNOWLEDGE -> knowledge
     }
 
-    /** Общие очки — сумма трёх характеристик; общий уровень — по той же формуле. */
-    val overall: Long get() = strength + endurance + discipline
+    /** Общие очки — сумма всех характеристик (со знанием); общий уровень — по той же формуле. */
+    val overall: Long get() = strength + endurance + discipline + knowledge
     val overallLevel: Int get() = StatsMath.levelFor(overall)
 
     val todayPoints: DayPoints get() = days[today] ?: DayPoints.empty(today, provisional = true)
@@ -226,6 +230,7 @@ object StatsRepository {
             penalized.days,
             legacyXp,
             penalized.risk,
+            totals.getValue(Stat.KNOWLEDGE),
         )
     }
 
@@ -257,6 +262,8 @@ object StatsRepository {
         val sets = Diary.setsInRange(from, to).groupBy { it.day }
         val runs = Diary.runsInRange(from, to).groupBy { it.day }
         val activity = Diary.activityDays(from, to).associateBy { it.day }
+        // Ответы на карточки обоих телефонов (свои и копии второго): из них — знание.
+        val cards = Cards.attemptsInRange(from, to).groupBy { it.day }
         val spent = Ledger.spendByDay(from, to)
         // Ночь дня D начинается вечером D−1: события блокировки берутся с запасом в сутки.
         val blocks = Diary.blockEvents(from - 1, to)
@@ -295,6 +302,7 @@ object StatsRepository {
                 StatsMath.enduranceInput(activity[day], dayRuns),
                 discipline,
                 provisional = !complete || (day == to && !discipline.dayEnded),
+                k = StatsMath.knowledgeInput(cards[day].orEmpty()),
             )
         }
         return Range(out, complete)

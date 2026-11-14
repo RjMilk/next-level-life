@@ -156,7 +156,8 @@ class StatsPenaltyTest {
         // Сегодня 4-й день простоя — риск у всех трёх; с очками силы — у силы нет.
         val four = days(*idle(4))
         val r = StatsMath.withPenalties(four, start, start + 3)
-        assertTrue(Stat.entries.all { r.risk[it] == -1 })
+        assertTrue(Stat.entries.filter { it.idlePenalized }.all { r.risk[it] == -1 })
+        assertEquals(0, r.risk[Stat.KNOWLEDGE] ?: 0)
         val trained = four + ((start + 3) to DayPoints(start + 3, 2, 0, 0, listOf(PointSource(SourceKind.WALK, 3_000, 0))))
         assertEquals(0, StatsMath.withPenalties(trained, start, start + 3).risk[Stat.STRENGTH])
     }
