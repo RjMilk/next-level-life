@@ -11,13 +11,16 @@ import kotlin.math.abs
  */
 object RepCounters {
     /**
-     * Счётчик для упражнения по его id; null, если камера это упражнение считать не умеет.
+     * Счётчик по id профиля (обычно — id упражнения, у зала — Exercise.counterId); null, если камера это
+     * упражнение считать не умеет.
      * Вид счёта — [RepCounter.kind]: повторения или удержание («plank»).
      */
     fun forExercise(exerciseId: String): RepCounter? =
         ExerciseConfigs.byId[exerciseId]?.let {
             if (exerciseId in ExerciseConfigs.eitherArm) EitherArmCounter(it) else PhaseCounter(it)
         }
+            // Профили зала (жим штанги — одним автоматом на обе руки).
+            ?: GymCounters.byId[exerciseId]?.let { PhaseCounter(it) }
             ?: HoldConfigs.byId[exerciseId]?.let { HoldCounter(it) }
 }
 

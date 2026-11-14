@@ -13,6 +13,12 @@ import kotlin.math.roundToLong
  * [hold] — упражнение-удержание (планка): считается не повторениями, а временем. У него
  * [rewardSecondsPerRep] — секунды экранного времени за секунду засчитанного удержания
  * (см. [Exercises.holdRewardMs]), [minSecondsPerRep] не используется.
+ *
+ * [counterId] — профиль счёта камерой ([com.nextlevellife.app.pose.RepCounters.forExercise]); обычно совпадает с id.
+ * Упражнения зала берут уже проверенные профили (присед со штангой — профиль приседаний) без копирования порогов.
+ *
+ * [gym] — упражнение зала ([GymSpec]: снаряд, способ учёта веса, шаг роста). Цена у него фиксированная за
+ * повторение: заявленный вес камера не проверяет и на минуты он не влияет.
  */
 data class Exercise(
     val id: String,
@@ -21,7 +27,12 @@ data class Exercise(
     val minSecondsPerRep: Double,
     val kettlebell: Boolean = false,
     val hold: Boolean = false,
-)
+    val counterId: String = id,
+    val gym: GymSpec? = null,
+) {
+    /** Упражнение зала: вес подхода заявляется перед стартом и пишется в подход (load_g). */
+    val isGym: Boolean get() = gym != null
+}
 
 object Weights {
     val all = listOf(16, 24, 32)
@@ -61,13 +72,44 @@ object Exercises {
     val curl = Exercise("curl", "Сгибание рук с гирей", 20, 3.0, kettlebell = true)
     val gluteBridge = Exercise("glute_bridge", "Ягодичный мост с гирей", 20, 3.0, kettlebell = true)
 
+    // Зал: телефон на стойке или штативе, повторения считает камера по проверенным профилям ([Exercise.counterId]).
+    // Цена фиксированная за повторение (без множителя веса), минимум секунд на повтор — как у гиревых собратьев.
+    val barbellSquat = Exercise(
+        "bb_squat", "Присед со штангой", 40, 2.5, counterId = "squats",
+        gym = GymSpec(Equipment.BARBELL, LoadMode.BARBELL_TOTAL, stepUpG = 5_000),
+    )
+    val barbellDeadlift = Exercise(
+        "bb_deadlift", "Становая тяга со штангой", 35, 1.0, counterId = "deadlift",
+        gym = GymSpec(Equipment.BARBELL, LoadMode.BARBELL_TOTAL, stepUpG = 5_000),
+    )
+
+    /** Штанга — обе руки вместе: профиль жима без раздельного счёта рук ([com.nextlevellife.app.pose.GymCounters]). */
+    val barbellPress = Exercise(
+        "bb_press", "Жим штанги стоя", 30, 2.5, counterId = "press_barbell",
+        gym = GymSpec(Equipment.BARBELL, LoadMode.BARBELL_TOTAL, stepUpG = 2_500),
+    )
+    val barbellRow = Exercise(
+        "bb_row", "Тяга штанги в наклоне", 30, 1.0, counterId = "row_barbell",
+        gym = GymSpec(Equipment.BARBELL, LoadMode.BARBELL_TOTAL, stepUpG = 2_500),
+    )
+
     val bodyweight = listOf(pushups, squats, abs, pullups, plank)
     val kettlebell = listOf(thruster, swing, sumoPull, row, deadlift, gobletSquat, press, reverseLunge, curl, gluteBridge)
+
+    /** Домашние упражнения (без веса и с гирей): из них собираются комплексы и свои программы. */
     val all = bodyweight + kettlebell
 
-    fun byId(id: String): Exercise = all.first { it.id == id }
+    /** Зал — отдельно от домашних: в свои программы и комплексы не входит. */
+    val gym = listOf(barbellSquat, barbellDeadlift, barbellPress, barbellRow)
 
-    /** Награда в миллисекундах за [reps] повторений; вес учитывается только для гиревых. */
+    /** Все упражнения приложения: домашние и зал. */
+    val catalog = all + gym
+
+    fun byId(id: String): Exercise = catalog.first { it.id == id }
+
+    fun byIdOrNull(id: String): Exercise? = catalog.firstOrNull { it.id == id }
+
+    /** Награда в миллисекундах за [reps] повторений; вес учитывается только для гиревых (у зала — нет). */
     fun rewardMs(ex: Exercise, reps: Int, weightKg: Int): Long {
         val factor = if (ex.kettlebell) Weights.factor(weightKg) else 1.0
         return (reps * ex.rewardSecondsPerRep * factor * 1000).roundToLong()

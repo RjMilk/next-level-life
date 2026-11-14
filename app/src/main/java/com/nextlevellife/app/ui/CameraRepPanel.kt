@@ -47,6 +47,7 @@ import com.nextlevellife.app.data.Exercise
 import com.nextlevellife.app.pose.BodyLocator
 import com.nextlevellife.app.pose.CameraPermissionGate
 import com.nextlevellife.app.pose.ExerciseConfigs
+import com.nextlevellife.app.pose.GymCounters
 import com.nextlevellife.app.pose.Located
 import com.nextlevellife.app.pose.PoseCameraView
 import com.nextlevellife.app.pose.PoseFrame
@@ -146,9 +147,9 @@ private const val DIAG_UPDATE_MS = 250L
 internal class FrameDiag(exerciseId: String) {
     var text by mutableStateOf("")
 
-    private val config = ExerciseConfigs.byId[exerciseId]
+    private val config = ExerciseConfigs.byId[exerciseId] ?: GymCounters.byId[exerciseId]
     private val signal: Pair<String, (Signals) -> Float>? = when (exerciseId) {
-        "pushups", "pullups", "row" -> "локоть" to { s: Signals -> s.elbow }
+        "pushups", "pullups", "row", "row_barbell" -> "локоть" to { s: Signals -> s.elbow }
         "squats", "thruster" -> "колено" to { s: Signals -> s.knee }
         "abs", "swings", "deadlift" -> "наклон" to { s: Signals -> s.torsoTilt }
         else -> null
@@ -201,7 +202,8 @@ fun CameraRepPanel(
     onRep: () -> Unit,       // засчитано одно повторение
 ) {
     val front = frontCamera
-    val counter = remember(exercise.id, sessionKey) { RepCounters.forExercise(exercise.id) }
+    // Профиль счёта — по counterId: упражнения зала считаются уже проверенными профилями.
+    val counter = remember(exercise.id, sessionKey) { RepCounters.forExercise(exercise.counterId) }
     val panel = modifier.clip(PanelShape).background(Color.Black)
 
     if (counter == null) {
@@ -228,7 +230,7 @@ fun CameraRepPanel(
     val writer = remember(exercise.id, sessionKey, front) { PoseLogWriter(context, exercise.id, front, target) }
     DisposableEffect(writer) { onDispose { writer.close() } }
     val currentWriter by rememberUpdatedState(writer)
-    val diag = remember(exercise.id) { FrameDiag(exercise.id) }
+    val diag = remember(exercise.id) { FrameDiag(exercise.counterId) }
 
     val currentCount by rememberUpdatedState(count)
     val currentTarget by rememberUpdatedState(target)
@@ -580,6 +582,11 @@ internal fun setupLine(exerciseId: String): String = when (exerciseId) {
     "pullups" -> "Отодвинь телефон: в кадре турник и всё тело"
     "thruster", "sumo_pull", "row" -> "Встань в пол-оборота к телефону, видно всё тело"
     "swings", "deadlift" -> "Встань боком к телефону, видно всё тело"
+    // Зал: телефон на стойке или штативе, на уровне пояса.
+    "bb_squat", "bb_deadlift", "bb_row" ->
+        "Телефон на стойке или штативе на уровне пояса, сбоку, в 2,5–3,5 м: в кадре всё тело и штанга"
+    "bb_press" ->
+        "Телефон на стойке или штативе на уровне пояса, сбоку или в пол-оборота, в 2,5–3,5 м: в кадре всё тело и штанга"
     "plank" -> "Поставь телефон на пол сбоку, в 2 метрах. Встань на колени в кадре, потом прими планку"
     else -> "Поставь телефон в 2 метрах: видно всё тело"
 }
