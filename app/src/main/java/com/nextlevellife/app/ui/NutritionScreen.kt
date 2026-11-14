@@ -79,6 +79,9 @@ private const val MODE_LIST = "list"
 private const val MODE_CAMERA = "camera"
 private const val MODE_PROCESSING = "processing"
 private const val MODE_CONFIRM = "confirm"
+
+/** Запись подтверждённого приёма (не обработка снимка: у неё своё ожидание итога). */
+private const val MODE_SAVING = "saving"
 private const val MODE_VIEW = "view"
 private const val MODE_PRODUCTS = "products"
 private const val MODE_PRODUCT_EDIT = "product_edit"
@@ -117,6 +120,8 @@ fun NutritionScreen(onBack: () -> Unit) {
     // Выбранная версия продукта для позиции приёма [viewUid].
     var pickVersionUid by rememberSaveable { mutableStateOf<String?>(null) }
     var pickMessage by remember { mutableStateOf<String?>(null) }
+    // Идёт запись приёма в этом экземпляре экрана; после пересоздания — false, и экран возвращается к ленте.
+    var saving by remember { mutableStateOf(false) }
 
     // Фото удалённых приёмов (в том числе удалённых на втором телефоне) и брошенные снимки — убрать.
     LaunchedEffect(Unit) { withContext(Dispatchers.IO) { runCatching { MealPhotos.prune(context) } } }
@@ -174,7 +179,7 @@ fun NutritionScreen(onBack: () -> Unit) {
     BackHandler {
         when (mode) {
             MODE_LIST -> onBack()
-            MODE_PROCESSING -> Unit
+            MODE_PROCESSING, MODE_SAVING -> Unit
             MODE_CONFIRM, MODE_CAMERA -> { dropPending(); mode = MODE_LIST }
             MODE_PICK -> mode = MODE_VIEW
             MODE_SCAN, MODE_PORTION -> openPicker()
@@ -251,6 +256,16 @@ fun NutritionScreen(onBack: () -> Unit) {
                     }
                 }
             }
+            MODE_SAVING -> {
+                // Экран пересоздан во время записи: запись дошла до конца в фоне, итог — в ленте.
+                if (!saving) LaunchedEffect(Unit) { pendingUid = null; note = ""; mode = MODE_LIST }
+                Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        CircularProgressIndicator()
+                        Text("Сохраняю приём…", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
             MODE_CONFIRM -> {
                 val uid = pendingUid
                 if (uid == null) {
@@ -280,7 +295,8 @@ fun NutritionScreen(onBack: () -> Unit) {
                     Button(
                         onClick = {
                             val n = note
-                            mode = MODE_PROCESSING
+                            saving = true
+                            mode = MODE_SAVING
                             scope.launch {
                                 val ok = withContext(Dispatchers.IO) {
                                     runCatching {
@@ -298,6 +314,7 @@ fun NutritionScreen(onBack: () -> Unit) {
                                     dropPending()
                                     message = "Не удалось записать приём"
                                 }
+                                saving = false
                                 mode = MODE_LIST
                             }
                         },
