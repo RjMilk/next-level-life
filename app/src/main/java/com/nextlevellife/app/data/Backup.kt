@@ -487,6 +487,10 @@ object Backup {
             Diary.reopen()
             Ledger.onDatabaseReplaced()
             if (!Ledger.isConsistent()) throw IllegalStateException("Баланс не сходится с журналом после подмены")
+            // Кеш дней из копии не знает о перенесённых ответах на карточки — эти дни пересчитать («Знание»).
+            val cardDays = currentCardAttempts.mapNotNull { it.getAsLong("accounting_day") }.toSet()
+            runCatching { com.nextlevellife.app.stats.StatsRepository.invalidateDays(cardDays) }
+                .onFailure { Log.e(TAG, "Не удалось пересчитать дни с карточками", it) }
 
             prefsWritten = true
             if (!Store.commitPrefs(newPrefs)) throw IOException("Не удалось записать настройки")

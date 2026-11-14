@@ -132,7 +132,7 @@ class CardSyncTest {
     fun acceptRules() {
         val me = "aaa"
         val epoch = "f-cur"
-        val good = CardAttemptFact("a-1", "bbb", "e", 1, "mul:7x8", "mul", 1_700_000_000_000, 19_700, "Europe/Moscow", true, 10_000)
+        val good = CardAttemptFact("a-1", "bbb", "e", 1, "mul:7x8", "mul", 1_700_000_000_000, 19_676, "Europe/Moscow", true, 10_000)
         assertTrue(SyncRules.acceptFact(good, me, epoch, "bbb"))
         assertFalse(SyncRules.acceptFact(good.copy(author = "ccc"), me, epoch, "bbb"))
         assertFalse(SyncRules.acceptFact(good.copy(author = me, epoch = epoch), me, epoch, "bbb"))
@@ -148,6 +148,12 @@ class CardSyncTest {
         assertFalse(SyncRules.acceptFact(good.copy(uid = "../a"), me, epoch, "bbb"))
         assertFalse(SyncRules.acceptFact(good.copy(zoneId = "Нет/Такого"), me, epoch, "bbb"))
         assertFalse(SyncRules.acceptFact(good.copy(utcMs = 0), me, epoch, "bbb"))
+        // День должен согласоваться с моментом ответа (допуск — сутки).
+        assertTrue(SyncRules.acceptFact(good.copy(day = 19_677), me, epoch, "bbb"))
+        assertTrue(SyncRules.acceptFact(good.copy(day = 19_675), me, epoch, "bbb"))
+        for (bad in listOf(19_678L, 19_674L, 0L, Long.MIN_VALUE, Long.MAX_VALUE)) {
+            assertFalse(bad.toString(), SyncRules.acceptFact(good.copy(day = bad), me, epoch, "bbb"))
+        }
     }
 
     @Test

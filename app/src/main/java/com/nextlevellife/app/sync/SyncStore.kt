@@ -123,7 +123,19 @@ object SyncRules {
         is CardAttemptFact -> (f.author == me || f.author == peer) && !(f.author == me && f.epoch == myFactsEpoch) &&
             NutritionMath.isSafeUid(f.uid) && CardsMath.isValidCardId(f.cardId) && f.deck.length in 1..16 &&
             f.utcMs > 0L && TrustedClockMath.isValidZoneId(f.zoneId) &&
-            f.paidMs in 0L..CardsMath.REWARD_MS && (f.firstCorrect || f.paidMs == 0L)
+            f.paidMs in 0L..CardsMath.REWARD_MS && (f.firstCorrect || f.paidMs == 0L) &&
+            dayMatches(f.utcMs, f.zoneId, f.day)
+    }
+
+    /**
+     * Учётные сутки [day] согласуются с моментом [utcMs] в поясе [zoneId] (допуск — сутки): чужой факт с днём
+     * вроде Long.MIN_VALUE сломал бы расчёт характеристик.
+     */
+    fun dayMatches(utcMs: Long, zoneId: String, day: Long): Boolean {
+        val zone = runCatching { java.time.ZoneId.of(zoneId) }.getOrNull() ?: return false
+        val real = runCatching { com.nextlevellife.app.data.LedgerMath.accountingDay(utcMs, zone) }.getOrNull()
+            ?: return false
+        return day in (real - 1)..(real + 1)
     }
 
     /** Понятная причина отказа, когда версии обмена у телефонов разные. */
