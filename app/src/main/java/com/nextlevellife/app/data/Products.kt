@@ -115,7 +115,10 @@ object Products {
         return result
     }
 
-    /** Удаляет продукт [productUid]: отдельный факт. Старые приёмы с ним остаются подписанными. */
+    /**
+     * Удаляет продукт [productUid]: отдельный факт. Старые приёмы с ним остаются подписанными. Удаление окончательное:
+     * правка того же продукта с другого телефона (даже более поздняя) его не возвращает — [ProductsMath.live].
+     */
     fun delete(productUid: String, time: TimeSnapshot = TrustedClock.snapshot()): Unit = synchronized(Diary) {
         Diary.write { db ->
             if (isProductDeleted(db, productUid)) return@write
