@@ -16,7 +16,7 @@ internal class PairingTokens(
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
     private val ttlMs: Long = TTL_MS,
 ) {
-    private class Active(val token: ByteArray, val expiresAt: Long, var failures: Int = 0)
+    private class Active(val token: ByteArray, val expiresAt: Long)
 
     private var active: Active? = null
 
@@ -63,18 +63,26 @@ internal class PairingTokens(
         return true
     }
 
-    /** Неверное подтверждение: после [MAX_FAILURES] токен отзывается — подбор по сети бессмысленен. */
+    private val attempts = ArrayDeque<Long>()
+
+    /**
+     * Ограничитель частоты попыток сопряжения: не больше [MAX_ATTEMPTS] за [ATTEMPT_WINDOW_MS]. Неверные
+     * попытки приглашение не отзывают (иначе посторонний в сети мог бы «сжечь» QR, не зная токена) —
+     * они только тормозятся; подобрать 32-байтовый токен перебором всё равно нельзя.
+     */
     @Synchronized
-    fun registerFailure(token: ByteArray) {
-        val a = active ?: return
-        if (!Hkdf.constantTimeEquals(a.token, token)) return
-        a.failures++
-        if (a.failures >= MAX_FAILURES) active = null
+    fun allowAttempt(): Boolean {
+        val now = clock()
+        while (attempts.isNotEmpty() && now - attempts.first() >= ATTEMPT_WINDOW_MS) attempts.removeFirst()
+        if (attempts.size >= MAX_ATTEMPTS) return false
+        attempts.addLast(now)
+        return true
     }
 
     companion object {
         const val TTL_MS = 5 * 60_000L
-        const val MAX_FAILURES = 3
+        const val MAX_ATTEMPTS = 5
+        const val ATTEMPT_WINDOW_MS = 10_000L
     }
 }
 
@@ -163,6 +171,8 @@ internal object PairingHandshake {
             Wire.writeFrame(output, byteArrayOf(STATUS_BUSY.toByte()), null)
             throw Wire.HandshakeException("Уже связан")
         }
+        // Слишком частые попытки — молча закрыть, приглашение остаётся действующим.
+        if (tokens.current() != null && !tokens.allowAttempt()) throw Wire.HandshakeException("Слишком часто")
         val token = tokens.current()
         if (token == null) {
             Wire.writeFrame(output, byteArrayOf(STATUS_NO_INVITE.toByte()), null)
@@ -184,10 +194,8 @@ internal object PairingHandshake {
         val keys = derive(token, nonceB, nonceA, clientId, myId, th)
         val clientMac = Wire.readFrame(input, null)
         val expected = Hkdf.hmac(keys.first, Wire.concat(Wire.label("client"), th))
-        if (!Hkdf.constantTimeEquals(clientMac, expected)) {
-            tokens.registerFailure(token)
-            throw Wire.HandshakeException("Неверное подтверждение")
-        }
+        // Приглашение не отзывается: попытки и так ограничены по частоте до разбора кадра.
+        if (!Hkdf.constantTimeEquals(clientMac, expected)) throw Wire.HandshakeException("Неверное подтверждение")
         if (!tokens.consume(token)) throw Wire.HandshakeException("QR уже использован")
         Wire.writeFrame(output, Hkdf.hmac(keys.first, Wire.concat(Wire.label("server"), th)), null)
         return PairResult(clientId, clientName, keys.second)

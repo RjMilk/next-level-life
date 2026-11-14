@@ -1,30 +1,61 @@
 package com.nextlevellife.app.sync.transport
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Build
 import android.provider.Settings
 import android.util.Base64
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.sync.PairedPeer
+import java.net.InetAddress
 import java.net.InetSocketAddress
 
 /**
  * Сопряжение на этом телефоне: device_id и имя второго телефона, постоянный ключ пары (32 байта, Base64),
- * последний адрес, где второй телефон отвечал. Лежит в SharedPreferences [Store.prefs] с префиксом `sync_`;
- * резервная копия эти ключи не выгружает и при восстановлении не трогает. [Store.version] не меняется.
+ * последний адрес, где второй телефон отвечал, и свой прошлый порт сервера.
  *
- * Перед первым вызовом должен быть выполнен `Store.init` (его делает [SyncTransport.start]).
+ * Лежит в отдельном файле SharedPreferences [FILE] (`shared_prefs/nll_sync.xml`), исключённом из облачной
+ * копии и переноса на новое устройство (`res/xml/data_extraction_rules.xml`, `backup_rules.xml`): ключ пары
+ * не должен клонироваться на другой телефон. Ручная резервная копия (data/Backup) этот файл не читает.
+ * [Store.version] не меняется.
  */
 internal object PairStore {
+    const val FILE = "nll_sync"
     private const val KEY_PEER_ID = "sync_peer_id"
     private const val KEY_PEER_NAME = "sync_peer_name"
     private const val KEY_PAIR_KEY = "sync_pair_key"
     private const val KEY_PEER_HOST = "sync_peer_host"
     private const val KEY_PEER_PORT = "sync_peer_port"
     private const val KEY_LISTEN_PORT = "sync_listen_port"
+    private val ALL_KEYS = listOf(KEY_PEER_ID, KEY_PEER_NAME, KEY_PAIR_KEY, KEY_PEER_HOST, KEY_PEER_PORT, KEY_LISTEN_PORT)
 
-    private val prefs get() = Store.prefs()
+    @Volatile private var sp: SharedPreferences? = null
+
+    private val prefs: SharedPreferences
+        get() = sp ?: throw UninitializedPropertyAccessException("PairStore.init не вызван")
+
+    /** Открыть файл; один раз перенести пару из общего файла настроек (сборка beda69e хранила её там). */
+    @Synchronized
+    fun init(context: Context) {
+        if (sp != null) return
+        val own = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+        val old = runCatching { Store.prefs() }.getOrNull()
+        if (old != null && ALL_KEYS.any { old.contains(it) }) {
+            val e = own.edit()
+            for (k in ALL_KEYS) {
+                when (val v = old.all[k]) {
+                    is String -> if (!own.contains(k)) e.putString(k, v)
+                    is Int -> if (!own.contains(k)) e.putInt(k, v)
+                }
+            }
+            e.commit()
+            val o = old.edit()
+            ALL_KEYS.forEach { o.remove(it) }
+            o.commit()
+        }
+        sp = own
+    }
 
     /** Свой device_id — тот же, что у журнала операций. */
     fun myDeviceId(): String = Ledger.deviceId()
@@ -83,7 +114,7 @@ internal object PairStore {
         val port = prefs.getInt(KEY_PEER_PORT, 0)
         if (port !in 1..65535) return null
         // Адрес хранится числом (IPv4/IPv6), без DNS-запроса.
-        return runCatching { InetSocketAddress(java.net.InetAddress.getByName(host), port) }.getOrNull()
+        return runCatching { InetSocketAddress(InetAddress.getByName(host), port) }.getOrNull()
     }
 
     @Synchronized

@@ -6,6 +6,7 @@ import java.io.DataInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.crypto.AEADBadTagException
@@ -31,6 +32,8 @@ internal class SecureChannel(
     private val recvKey: ByteArray,
     override val peerDeviceId: String,
     override val initiator: Boolean,
+    /** Срок одной операции [send]/[receive] целиком (0 — без срока); истёк — канал закрывается. */
+    private val operationTimeoutMs: Long = 0L,
     private val onClose: () -> Unit,
 ) : SyncChannel {
     private val input = DataInputStream(input)
@@ -49,6 +52,7 @@ internal class SecureChannel(
             if (closed.get()) throw IOException("Канал закрыт")
             val counter = sendCounter++
             val length = message.size + TAG_BYTES
+            val guard = arm()
             try {
                 val cipher = Cipher.getInstance(AES_GCM)
                 cipher.init(Cipher.ENCRYPT_MODE, sendSpec, GCMParameterSpec(TAG_BYTES * 8, nonce(counter)))
@@ -59,16 +63,24 @@ internal class SecureChannel(
                 output.flush()
             } catch (e: IOException) {
                 close()
-                throw e
+                throw timedOut(guard) ?: e
             } catch (e: Exception) {
                 close()
                 throw IOException("Не удалось зашифровать кадр")
+            } finally {
+                guard?.disarm()
             }
         }
     }
 
+    private fun arm(): Watchdog.Guard? = if (operationTimeoutMs > 0) Watchdog.arm(operationTimeoutMs, this) else null
+
+    private fun timedOut(guard: Watchdog.Guard?): IOException? =
+        if (guard?.fired == true) SocketTimeoutException("Время операции истекло") else null
+
     override fun receive(): ByteArray = synchronized(recvLock) {
         if (closed.get()) throw IOException("Канал закрыт")
+        val guard = arm()
         try {
             val length = input.readInt()
             if (length < TAG_BYTES || length > MAX_FRAME_BYTES) throw IOException("Канал нарушен")
@@ -85,10 +97,12 @@ internal class SecureChannel(
             }
         } catch (e: IOException) {
             close()
-            throw e
+            throw timedOut(guard) ?: e
         } catch (e: Exception) {
             close()
             throw IOException("Канал нарушен")
+        } finally {
+            guard?.disarm()
         }
     }
 

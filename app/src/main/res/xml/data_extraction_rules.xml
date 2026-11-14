@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+: ключ сопряжения двух телефонов (shared_prefs/nll_sync.xml) не уходит ни в облачную копию,
+     ни при переносе данных на новое устройство — иначе сопряжение клонируется на чужой телефон. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="nll_sync.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="nll_sync.xml" />
+    </device-transfer>
+</data-extraction-rules>

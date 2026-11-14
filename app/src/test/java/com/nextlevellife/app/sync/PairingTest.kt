@@ -69,18 +69,46 @@ class PairingTest {
     }
 
     @Test
-    fun wrongToken_isRejected_andRevokedAfterThreeTries() {
+    fun wrongToken_isRejected_butDoesNotRevokeInvite() {
         val a = phone(idA, "S25")
         val b = phone(idB, "Fold")
-        a.core.tokens.issue()
+        val token = a.core.tokens.issue()
         val forged = PairingInvite(a.id, ByteArray(32) { 5 }, a.name)
-        repeat(PairingTokens.MAX_FAILURES) {
-            assertNotNull("токен жив до ${PairingTokens.MAX_FAILURES} ошибок", a.core.tokens.current())
+        // Посторонний без токена «сжечь» QR не может: ошибки только тормозятся.
+        repeat(PairingTokens.MAX_ATTEMPTS - 1) {
             assertEquals(PairOutcome.EXPIRED, b.core.pair(a.address, forged))
         }
-        waitFor { a.core.tokens.current() == null }
-        assertNull(a.core.tokens.current())
+        Thread.sleep(50)
+        assertNotNull(a.core.tokens.current())
         assertNull(a.peer)
+        assertNull(b.peer)
+        // Настоящий QR после этого срабатывает.
+        assertEquals(PairOutcome.OK, b.core.pair(a.address, PairingInvite(a.id, token, a.name)))
+        waitFor { a.peer != null }
+        assertArrayEquals(a.peer!!.key, b.peer!!.key)
+    }
+
+    @Test
+    fun tooFrequentAttempts_areThrottled_untilWindowPasses() {
+        val a = phone(idA, "S25")
+        val b = phone(idB, "Fold")
+        val token = a.core.tokens.issue()
+        val forged = PairingInvite(a.id, ByteArray(32) { 5 }, a.name)
+        repeat(PairingTokens.MAX_ATTEMPTS) { b.core.pair(a.address, forged) }
+        // Лимит исчерпан: даже верный токен сейчас не проходит, но приглашение живо.
+        assertEquals(PairOutcome.EXPIRED, b.core.pair(a.address, PairingInvite(a.id, token, a.name)))
+        assertNotNull(a.core.tokens.current())
+        now.addAndGet(PairingTokens.ATTEMPT_WINDOW_MS)
+        assertEquals(PairOutcome.OK, b.core.pair(a.address, PairingInvite(a.id, token, a.name)))
+    }
+
+    @Test
+    fun cancelledPairing_savesNothing() {
+        val a = phone(idA, "S25")
+        val b = phone(idB, "Fold")
+        val invite = PairingInvite(a.id, a.core.tokens.issue(), a.name)
+        val cancel = com.nextlevellife.app.sync.transport.PairCancel().also { it.cancel() }
+        assertEquals(PairOutcome.FAILED, b.core.pair(a.address, invite, cancel = cancel))
         assertNull(b.peer)
     }
 

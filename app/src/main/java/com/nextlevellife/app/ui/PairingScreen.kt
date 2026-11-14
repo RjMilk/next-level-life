@@ -1,5 +1,8 @@
 package com.nextlevellife.app.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
@@ -46,11 +49,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,13 +68,19 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.nextlevellife.app.pose.CameraPermissionGate
+import com.nextlevellife.app.sync.transport.PairCancel
 import com.nextlevellife.app.sync.transport.PairOutcome
 import com.nextlevellife.app.sync.transport.PairingInvite
 import com.nextlevellife.app.sync.transport.QrAnalyzer
 import com.nextlevellife.app.sync.transport.QrCodes
 import com.nextlevellife.app.sync.transport.SyncTransport
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
@@ -105,66 +113,55 @@ private enum class CheckState { IDLE, CHECKING, ONLINE, OFFLINE }
 @Composable
 fun PairingScreen(onBack: () -> Unit) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val peer by SyncTransport.peerFlow.collectAsState()
-    var mode by remember { mutableStateOf<PairMode>(PairMode.Home) }
-    var pending by remember { mutableStateOf<PairTarget?>(null) }
-    var check by remember { mutableStateOf(CheckState.IDLE) }
-    var unpairing by remember { mutableStateOf(false) }
-    var confirmUnpair by remember { mutableStateOf(false) }
+    // Режим и операции живут в PairingFlow (уровень процесса): поворот и раскрытие Fold их не сбрасывают.
+    val mode by PairingFlow.mode.collectAsState()
+    val check by PairingFlow.check.collectAsState()
+    val unpairing by PairingFlow.unpairing.collectAsState()
+    // Продолжение после диалога разрешения переживает пересоздание Activity.
+    var pendingName by rememberSaveable { mutableStateOf<String?>(null) }
+    var confirmUnpair by rememberSaveable { mutableStateOf(false) }
 
     // Сервер нужен и для показа QR: служба могла ещё не запустить транспорт.
     LaunchedEffect(Unit) { withContext(Dispatchers.IO) { runCatching { SyncTransport.start(context) } } }
 
-    // Связались, пока на экране QR или идёт подключение, — показать успех; разорвали — на главную.
-    LaunchedEffect(peer) {
-        val p = peer
-        if (p != null && (mode == PairMode.ShowQr || mode == PairMode.Connecting)) mode = PairMode.Success(p.name)
-        if (p == null && mode is PairMode.Success) mode = PairMode.Home
-    }
-
-    fun runCheck() {
-        check = CheckState.CHECKING
-        scope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                SyncTransport.start(context)
-                SyncTransport.ping()
-            }
-            check = if (ok) CheckState.ONLINE else CheckState.OFFLINE
-        }
+    // Ушли с экрана насовсем (не поворот) — отменить QR и сопряжение.
+    val activity = remember(context) { context.findActivity() }
+    DisposableEffect(Unit) {
+        onDispose { if (activity?.isChangingConfigurations != true) PairingFlow.leave() }
     }
 
     fun proceed(target: PairTarget) {
         when (target) {
-            PairTarget.SHOW -> mode = PairMode.ShowQr
-            PairTarget.SCAN -> mode = PairMode.Scan
-            PairTarget.CHECK -> runCheck()
+            PairTarget.SHOW -> PairingFlow.showQr(context)
+            PairTarget.SCAN -> PairingFlow.set(PairMode.Scan)
+            PairTarget.CHECK -> PairingFlow.runCheck(context)
         }
     }
 
     lateinit var request: (PairTarget, Boolean) -> Unit
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        val target = pending
-        pending = null
+        val target = pendingName?.let { n -> PairTarget.entries.firstOrNull { it.name == n } }
+        pendingName = null
         if (target == null) return@rememberLauncherForActivityResult
-        if (granted) request(target, false) else mode = PairMode.Failed(PairError.NO_PERMISSION, target)
+        if (granted) request(target, false) else PairingFlow.set(PairMode.Failed(PairError.NO_PERMISSION, target))
     }
     request = { target, skipWifi ->
         val permission = SyncTransport.networkPermissionToRequest()
         when {
             permission != null && !SyncTransport.hasNetworkPermission(context) -> {
-                pending = target
+                pendingName = target.name
                 permissionLauncher.launch(permission)
             }
             !skipWifi && target != PairTarget.CHECK && !SyncTransport.isOnLocalNetwork(context) ->
-                mode = PairMode.Failed(PairError.NO_WIFI, target)
+                PairingFlow.set(PairMode.Failed(PairError.NO_WIFI, target))
             else -> proceed(target)
         }
     }
 
     val back: () -> Unit = {
         val inFlow = mode == PairMode.ShowQr || mode == PairMode.Scan || mode is PairMode.Failed
-        if (inFlow) mode = PairMode.Home else onBack()
+        if (inFlow) PairingFlow.toHome() else onBack()
     }
     BackHandler(onBack = back)
 
@@ -207,29 +204,10 @@ fun PairingScreen(onBack: () -> Unit) {
                     onShow = { request(PairTarget.SHOW, false) },
                     onScan = { request(PairTarget.SCAN, false) },
                 )
-                PairMode.ShowQr -> ShowQrContent(
-                    onExpired = { mode = PairMode.Failed(PairError.EXPIRED_SHOWN, PairTarget.SHOW) },
-                    onServerFailed = { mode = PairMode.Failed(PairError.SERVER, PairTarget.SHOW) },
-                    onCancel = { mode = PairMode.Home },
-                )
+                PairMode.ShowQr -> ShowQrContent(onCancel = { PairingFlow.toHome() })
                 PairMode.Scan -> ScanContent(
-                    onInvite = { invite ->
-                        mode = PairMode.Connecting
-                        scope.launch {
-                            val outcome = withContext(Dispatchers.IO) {
-                                SyncTransport.start(context)
-                                SyncTransport.pairWith(invite)
-                            }
-                            mode = when (outcome) {
-                                PairOutcome.OK -> PairMode.Success(SyncTransport.peer()?.name ?: invite.name)
-                                PairOutcome.NOT_FOUND -> PairMode.Failed(PairError.NOT_FOUND, PairTarget.SCAN)
-                                PairOutcome.EXPIRED -> PairMode.Failed(PairError.EXPIRED_SCANNED, PairTarget.SCAN)
-                                PairOutcome.BUSY -> PairMode.Failed(PairError.BUSY, null)
-                                PairOutcome.FAILED -> PairMode.Failed(PairError.FAILED, PairTarget.SCAN)
-                            }
-                        }
-                    },
-                    onCancel = { mode = PairMode.Home },
+                    onInvite = { invite -> PairingFlow.pair(context, invite) },
+                    onCancel = { PairingFlow.toHome() },
                 )
                 PairMode.Connecting -> ConnectingContent()
                 is PairMode.Success -> SuccessContent(m.name, onDone = onBack)
@@ -249,7 +227,7 @@ fun PairingScreen(onBack: () -> Unit) {
                         runCatching { context.startActivity(intent) }
                             .onFailure { Log.w(TAG, "Не удалось открыть настройки приложения", it) }
                     },
-                    onHome = { mode = PairMode.Home },
+                    onHome = { PairingFlow.toHome() },
                 )
             }
         }
@@ -261,13 +239,7 @@ fun PairingScreen(onBack: () -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     confirmUnpair = false
-                    unpairing = true
-                    scope.launch {
-                        withContext(Dispatchers.IO) { SyncTransport.unpair() }
-                        unpairing = false
-                        check = CheckState.IDLE
-                        mode = PairMode.Home
-                    }
+                    PairingFlow.unpair()
                 }) { Text("Разорвать", color = Bad) }
             },
             dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("Отмена") } },
@@ -321,31 +293,10 @@ private fun HomeContent(onShow: () -> Unit, onScan: () -> Unit) {
 }
 
 @Composable
-private fun ShowQrContent(onExpired: () -> Unit, onServerFailed: () -> Unit, onCancel: () -> Unit) {
-    var invite by remember { mutableStateOf<PairingInvite?>(null) }
-    var remainingMs by remember { mutableLongStateOf(0L) }
-    val expired by rememberUpdatedState(onExpired)
-    val serverFailed by rememberUpdatedState(onServerFailed)
-
-    LaunchedEffect(Unit) {
-        val created = withContext(Dispatchers.IO) { SyncTransport.beginPairing() }
-        if (created == null) {
-            serverFailed()
-            return@LaunchedEffect
-        }
-        invite = created
-        while (true) {
-            remainingMs = SyncTransport.pairingRemainingMs()
-            if (remainingMs <= 0L) {
-                // Токен истёк (или израсходован — тогда экран уже сменился на «Связано»).
-                if (SyncTransport.peer() == null) expired()
-                break
-            }
-            delay(250)
-        }
-    }
-    // Ушли с экрана QR — токен больше не принимается.
-    DisposableEffect(Unit) { onDispose { SyncTransport.cancelPairing() } }
+private fun ShowQrContent(onCancel: () -> Unit) {
+    // Приглашение и отсчёт ведёт PairingFlow: после поворота показывается тот же QR.
+    val invite by PairingFlow.invite.collectAsState()
+    val remainingMs by PairingFlow.remainingMs.collectAsState()
 
     val bitmap = remember(invite) { invite?.let { QrCodes.encode(it.format()).asImageBitmap() } }
 
@@ -635,6 +586,143 @@ private fun QrScannerView(onInvite: (PairingInvite) -> Unit, onForeignCode: () -
                 cornerRadius = CornerRadius(16.dp.toPx()),
                 style = Stroke(width = 3.dp.toPx()),
             )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Состояние экрана уровня процесса
+// ---------------------------------------------------------------------------------------------
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+/**
+ * Режим экрана и операции сопряжения вне композиции: пересоздание Activity (поворот, раскрытие Fold) не
+ * отзывает показанный QR и не теряет идущее сопряжение. Отмена — только явная: «Отмена»/«Назад» или
+ * уход с экрана ([leave]); отменённое сопряжение пару не сохраняет ([PairCancel]).
+ */
+private object PairingFlow {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    val mode = MutableStateFlow<PairMode>(PairMode.Home)
+    val invite = MutableStateFlow<PairingInvite?>(null)
+    val remainingMs = MutableStateFlow(0L)
+    val check = MutableStateFlow(CheckState.IDLE)
+    val unpairing = MutableStateFlow(false)
+
+    private var job: Job? = null
+    private var cancel: PairCancel? = null
+
+    fun set(m: PairMode) {
+        mode.value = m
+    }
+
+    /** Прервать текущую операцию (QR, сопряжение) и вернуться к выбору. */
+    @Synchronized
+    fun toHome() {
+        stopOperation()
+        mode.value = PairMode.Home
+    }
+
+    /** Экран закрыт насовсем. */
+    @Synchronized
+    fun leave() {
+        stopOperation()
+        mode.value = PairMode.Home
+        check.value = CheckState.IDLE
+    }
+
+    @Synchronized
+    private fun stopOperation() {
+        job?.cancel()
+        job = null
+        cancel?.cancel()
+        cancel = null
+        SyncTransport.cancelPairing()
+        invite.value = null
+        remainingMs.value = 0L
+    }
+
+    /** Показать QR: новый токен, отсчёт срока, переход в «Связано» или «QR устарел». */
+    @Synchronized
+    fun showQr(context: Context) {
+        stopOperation()
+        mode.value = PairMode.ShowQr
+        val app = context.applicationContext
+        job = scope.launch {
+            SyncTransport.start(app)
+            val created = SyncTransport.beginPairing()
+            if (created == null) {
+                mode.value = PairMode.Failed(PairError.SERVER, PairTarget.SHOW)
+                return@launch
+            }
+            invite.value = created
+            while (isActive) {
+                val peer = SyncTransport.peer()
+                if (peer != null) {
+                    mode.value = PairMode.Success(peer.name)
+                    break
+                }
+                val left = SyncTransport.pairingRemainingMs()
+                remainingMs.value = left
+                if (left <= 0L) {
+                    mode.value = PairMode.Failed(PairError.EXPIRED_SHOWN, PairTarget.SHOW)
+                    break
+                }
+                delay(250)
+            }
+            invite.value = null
+        }
+    }
+
+    /** QR отсканирован: найти телефон и связаться. */
+    @Synchronized
+    fun pair(context: Context, scanned: PairingInvite) {
+        if (mode.value != PairMode.Scan) return
+        stopOperation()
+        mode.value = PairMode.Connecting
+        val app = context.applicationContext
+        val c = PairCancel()
+        cancel = c
+        job = scope.launch {
+            SyncTransport.start(app)
+            val outcome = SyncTransport.pairWith(scanned, cancel = c)
+            if (c.cancelled) return@launch
+            mode.value = when (outcome) {
+                PairOutcome.OK -> PairMode.Success(SyncTransport.peer()?.name ?: scanned.name)
+                PairOutcome.NOT_FOUND -> PairMode.Failed(PairError.NOT_FOUND, PairTarget.SCAN)
+                PairOutcome.EXPIRED -> PairMode.Failed(PairError.EXPIRED_SCANNED, PairTarget.SCAN)
+                PairOutcome.BUSY -> PairMode.Failed(PairError.BUSY, null)
+                PairOutcome.FAILED -> PairMode.Failed(PairError.FAILED, PairTarget.SCAN)
+            }
+        }
+    }
+
+    fun runCheck(context: Context) {
+        if (check.value == CheckState.CHECKING) return
+        check.value = CheckState.CHECKING
+        val app = context.applicationContext
+        scope.launch {
+            SyncTransport.start(app)
+            check.value = if (SyncTransport.ping()) CheckState.ONLINE else CheckState.OFFLINE
+        }
+    }
+
+    fun unpair() {
+        if (unpairing.value) return
+        unpairing.value = true
+        scope.launch {
+            try {
+                SyncTransport.unpair()
+            } finally {
+                unpairing.value = false
+                check.value = CheckState.IDLE
+                mode.value = PairMode.Home
+            }
         }
     }
 }

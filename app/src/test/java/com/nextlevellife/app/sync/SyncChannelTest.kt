@@ -215,6 +215,146 @@ class SyncChannelTest {
         assertFalse(b.core.ping(a.address))
     }
 
+    // ---------- Сроки и медленные клиенты ----------
+
+    @Test
+    fun slowClient_isDroppedByHandshakeDeadline() {
+        val a = FakePhone("aaaaaaaa-0000-0000-0000-000000000001", "S25", readTimeoutMs = 5_000, handshakeTimeoutMs = 400)
+            .also { phones += it }
+        java.net.Socket(a.address.address, a.address.port).use { s ->
+            s.soTimeout = 5_000
+            val out = s.getOutputStream()
+            val started = System.nanoTime()
+            // По байту раз в 100 мс: каждое чтение укладывается в SO_TIMEOUT, но рукопожатие целиком — нет.
+            var closedAfterMs = -1L
+            try {
+                repeat(100) {
+                    out.write(0)
+                    out.flush()
+                    Thread.sleep(100)
+                }
+            } catch (e: IOException) {
+                closedAfterMs = (System.nanoTime() - started) / 1_000_000
+            }
+            if (closedAfterMs < 0) {
+                // Запись могла не заметить закрытия — тогда чтение увидит конец потока.
+                assertEquals(-1, s.getInputStream().read())
+                closedAfterMs = (System.nanoTime() - started) / 1_000_000
+            }
+            assertTrue("сервер закрыл через $closedAfterMs мс", closedAfterMs < 3_000)
+        }
+    }
+
+    @Test
+    fun connect_respectsTotalTimeout_whenServerIsSilent() {
+        val (_, b) = pair(readTimeoutMs = 10_000)
+        // «Сервер», который принимает соединение и молчит.
+        val silent = java.net.ServerSocket(0, 8, java.net.InetAddress.getLoopbackAddress())
+        val held = mutableListOf<java.net.Socket>()
+        Thread { runCatching { while (true) held += silent.accept() } }.apply { isDaemon = true }.start()
+        try {
+            val started = System.nanoTime()
+            try {
+                b.core.connect(java.net.InetSocketAddress(silent.inetAddress, silent.localPort), Purpose.SYNC, 400)
+                fail("молчащий сервер должен давать тайм-аут")
+            } catch (e: SocketTimeoutException) {
+                val ms = (System.nanoTime() - started) / 1_000_000
+                assertTrue("open уложился в срок: $ms мс", ms < 1_500)
+            }
+            assertFalse(b.core.slot.isBusy())
+        } finally {
+            silent.close()
+            held.forEach { it.close() }
+        }
+    }
+
+    @Test
+    fun tooManyUnauthenticated_areClosedImmediately() {
+        val a = FakePhone("aaaaaaaa-0000-0000-0000-000000000001", "S25", handshakeTimeoutMs = 3_000, maxHandshakes = 2)
+            .also { phones += it }
+        val idle = List(2) { java.net.Socket(a.address.address, a.address.port) }
+        try {
+            Thread.sleep(200)
+            java.net.Socket(a.address.address, a.address.port).use { extra ->
+                extra.soTimeout = 1_000
+                assertEquals("лишнее соединение закрыто сразу", -1, extra.getInputStream().read())
+            }
+        } finally {
+            idle.forEach { it.close() }
+        }
+    }
+
+    @Test
+    fun channelOperation_hasDeadline() {
+        val (a, b) = pair(readTimeoutMs = 300)
+        val release = CountDownLatch(1)
+        a.handler = { ch -> release.await(5, TimeUnit.SECONDS); ch.close() }
+        val ch = b.core.connect(a.address, Purpose.SYNC)!!
+        try {
+            ch.receive()
+            fail("ожидание без данных должно кончаться тайм-аутом")
+        } catch (e: SocketTimeoutException) {
+            // ожидаемо
+        } finally {
+            release.countDown()
+        }
+    }
+
+    // ---------- Разрыв связи закрывает действующие каналы ----------
+
+    @Test
+    fun unpair_closesOpenChannels_onBothSides() {
+        val (a, b) = pair()
+        val serverSide = LinkedBlockingQueue<SyncChannel>()
+        val serverFailed = CountDownLatch(1)
+        a.handler = { ch ->
+            serverSide.add(ch)
+            try {
+                while (true) ch.receive()
+            } catch (e: IOException) {
+                serverFailed.countDown()
+            }
+        }
+        val ch = b.core.connect(a.address, Purpose.SYNC)!!
+        ch.send(byteArrayOf(1))
+        assertNotNull(serverSide.poll(2, TimeUnit.SECONDS))
+
+        // Разрыв на A: его сторона канала закрыта сразу, B видит обрыв.
+        a.unpairLocally()
+        assertTrue(serverFailed.await(2, TimeUnit.SECONDS))
+        try {
+            ch.receive()
+            fail("после разрыва канал по старому ключу не работает")
+        } catch (e: IOException) {
+            // ожидаемо
+        }
+        assertFalse(a.core.slot.isBusy())
+        assertFalse(b.core.slot.isBusy())
+        // Новый канал по старому ключу не открывается.
+        try {
+            assertNull(b.core.connect(a.address, Purpose.SYNC))
+        } catch (e: IOException) {
+            // тоже отказ
+        }
+    }
+
+    @Test
+    fun unpair_closesOwnOutgoingChannel() {
+        val (a, b) = pair()
+        echo(a)
+        val ch = b.core.connect(a.address, Purpose.SYNC)!!
+        ch.send(byteArrayOf(7))
+        assertEquals(4, ch.receive().size)
+        b.unpairLocally()
+        try {
+            ch.send(byteArrayOf(8))
+            ch.receive()
+            fail("свой канал закрывается при разрыве")
+        } catch (e: IOException) {
+            assertTrue((ch as SecureChannel).isClosed)
+        }
+    }
+
     @Test
     fun slot_simultaneousConnects_smallerIdWins() {
         val small = "aaaaaaaa-0000-0000-0000-000000000001"

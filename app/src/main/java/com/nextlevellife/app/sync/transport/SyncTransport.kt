@@ -82,7 +82,11 @@ object SyncTransport : SyncLink {
     private var lastLinkKey: String? = null
     private val liveSockets: MutableSet<Socket> = Collections.synchronizedSet(HashSet())
 
-    private val workers = ThreadPoolExecutor(0, 4, 30, TimeUnit.SECONDS, SynchronousQueue()) { r ->
+    /** Поколение запуска: поток сервера прежнего запуска не публикует свой сокет после stop/start. */
+    @Volatile private var runId = 0L
+
+    // Рукопожатий одновременно не больше TransportCore.MAX_HANDSHAKES; ещё места — под канал SYNC.
+    private val workers = ThreadPoolExecutor(0, TransportCore.MAX_HANDSHAKES + 2, 30, TimeUnit.SECONDS, SynchronousQueue()) { r ->
         Thread(r, "nll-sync-conn").apply { isDaemon = true }
     }
 
@@ -137,6 +141,7 @@ object SyncTransport : SyncLink {
             val app = context.applicationContext
             appContext = app
             Store.init(app)
+            PairStore.init(app)
             myName = PairStore.myName(app)
             loadDebugPair(app)
             _peer.value = PairStore.peer()
@@ -144,6 +149,7 @@ object SyncTransport : SyncLink {
             thread = t
             handler = Handler(t.looper)
             started = true
+            runId++
             launchServer(app)
             registerNetworkCallback(app)
         }
@@ -152,7 +158,8 @@ object SyncTransport : SyncLink {
     private var serverThread: Thread? = null
 
     private fun launchServer(app: Context) {
-        serverThread = Thread({ serve(app) }, "nll-sync-server").apply {
+        val run = runId
+        serverThread = Thread({ serve(app, run) }, "nll-sync-server").apply {
             isDaemon = true
             start()
         }
@@ -163,6 +170,7 @@ object SyncTransport : SyncLink {
         synchronized(lock) {
             if (!started) return
             started = false
+            runId++
             core.tokens.cancel()
             runCatching { serverSocket?.close() }
             serverSocket = null
@@ -204,10 +212,10 @@ object SyncTransport : SyncLink {
     override fun peer(): PairedPeer? = try {
         PairStore.peer()
     } catch (e: UninitializedPropertyAccessException) {
-        null // Store ещё не инициализирован (start не вызывали)
+        null // PairStore ещё не открыт (start не вызывали)
     }
 
-    /** Блокирует до [timeoutMs]; не звать с главного потока. */
+    /** Блокирует не дольше [timeoutMs] целиком (поиск, подключение, рукопожатие); не звать с главного потока. */
     override fun open(timeoutMs: Long): SyncChannel? {
         if (!started || peer() == null || core.slot.isBusy()) return null
         return tryPeerAddresses(timeoutMs) { address, budget ->
@@ -260,21 +268,25 @@ object SyncTransport : SyncLink {
     /** Экран QR закрыт: токен больше не принимается. */
     fun cancelPairing() = core.tokens.cancel()
 
-    /** Сторона «Сканировать QR»: найти показавший телефон и связаться. Блокирует до [timeoutMs]. */
-    internal fun pairWith(invite: PairingInvite, timeoutMs: Long = PAIR_TIMEOUT_MS): PairOutcome {
+    /**
+     * Сторона «Сканировать QR»: найти показавший телефон и связаться. Блокирует до [timeoutMs].
+     * После [PairCancel.cancel] попытка прекращается и пара не сохраняется (итог FAILED).
+     */
+    internal fun pairWith(invite: PairingInvite, timeoutMs: Long = PAIR_TIMEOUT_MS, cancel: PairCancel? = null): PairOutcome {
         val app = appContext ?: return PairOutcome.FAILED
         if (peer() != null) return PairOutcome.BUSY
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
         val candidates = debugPair?.let { listOf(it.address) }
             ?: NsdFinder.find(app, invite.deviceId, timeoutMs - 3_000L)
+        if (cancel?.cancelled == true) return PairOutcome.FAILED
         if (candidates.isEmpty()) return PairOutcome.NOT_FOUND
         for (address in candidates) {
             val left = deadline - SystemClock.elapsedRealtime()
-            if (left <= 0) break
-            val outcome = core.pair(address, invite, left.toInt().coerceAtMost(TransportCore.CONNECT_TIMEOUT_MS))
+            if (left <= 0 || cancel?.cancelled == true) break
+            val outcome = core.pair(address, invite, left.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), cancel)
             if (outcome != PairOutcome.NOT_FOUND) return outcome
         }
-        return PairOutcome.NOT_FOUND
+        return if (cancel?.cancelled == true) PairOutcome.FAILED else PairOutcome.NOT_FOUND
     }
 
     /**
@@ -290,6 +302,8 @@ object SyncTransport : SyncLink {
             Log.i(TAG, if (told) "Второй телефон знает о разрыве" else "Второй телефон недоступен, связь разорвана только здесь")
         }
         PairStore.clear()
+        // Уже открытые каналы и начатые рукопожатия по старому ключу закрываются.
+        core.invalidatePairing()
         _peer.value = null
         notifyPairing(null)
     }
@@ -308,7 +322,8 @@ object SyncTransport : SyncLink {
         val app = appContext ?: return null
         val peerId = peer()?.deviceId ?: return null
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
-        fun budget(): Int = (deadline - SystemClock.elapsedRealtime()).coerceIn(0L, TransportCore.CONNECT_TIMEOUT_MS.toLong()).toInt()
+        // Весь остаток срока: подключение внутри ядра само ограничено 3 с, а рукопожатие — сторожем.
+        fun budget(): Int = (deadline - SystemClock.elapsedRealtime()).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
         fun tryOne(address: InetSocketAddress): T? {
             val b = budget()
             if (b <= 0) return null
@@ -346,7 +361,7 @@ object SyncTransport : SyncLink {
     }
 
     /** Поток сервера: открыть сокет, объявить в NSD, принимать соединения до [stop]. */
-    private fun serve(app: Context) {
+    private fun serve(app: Context, run: Long) {
         val socket = try {
             openServerSocket()
         } catch (e: IOException) {
@@ -354,14 +369,15 @@ object SyncTransport : SyncLink {
             return
         }
         synchronized(lock) {
-            if (!started) {
+            // Пока сокет открывался, был stop (и, может, новый start со своим сервером) — этот лишний.
+            if (!started || runId != run || serverSocket != null) {
                 runCatching { socket.close() }
                 return
             }
             serverSocket = socket
+            PairStore.setLastListenPort(socket.localPort)
+            handler?.post { if (runId == run) registerNsd(app) }
         }
-        PairStore.setLastListenPort(socket.localPort)
-        handler?.post { registerNsd(app) }
         Log.i(TAG, "Сервер слушает порт ${socket.localPort}")
         while (!socket.isClosed) {
             val s = try {
@@ -501,6 +517,7 @@ object SyncTransport : SyncLink {
             val current = PairStore.peerKey()
             if (current == null || current.deviceId != peerId || !current.key.contentEquals(key) || current.name != name) {
                 PairStore.save(PairedPeer(peerId, name), key, address)
+                core.invalidatePairing()
                 notifyPairing(PairedPeer(peerId, name))
             }
             Log.i(TAG, "Отладочное сопряжение: $name по ${o.getString("host")}:${o.getInt("port")}")

@@ -18,12 +18,23 @@ internal class FakePhone(
     val name: String,
     clock: () -> Long = { System.nanoTime() / 1_000_000 },
     readTimeoutMs: Int = 5_000,
+    handshakeTimeoutMs: Int = TransportCore.HANDSHAKE_TIMEOUT_MS,
+    maxHandshakes: Int = TransportCore.MAX_HANDSHAKES,
 ) : TransportHost, AutoCloseable {
     @Volatile var peer: PeerKey? = null
     @Volatile var handler: ((SyncChannel) -> Unit)? = null
     val paired = CopyOnWriteArrayList<Pair<PairedPeer, InetSocketAddress?>>()
     val unpairedByPeer = AtomicInteger()
-    val core = TransportCore(this, PairingTokens(SecureRandom(), clock), readTimeoutMs = readTimeoutMs)
+    val core = TransportCore(
+        this, PairingTokens(SecureRandom(), clock),
+        readTimeoutMs = readTimeoutMs, handshakeTimeoutMs = handshakeTimeoutMs, maxHandshakes = maxHandshakes,
+    )
+
+    /** Разрыв связи на этом телефоне, как в SyncTransport.unpair: забыть пару и закрыть старое. */
+    fun unpairLocally() {
+        peer = null
+        core.invalidatePairing()
+    }
 
     private val server = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
     val address = InetSocketAddress(InetAddress.getLoopbackAddress(), server.localPort)
