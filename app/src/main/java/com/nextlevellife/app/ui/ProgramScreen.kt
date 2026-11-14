@@ -284,9 +284,10 @@ internal class ProgramRunState(val program: Program) {
  * `program:<session>:<step>:<set>`), затем отдых с голосом. «Закончить подход» — записать сделанное и отдыхать,
  * «Пропустить подход» — дальше без отдыха (засчитанное записывается), «Закончить» — итог и прохождение
  * в complex_runs ([Workouts.recordProgram]) без бонуса. Пока открыт гид или идёт отдых, счёт не ведётся.
+ * [onEdit] — у своей программы: «Изменить» перед стартом открывает редактор.
  */
 @Composable
-fun ProgramScreen(programId: String, onDone: () -> Unit) {
+fun ProgramScreen(programId: String, onDone: () -> Unit, onEdit: (() -> Unit)? = null) {
     val program = remember(programId) { Programs.byId(programId) }
     if (program == null) {
         LaunchedEffect(Unit) { onDone() }
@@ -495,7 +496,7 @@ fun ProgramScreen(programId: String, onDone: () -> Unit) {
     }
 
     if (!s.started) {
-        ProgramPrep(program, weight = s.weight, onWeight = { s.weight = it }, onBack = onDone, onStart = {
+        ProgramPrep(program, weight = s.weight, onWeight = { s.weight = it }, onBack = onDone, onEdit = onEdit, onStart = {
             haptics.tap()
             val t = SystemClock.elapsedRealtime()
             s.slot = 0
@@ -559,7 +560,14 @@ fun ProgramScreen(programId: String, onDone: () -> Unit) {
 // ---------- Подготовка ----------
 
 @Composable
-private fun ProgramPrep(program: Program, weight: Int, onWeight: (Int) -> Unit, onBack: () -> Unit, onStart: () -> Unit) {
+private fun ProgramPrep(
+    program: Program,
+    weight: Int,
+    onWeight: (Int) -> Unit,
+    onBack: () -> Unit,
+    onEdit: (() -> Unit)?,
+    onStart: () -> Unit,
+) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val widthClass = currentWidthClass()
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
@@ -577,7 +585,19 @@ private fun ProgramPrep(program: Program, weight: Int, onWeight: (Int) -> Unit, 
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text(program.title, style = MaterialTheme.typography.headlineMedium, color = Accent)
+                if (onEdit == null) {
+                    Text(program.title, style = MaterialTheme.typography.headlineMedium, color = Accent)
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            program.title,
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = Accent,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = onEdit) { Text("Изменить", style = MaterialTheme.typography.titleMedium) }
+                    }
+                }
                 Text(
                     ProgramText.summary(program) + " · до +${formatShort(ProgramMath.maxRewardMs(program, weight))}",
                     style = MaterialTheme.typography.titleSmall.merge(Tabular),

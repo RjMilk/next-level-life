@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import com.nextlevellife.app.block.BlockerService
 import com.nextlevellife.app.block.InstalledApps
 import com.nextlevellife.app.data.Cindy
+import com.nextlevellife.app.data.CustomPrograms
 import com.nextlevellife.app.data.Saitama
 import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Exercise
@@ -99,6 +100,8 @@ fun HomeScreen(
     onNutrition: () -> Unit = {},
     /** Открыть «Карточки». */
     onCards: () -> Unit = {},
+    /** Редактор своей домашней программы: id или null — новая. */
+    onEditProgram: (String?) -> Unit = {},
 ) {
     val context = LocalContext.current
     val version by Store.version.collectAsState()
@@ -217,6 +220,7 @@ fun HomeScreen(
                 RoutineCards(onOpen = onComplex, showHeader = true)
             },
             cards = { CardsHomeCard(onOpen = onCards) },
+            onEditProgram = onEditProgram,
         )
     }
 
@@ -588,7 +592,11 @@ private fun EarnSection(
     extraComplexes: @Composable () -> Unit = {},
     /** Карточка «Карточки» — первой, до групп упражнений: она одна и открывает свой экран. */
     cards: @Composable () -> Unit = {},
+    /** Редактор своей программы (id или null — новая). */
+    onEditProgram: (String?) -> Unit = {},
 ) {
+    // Свои программы — из настроек; version меняется после сохранения и удаления.
+    val customPrograms = remember(version) { CustomPrograms.all() }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Заработать минуты", style = MaterialTheme.typography.titleMedium)
         cards()
@@ -606,11 +614,11 @@ private fun EarnSection(
         ExpandableCard(
             key = "home_programs",
             title = Programs.GROUP_TITLE,
-            summary = programsSummary(),
+            summary = programsSummary(Programs.all.size + customPrograms.size),
             contentPadding = GroupBodyPadding,
             contentSpacing = 12.dp,
         ) {
-            ProgramCards(onOpen = onComplex)
+            ProgramCards(custom = customPrograms, onOpen = onComplex, onEdit = onEditProgram)
         }
         ExpandableCard(
             key = "home_bodyweight",

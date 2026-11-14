@@ -62,6 +62,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.unit.dp
+import com.nextlevellife.app.data.CustomProgramMath
 import com.nextlevellife.app.data.Programs
 import com.nextlevellife.app.data.Routines
 import com.nextlevellife.app.data.Saitama
@@ -182,6 +183,17 @@ class MainActivity : ComponentActivity() {
                                                 onStatInfo = { screen = "$STAT_INFO$it" },
                                                 onNutrition = { screen = NUTRITION },
                                                 onCards = { screen = CARDS },
+                                                onEditProgram = { screen = EDIT_PROGRAM + (it ?: "") },
+                                            )
+                                        }
+                                        screen.startsWith(EDIT_PROGRAM) -> {
+                                            val id = screen.removePrefix(EDIT_PROGRAM).removeSuffix(FROM_PREP).ifEmpty { null }
+                                            ProgramEditorScreen(
+                                                programId = id,
+                                                onClose = { screen = parentOf(screen) },
+                                                // Из подготовки к старту — обратно в неё (уже с новым составом).
+                                                onSaved = { saved -> screen = if (screen.endsWith(FROM_PREP)) "$COMPLEX$saved" else HOME },
+                                                onDeleted = goHome,
                                             )
                                         }
                                         screen == NUTRITION -> NutritionScreen(onBack = goHome)
@@ -198,10 +210,18 @@ class MainActivity : ComponentActivity() {
                                             onExercise = { screen = "$EXERCISE$it$FROM_SAITAMA" },
                                             onBack = goHome,
                                         )
-                                        screen.startsWith(COMPLEX) && Programs.isProgramId(screen.removePrefix(COMPLEX)) -> ProgramScreen(
-                                            programId = screen.removePrefix(COMPLEX),
-                                            onDone = goHome,
-                                        )
+                                        screen.startsWith(COMPLEX) && Programs.isProgramId(screen.removePrefix(COMPLEX)) -> {
+                                            val id = screen.removePrefix(COMPLEX)
+                                            ProgramScreen(
+                                                programId = id,
+                                                onDone = goHome,
+                                                onEdit = if (CustomProgramMath.isCustomId(id)) {
+                                                    { screen = "$EDIT_PROGRAM$id$FROM_PREP" }
+                                                } else {
+                                                    null
+                                                },
+                                            )
+                                        }
                                         screen.startsWith(COMPLEX) && Routines.isRoutineId(screen.removePrefix(COMPLEX)) -> {
                                             var guideFor by rememberSaveable { mutableStateOf<String?>(null) }
                                             RoutineScreen(
@@ -257,9 +277,16 @@ class MainActivity : ComponentActivity() {
     private fun isRationaleIntent(intent: Intent?): Boolean =
         intent?.action == ACTION_SHOW_RATIONALE || intent?.action == Intent.ACTION_VIEW_PERMISSION_USAGE
 
-    /** Куда возвращаться с экрана [screen]: упражнение с «Сайтамы» — на неё, остальное — на главную. */
-    private fun parentOf(screen: String): String =
-        if (screen.startsWith(EXERCISE) && screen.endsWith(FROM_SAITAMA)) SAITAMA else HOME
+    /**
+     * Куда возвращаться с экрана [screen]: упражнение с «Сайтамы» — на неё, редактор своей программы,
+     * открытый из подготовки к старту, — в неё; остальное — на главную.
+     */
+    private fun parentOf(screen: String): String = when {
+        screen.startsWith(EXERCISE) && screen.endsWith(FROM_SAITAMA) -> SAITAMA
+        screen.startsWith(EDIT_PROGRAM) && screen.endsWith(FROM_PREP) ->
+            COMPLEX + screen.removePrefix(EDIT_PROGRAM).removeSuffix(FROM_PREP)
+        else -> HOME
+    }
 
     private companion object {
         const val HOME = "home"
@@ -277,6 +304,12 @@ class MainActivity : ComponentActivity() {
 
         /** Суффикс упражнения, открытого с «Сайтамы»: «exercise:pushups@saitama» — после подхода назад на неё. */
         const val FROM_SAITAMA = "@" + Saitama.ID
+
+        /** Редактор своей программы: «program_edit:» — новая, «program_edit:<id>» — правка. */
+        const val EDIT_PROGRAM = "program_edit:"
+
+        /** Суффикс редактора, открытого из подготовки к старту программы: после него — обратно в неё. */
+        const val FROM_PREP = "@prep"
 
         /** Пауза перед доплатой бонуса «Сайтамы» после изменения данных. */
         const val SAITAMA_CHECK_DELAY_MS = 1_500L
