@@ -35,12 +35,12 @@ fun RoutineCards(onOpen: (String) -> Unit, showHeader: Boolean = true) {
                 )
             }
         }
-        Routines.all.forEach { RoutineCard(it) { onOpen(it.id) } }
+        Routines.mobility.forEach { RoutineCard(it) { onOpen(it.id) } }
     }
 }
 
 @Composable
-private fun RoutineCard(routine: Routine, onClick: () -> Unit) {
+internal fun RoutineCard(routine: Routine, onClick: () -> Unit) {
     Card(
         Modifier
             .fillMaxWidth()

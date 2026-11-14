@@ -77,10 +77,18 @@ data class GuideProps(
     val dumbbells: Dumbbells? = null,
     val bench: Bench? = null,
     val cableMachine: CableMachine? = null,
+    val legMachine: LegMachine? = null,
+    val assistedMachine: AssistedMachine? = null,
 )
 
+/** Открытый тренажёр ног: ось рычага у колена и мягкий валик у лодыжки. */
+data class LegMachine(val pivot: Pt, val rollerOffset: Pt = Pt(0f, 0f))
+
+/** Гравитрон: подвижная платформа следует за коленями, трос идёт к противовесу. */
+data class AssistedMachine(val towerX: Float = 0.84f, val topY: Float = 0.09f)
+
 /** Опора грифа: кисти для тяг/жимов или плечи для приседа. */
-enum class BarbellGrip { HANDS, SHOULDERS }
+enum class BarbellGrip { HANDS, SHOULDERS, FRONT_RACK }
 
 /**
  * Гриф с блинами. [offset] задаёт положение относительно середины кистей или плеч.

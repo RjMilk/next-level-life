@@ -109,6 +109,8 @@ internal class ExerciseConfig(
     val minConfidence: Float = JointTuning.MIN_CONFIDENCE,
     val requireFresh: Boolean = false,
     val resetOnSideSwitch: Boolean = false,
+    val extremeConfirmMs: Long = 0L,
+    val preferValidEntrySide: Boolean = false,
 ) {
     /** Главные суставы: те, что нужны условиям переходов. Без них человека «не видно». */
     val required: Set<Limb> = (far + finish + rest.orEmpty()).flatMap { it.feature.joints }.toSet() + extraRequired
@@ -121,12 +123,24 @@ internal class ExerciseConfig(
 }
 
 /** Защёлки условий: момент последнего подтверждения каждого условия. */
-private class Latches(private val conds: List<Cond>) {
+private class Latches(private val conds: List<Cond>, private val confirmMs: Long = 0L) {
     private val at = LongArray(conds.size) { NEVER }
+    private val since = LongArray(conds.size) { NEVER }
+    private var previousUpdate = NEVER
 
     fun update(tracks: List<SideTrack>, now: Long) {
+        if (confirmMs > 0L && previousUpdate != NEVER && now - previousUpdate > JointTuning.STALE_MS) clear()
+        previousUpdate = now
         conds.forEachIndexed { i, c ->
-            if (tracks.all { track -> track.cur?.let { c.confirmed(track.prev, it) } == true }) at[i] = now
+            val confirmed = tracks.all { track -> track.cur?.let { c.confirmed(track.prev, it) } == true }
+            if (confirmMs == 0L) {
+                if (confirmed) at[i] = now
+            } else if (confirmed && tracks.all { track -> track.cur?.let { it.isFresh(c.feature) && c.holds(it[c.feature]) } == true }) {
+                if (since[i] == NEVER) since[i] = now
+                if (now - since[i] >= confirmMs) at[i] = now
+            } else {
+                since[i] = NEVER
+            }
         }
     }
 
@@ -136,7 +150,11 @@ private class Latches(private val conds: List<Cond>) {
         return at.all { it != NEVER && it >= from }
     }
 
-    fun clear() = at.fill(NEVER)
+    fun clear() {
+        at.fill(NEVER)
+        since.fill(NEVER)
+        previousUpdate = NEVER
+    }
 
     companion object {
         const val NEVER = Long.MIN_VALUE
@@ -167,9 +185,9 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
     private var engaged = false
     private var violationSince: Long? = null
 
-    private val restLatch = Latches(cfg.restZone)
-    private val farLatch = Latches(cfg.far)
-    private val finishLatch = Latches(cfg.finish)
+    private val restLatch = Latches(cfg.restZone, cfg.extremeConfirmMs)
+    private val farLatch = Latches(cfg.far, cfg.extremeConfirmMs)
+    private val finishLatch = Latches(cfg.finish, cfg.extremeConfirmMs)
 
     /** Последний кадр в зоне покоя и момент выхода из неё (начало движения). */
     private var lastRestMs: Long? = null
@@ -191,7 +209,8 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         sides.update(frame)
 
         val last = lastTrackedMs
-        if (last != null && t - last > EngineTuning.LOST_RESET_MS) {
+        val resetGap = if (cfg.extremeConfirmMs > 0L) JointTuning.STALE_MS else EngineTuning.LOST_RESET_MS
+        if (last != null && t - last > resetGap) {
             resetMotion(t)
             engaged = false
             sides.drop()
@@ -203,6 +222,11 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         val tracks = if (frame.points.isEmpty()) emptyList() else selectTracks(t)
         val samples = tracks.mapNotNull { it.cur }
         if (samples.isEmpty()) {
+            if (cfg.extremeConfirmMs > 0L) {
+                restLatch.clear()
+                farLatch.clear()
+                finishLatch.clear()
+            }
             val closest = sides.closest()
             val hint = if (frame.points.isEmpty()) {
                 BodyLocator.HINT_NOT_IN_FRAME
@@ -223,12 +247,22 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
             violationSince = null
         } else {
             val since = violationSince ?: t.also { violationSince = it }
-            if (t - since > EngineTuning.POSTURE_GRACE_MS) {
+            val graceMs = if (cfg.extremeConfirmMs > 0L) JointTuning.STALE_MS else EngineTuning.POSTURE_GRACE_MS
+            if (t - since > graceMs) {
                 engaged = false
                 resetMotion(t)
             }
         }
         if (!engaged) {
+            return emit(tracking = true, inPosition = false, hint = cfg.postureHint, depth = 0f, atStart = false)
+        }
+
+        // Новые строгие AngularProfile не подтверждают крайние точки во время нарушения позы.
+        // Старые профили сохраняют прежний допуск POSTURE_GRACE_MS без изменения поведения.
+        if (cfg.requireFresh && !samples.all(cfg.hold)) {
+            restLatch.clear()
+            farLatch.clear()
+            finishLatch.clear()
             return emit(tracking = true, inPosition = false, hint = cfg.postureHint, depth = 0f, atStart = false)
         }
 
@@ -293,7 +327,9 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
 
     private fun selectTracks(t: Long): List<SideTrack> {
         val selected = when (cfg.sideMode) {
-            AngularSide.BEST_VISIBLE -> listOfNotNull(sides.choose(t))
+            AngularSide.BEST_VISIBLE -> listOfNotNull(
+                if (cfg.preferValidEntrySide) sides.choosePositioned(t, if (engaged) cfg.hold else cfg.enter) else sides.choose(t),
+            )
             AngularSide.LEFT -> listOf(sides.tracks.first { it.side == Side.LEFT })
             AngularSide.RIGHT -> listOf(sides.tracks.first { it.side == Side.RIGHT })
             AngularSide.BOTH -> sides.tracks

@@ -453,7 +453,95 @@ object Routines {
         ),
     )
 
-    val all: List<Routine> = listOf(lfkBack, lfkJoints, yogaMorning, yogaEvening)
+    // ---------- Разминка перед залом ----------
+
+    /**
+     * Проект зала, раздел 7: 64 повтора × 6 с + 40 с удержаний + 116 с переходов = 9 минут.
+     * Использует те же подтверждаемые камерой движения и общий дневной предел ЛФК/йоги.
+     * Идентификаторы подходов остаются в пространстве ЛФК: разминка не даёт силовые очки.
+     */
+    val gymWarmup = Routine(
+        id = "gym_warmup",
+        title = "Зал · общая подвижность",
+        subtitle = "Разминка перед залом: плечи, таз и колени, затем движения на коврике",
+        kind = RoutineKind.LFK,
+        declaredMinutes = 9,
+        steps = listOf(
+            RestStep(20, "Подготовка", "Телефон на высоте 50–90 см, в 2,5–3 м. Встань лицом к нему; всё тело и поднятые руки должны помещаться в кадре."),
+            RepsStep(
+                "lfk_elbow_flex", "Сгибание и разгибание локтей", "elbow_flex", 8,
+                distance = NEAR_25_3, camera = STAND_FRONT,
+                tips = listOf("Плечи неподвижны, локти у корпуса", "Сгибай и выпрямляй обе руки без рывков"),
+            ),
+            RestStep(6, "Переход", "Останься лицом к телефону, опусти руки."),
+            RepsStep(
+                "lfk_arm_abduction", "Разведение рук до уровня плеч", "arm_abduction", 8,
+                distance = NEAR_25_3, camera = STAND_FRONT,
+                tips = listOf("Подними руки в стороны до уровня плеч и опусти", "Не поднимай плечи к ушам"),
+            ),
+            RestStep(6, "Переход", "Подготовься плавно поднять обе руки вверх."),
+            HoldStep(
+                "lfk_gym_mountain", "Гора с поднятыми руками", "mountain", 20,
+                distance = NEAR_25_3, camera = STAND_FRONT,
+                tips = listOf("Руки вверх, локти и колени прямые", "Корпус вертикален, дыши спокойно"),
+            ),
+            RestStep(10, "Переход", "Повернись боком: левая нога ближе к телефону. Расстояние 2–3 м."),
+            RepsStep(
+                "lfk_knee_raise", "Подъём колена стоя", "knee_raise", 6, side = PoseSide.LEFT,
+                distance = NEAR_2_3, camera = near(STAND_SIDE, PoseSide.LEFT, "нога"),
+                tips = listOf("Подними колено до комфортной высоты и опусти", "Не отклоняй корпус назад; при необходимости держись за опору"),
+            ),
+            RestStep(6, "Смена стороны", "Развернись: правая нога ближе к телефону."),
+            RepsStep(
+                "lfk_knee_raise", "Подъём колена стоя", "knee_raise", 6, side = PoseSide.RIGHT,
+                distance = NEAR_2_3, camera = near(STAND_SIDE, PoseSide.RIGHT, "нога"),
+                tips = listOf("Подними колено до комфортной высоты и опусти", "Не отклоняй корпус назад; при необходимости держись за опору"),
+            ),
+            RestStep(6, "Переход", "Останься боком к телефону, поставь обе стопы на пол."),
+            RepsStep(
+                "lfk_shallow_squat", "Неглубокое приседание", "shallow_squat", 10,
+                distance = NEAR_2_3, camera = STAND_SIDE,
+                tips = listOf("Неглубоко согни колени и выпрямись", "Колени направлены по стопам, пятки на полу"),
+            ),
+            RestStep(25, "Переход на коврик", "Опусти телефон на высоту 20–40 см. Коврик боком к нему в 1,8–2,5 м, всё тело в кадре."),
+            HoldStep(
+                "lfk_gym_table", "Стол на четвереньках", "table", 20,
+                distance = FLOOR_DIST, camera = FLOOR_SIDE,
+                tips = listOf("Кисти под плечами, колени под тазом", "Спина ровная, руки прямые"),
+            ),
+            RestStep(6, "Переход", "Останься на четвереньках, приготовься двигать таз назад."),
+            RepsStep(
+                "lfk_quadruped_rock", "Покачивание назад на четвереньках", "quadruped_rock", 8,
+                distance = FLOOR_DIST, camera = FLOOR_SIDE,
+                tips = listOf("Таз мягко назад и обратно", "Кисти и колени на месте, руки прямые"),
+            ),
+            RestStep(6, "Переход", "Вернись в стол: левая рука ближе к телефону."),
+            RepsStep(
+                "lfk_quadruped_reach", "Вытягивание руки на четвереньках", "quadruped_reach", 4, side = PoseSide.LEFT,
+                distance = FLOOR_DIST, camera = near(FLOOR_SIDE, PoseSide.LEFT, "рука"),
+                tips = listOf("Выпрями руку вперёд до уровня плеча и верни", "Корпус неподвижен, поясница не прогибается"),
+            ),
+            RestStep(6, "Смена стороны", "Развернись: правая рука ближе к телефону."),
+            RepsStep(
+                "lfk_quadruped_reach", "Вытягивание руки на четвереньках", "quadruped_reach", 4, side = PoseSide.RIGHT,
+                distance = FLOOR_DIST, camera = near(FLOOR_SIDE, PoseSide.RIGHT, "рука"),
+                tips = listOf("Выпрями руку вперёд до уровня плеча и верни", "Корпус неподвижен, поясница не прогибается"),
+            ),
+            RestStep(9, "Переход", "Ляг на спину боком к телефону, согни ноги, стопы на полу."),
+            RepsStep(
+                "lfk_glute_bridge", "Мягкий ягодичный мост", "glute_bridge", 10,
+                guideId = "soft_bridge",
+                distance = FLOOR_DIST, camera = FLOOR_SIDE,
+                tips = listOf("Подними таз и плавно опусти", "Не прогибай поясницу и не задерживай дыхание"),
+            ),
+            RestStep(10, "Завершение", "Плавно встань с коврика. Перед рабочими подходами разомнись со снарядом с лёгким весом."),
+        ),
+    )
+
+    /** Программы группы «Мягкая подвижность»; разминка зала показывается отдельно в группе «Зал». */
+    val mobility: List<Routine> = listOf(lfkBack, lfkJoints, yogaMorning, yogaEvening)
+
+    val all: List<Routine> = mobility + gymWarmup
 
     val ids: Set<String> = all.map { it.id }.toSet()
 

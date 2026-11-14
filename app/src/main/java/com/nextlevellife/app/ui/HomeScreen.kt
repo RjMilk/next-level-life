@@ -58,6 +58,7 @@ import com.nextlevellife.app.data.GymSummary
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.Minotaur
 import com.nextlevellife.app.data.Programs
+import com.nextlevellife.app.data.Routines
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TrustedClock
@@ -657,6 +658,7 @@ private fun EarnSection(
             contentPadding = GroupBodyPadding,
             contentSpacing = 12.dp,
         ) {
+            RoutineCard(Routines.gymWarmup) { onComplex(Routines.gymWarmup.id) }
             Text(
                 "Телефон — на стойке или штативе, повторения считает камера. Вес выбирается перед подходом: " +
                     "он для истории и советов, на минуты и очки не влияет.",

@@ -35,7 +35,7 @@ internal object GymCounters {
     /** Тяга штанги в наклоне: условия тяги гири. */
     val rowBarbell: ExerciseConfig = derived("row", "row_barbell", "Наклонись, штанга в руках", "Выпрями руки")
 
-    val all: List<ExerciseConfig> = listOf(pressBarbell, rowBarbell)
+    val all: List<ExerciseConfig> = listOf(pressBarbell, rowBarbell) + GymAngularProfiles.all.map { it.config() }
 
     val byId: Map<String, ExerciseConfig> = all.associateBy { it.id }
 }

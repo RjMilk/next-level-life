@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GymMathTest {
+    private val originalGym = listOf(Exercises.barbellSquat, Exercises.barbellDeadlift, Exercises.barbellPress, Exercises.barbellRow)
     private val nbsp = ' '
     private val barbell = LoadMode.BARBELL_TOTAL
     private val squatSpec = Exercises.barbellSquat.gym!!
@@ -18,13 +19,13 @@ class GymMathTest {
 
     @Test
     fun fourBarbellExercisesWithReusedProfiles() {
-        assertEquals(listOf("bb_squat", "bb_deadlift", "bb_press", "bb_row"), Exercises.gym.map { it.id })
+        assertEquals(listOf("bb_squat", "bb_deadlift", "bb_press", "bb_row"), originalGym.map { it.id })
         assertEquals(
             listOf("Присед со штангой", "Становая тяга со штангой", "Жим штанги стоя", "Тяга штанги в наклоне"),
-            Exercises.gym.map { it.name },
+            originalGym.map { it.name },
         )
-        assertEquals(listOf("squats", "deadlift", "press_barbell", "row_barbell"), Exercises.gym.map { it.counterId })
-        for (ex in Exercises.gym) {
+        assertEquals(listOf("squats", "deadlift", "press_barbell", "row_barbell"), originalGym.map { it.counterId })
+        for (ex in originalGym) {
             assertTrue(ex.isGym)
             assertFalse(ex.kettlebell)
             assertFalse(ex.hold)
@@ -42,7 +43,7 @@ class GymMathTest {
         }
         assertNull(Exercises.byIdOrNull("нет такого"))
         // Шаг роста: присед и становая +5 кг, жим и тяга +2,5 кг.
-        assertEquals(listOf(5_000, 5_000, 2_500, 2_500), Exercises.gym.map { it.gym!!.stepUpG })
+        assertEquals(listOf(5_000, 5_000, 2_500, 2_500), originalGym.map { it.gym!!.stepUpG })
         // Минимум секунд на повтор — как у гиревых собратьев.
         assertEquals(Exercises.gobletSquat.minSecondsPerRep, Exercises.barbellSquat.minSecondsPerRep, 0.0)
         assertEquals(Exercises.deadlift.minSecondsPerRep, Exercises.barbellDeadlift.minSecondsPerRep, 0.0)
@@ -52,8 +53,8 @@ class GymMathTest {
 
     @Test
     fun pricesAreFixedPerRepWithoutWeightFactor() {
-        assertEquals(listOf(40, 35, 30, 30), Exercises.gym.map { it.rewardSecondsPerRep })
-        for (ex in Exercises.gym) {
+        assertEquals(listOf(40, 35, 30, 30), originalGym.map { it.rewardSecondsPerRep })
+        for (ex in originalGym) {
             val base = Exercises.rewardMs(ex, 10, Weights.DEFAULT)
             assertEquals(ex.rewardSecondsPerRep * 10_000L, base)
             // Вес гири не влияет на цену зала (множителя нет), заявленный вес штанги в цену не входит вовсе.

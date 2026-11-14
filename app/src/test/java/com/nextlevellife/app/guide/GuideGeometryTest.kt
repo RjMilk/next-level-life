@@ -9,7 +9,7 @@ import java.awt.geom.PathIterator
 
 /** Geometry regressions run on the JVM against the exact paths consumed by Compose. */
 class GuideGeometryTest {
-    private val guides = listOf(BodyweightGuides, KettlebellGuides, RoutineGuides).flatMap { it.guides }
+    private val guides = listOf(BodyweightGuides, KettlebellGuides, RoutineGuides, GymGuides).flatMap { it.guides }
 
     private fun samples(guide: ExerciseGuide): Sequence<Pair<String, GuidePose>> = sequence {
         guide.frames.forEachIndexed { index, frame -> yield("key $index" to frame.pose) }
@@ -25,7 +25,7 @@ class GuideGeometryTest {
 
     @Test
     fun everyKeyAndTransitionProducesFiniteDrawablePaths() {
-        assertEquals("all built-in exercises, LFK and yoga poses must be checked", 41, guides.size)
+        assertEquals("all built-in exercises, LFK and yoga poses must be checked", 66, guides.size)
         for (guide in guides) for ((sample, pose) in samples(guide)) {
             val scene = GuideGeometry.scene(guide, pose)
             val label = "${guide.exerciseId}, $sample"

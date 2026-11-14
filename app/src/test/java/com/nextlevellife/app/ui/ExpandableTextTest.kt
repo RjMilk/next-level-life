@@ -54,7 +54,7 @@ class ExpandableTextTest {
     @Test
     fun gymSummaryHasCountEquipmentAndNote() {
         assertEquals(
-            "4${nbsp}упражнения · штанга · вес не влияет на минуты",
+            "25${nbsp}упражнений · штанга, гантели, тренажёр, свой вес с помощью · вес не влияет на минуты",
             ExpandableText.gymSummary(Exercises.gym),
         )
         assertEquals(

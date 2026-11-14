@@ -51,7 +51,10 @@ internal data class AngularProfile(
     val side: AngularSide = AngularSide.BEST_VISIBLE,
     val visibility: AngularVisibility = AngularVisibility(),
     val positions: List<AngularPosition> = emptyList(),
+    /** Дополнительные условия дальней точки: например, кисть над головой в жиме. */
+    val farChecks: List<Cond> = emptyList(),
     val minCycleMs: Long = 300L,
+    val extremeConfirmMs: Long = 0L,
     val postureHint: String,
     val startHint: String,
     val farHint: String,
@@ -62,6 +65,7 @@ internal data class AngularProfile(
         require(startThreshold.isFinite() && farThreshold.isFinite() && startThreshold != farThreshold)
         require(hysteresis.isFinite() && hysteresis >= 0f)
         require(minCycleMs > 0L)
+        require(extremeConfirmMs >= 0L)
     }
 
     fun config(): ExerciseConfig {
@@ -79,15 +83,17 @@ internal data class AngularProfile(
             enter = { sample -> positions.all { it.accepts(sample, entering = true) } },
             hold = { sample -> positions.all { it.accepts(sample, entering = false) } },
             rest = listOf(startCondition),
-            far = listOf(farCondition),
+            far = listOf(farCondition) + farChecks,
             finish = listOf(startCondition),
             depth = { Geometry.progress(it[signal], start, far) },
             minRepMs = minCycleMs,
+            extremeConfirmMs = extremeConfirmMs,
             sideMode = side,
             extraRequired = visibility.required + positions.flatMap { it.signal.joints },
             minConfidence = visibility.minConfidence,
             requireFresh = visibility.requireFresh,
             resetOnSideSwitch = true,
+            preferValidEntrySide = true,
         )
     }
 

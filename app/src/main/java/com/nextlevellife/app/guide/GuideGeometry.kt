@@ -129,6 +129,24 @@ object GuideGeometry {
         }
         guide.props.bench?.let { bench(b, it) }
         guide.props.cableMachine?.let { cableMachine(b, it, pose) }
+        guide.props.legMachine?.let { machine ->
+            val ankle = mix(pose[R_ANKLE], pose[L_ANKLE], 0.5f) + machine.rollerOffset
+            b.line(machine.pivot, Pt(machine.pivot.x, floor - 0.01f), GuidePaint.CHAIR, 0.014f)
+            b.line(machine.pivot, ankle, GuidePaint.METAL, 0.01f)
+            b.ellipse(machine.pivot, Pt(0.025f, 0f), Pt(0f, 0.025f), GuidePaint.METAL)
+            b.capsule(ankle - Pt(0.045f, 0f), ankle + Pt(0.045f, 0f), 0.024f, 0.024f, GuidePaint.CHAIR)
+        }
+        guide.props.assistedMachine?.let { machine ->
+            val knees = mix(pose[R_KNEE], pose[L_KNEE], 0.5f) + Pt(0f, 0.026f)
+            val tower = Pt(machine.towerX, machine.topY)
+            b.line(Pt(machine.towerX, floor), tower, GuidePaint.CHAIR, 0.02f)
+            b.line(tower, Pt(knees.x, machine.topY), GuidePaint.CHAIR, 0.012f)
+            b.line(Pt(knees.x + 0.11f, knees.y), Pt(knees.x + 0.11f, machine.topY), GuidePaint.METAL, 0.003f)
+            b.line(Pt(knees.x + 0.11f, machine.topY), tower, GuidePaint.METAL, 0.003f)
+            b.capsule(knees - Pt(0.09f, 0f), knees + Pt(0.1f, 0f), 0.015f, 0.015f, GuidePaint.CHAIR)
+            val weight = Pt(machine.towerX, 0.82f - (knees.y - 0.55f))
+            b.capsule(weight - Pt(0.028f, 0f), weight + Pt(0.028f, 0f), 0.04f, 0.04f, GuidePaint.METAL)
+        }
         if (guide.props.barbell?.grip == BarbellGrip.SHOULDERS) barbell(b, guide.props.barbell, pose)
 
         fun limb(a: Pt, end: Pt, ra: Float, rb: Float, far: Boolean, highlight: Boolean) {
@@ -254,7 +272,7 @@ object GuideGeometry {
             torso()
             leg(true, false)
             bell(b, guide, pose)
-            if (guide.props.barbell?.grip == BarbellGrip.HANDS) barbell(b, guide.props.barbell, pose)
+            if (guide.props.barbell != null && guide.props.barbell.grip != BarbellGrip.SHOULDERS) barbell(b, guide.props.barbell, pose)
             dumbbell(b, guide.props.dumbbells, pose, right = true, far = false)
             arm(true, false)
         } else {
@@ -262,7 +280,7 @@ object GuideGeometry {
             leg(true, false)
             torso()
             bell(b, guide, pose)
-            if (guide.props.barbell?.grip == BarbellGrip.HANDS) barbell(b, guide.props.barbell, pose)
+            if (guide.props.barbell != null && guide.props.barbell.grip != BarbellGrip.SHOULDERS) barbell(b, guide.props.barbell, pose)
             dumbbell(b, guide.props.dumbbells, pose, right = false, far = false)
             dumbbell(b, guide.props.dumbbells, pose, right = true, far = false)
             arm(false, false)
@@ -327,7 +345,7 @@ object GuideGeometry {
     private fun barbell(b: Builder, barbell: Barbell, pose: GuidePose) {
         val grip = when (barbell.grip) {
             BarbellGrip.HANDS -> mix(pose[R_WRIST], pose[L_WRIST], 0.5f)
-            BarbellGrip.SHOULDERS -> mix(pose[R_SHOULDER], pose[L_SHOULDER], 0.5f)
+            BarbellGrip.SHOULDERS, BarbellGrip.FRONT_RACK -> mix(pose[R_SHOULDER], pose[L_SHOULDER], 0.5f)
         } + barbell.offset
         val half = barbell.halfLength
         b.line(grip - Pt(half, 0f), grip + Pt(half, 0f), GuidePaint.METAL, 0.009f)

@@ -16,7 +16,7 @@ class RoutinesTest {
     fun idsAreUniqueAndDoNotClash() {
         val routineIds = Routines.all.map { it.id }
         assertEquals(routineIds.size, routineIds.toSet().size)
-        assertEquals(4, routineIds.size)
+        assertEquals(5, routineIds.size)
         val foreign = Exercises.all.map { it.id }.toSet() + setOf(Cindy.ID, Minotaur.ID, "saitama")
         for (r in Routines.all) {
             assertFalse(r.id, r.id in foreign)
@@ -57,9 +57,9 @@ class RoutinesTest {
                     is RestStep -> Unit
                 }
             }
-            // Первый шаг — подготовка, последний — упражнение.
+            // Первый шаг — подготовка. Разминка зала заканчивается неоплачиваемым подъёмом с коврика.
             assertTrue(r.id, r.steps.first() is RestStep)
-            assertTrue(r.id, r.steps.last() is RoutineExercise)
+            assertTrue(r.id, r.steps.last() is RoutineExercise || r == Routines.gymWarmup && r.steps.last() is RestStep)
         }
     }
 

@@ -92,6 +92,13 @@ internal enum class Feature(val isAngle: Boolean, vararg limbs: Limb) {
 
     /** Отведение руки от корпуса: таз–плечо–локоть, 0 — рука вдоль тела, 90 — на уровне плеча. */
     SHOULDER_ANGLE(true, Limb.HIP, Limb.SHOULDER, Limb.ELBOW),
+
+    /** Разнос лодыжек по горизонтали / масштаб торса; нужны обе свежие лодыжки. */
+    FOOT_SPREAD(false, Limb.ANKLE),
+    /** Насколько другая лодыжка выше рабочей: задняя стопа на скамье > 0. */
+    REAR_ANKLE_RAISE(false, Limb.ANKLE),
+    /** Разнос кистей / масштаб торса; отличает разведение от подъёма рук вперёд. */
+    WRIST_SPREAD(false, Limb.WRIST),
     ;
 
     val joints: Set<Limb> = limbs.toSet()
@@ -257,8 +264,30 @@ internal class Sample(
     fun allFresh(limbs: Set<Limb>): Boolean = limbs.all { freshLimbs[it.ordinal] }
 
     companion object {
-        fun measure(timeMs: Long, joints: JointTracker): Sample {
+        fun measure(timeMs: Long, joints: JointTracker, frame: PoseFrame? = null): Sample {
             val values = Feature.measureAll { joints.point(it) }
+            // Межсторонние признаки используются только новыми заловыми профилями.
+            // Берём другую сторону строго из текущего кадра, не восстанавливаем скрытую ногу/кисть.
+            if (frame != null) {
+                val other = if (joints.side == Side.LEFT) Side.RIGHT else Side.LEFT
+                val scale = Feature.scale { joints.point(it) }
+                fun fresh(limb: Limb): PosePoint? = frame.points[other.joint(limb)]?.takeIf {
+                    it.confidence >= JointTuning.MIN_CONFIDENCE && JointTuning.usable(it, frame)
+                }
+                if (scale.isFinite()) {
+                    val ankle = joints.point(Limb.ANKLE).takeIf { joints.isFresh(Limb.ANKLE) }
+                    val rear = fresh(Limb.ANKLE)
+                    if (ankle != null && rear != null) {
+                        values[Feature.FOOT_SPREAD.ordinal] = kotlin.math.abs(ankle.x - rear.x) / scale
+                        values[Feature.REAR_ANKLE_RAISE.ordinal] = (ankle.y - rear.y) / scale
+                    }
+                    val wrist = joints.point(Limb.WRIST).takeIf { joints.isFresh(Limb.WRIST) }
+                    val otherWrist = fresh(Limb.WRIST)
+                    if (wrist != null && otherWrist != null) {
+                        values[Feature.WRIST_SPREAD.ordinal] = kotlin.math.abs(wrist.x - otherWrist.x) / scale
+                    }
+                }
+            }
             val fresh = BooleanArray(Feature.entries.size) { i ->
                 !values[i].isNaN() && Feature.entries[i].joints.all { joints.isFresh(it) }
             }
@@ -279,7 +308,7 @@ internal class SideTrack(val side: Side, minConfidence: Float = JointTuning.MIN_
     fun update(frame: PoseFrame) {
         joints.update(frame)
         prev = cur
-        cur = Sample.measure(frame.timeMs, joints)
+        cur = Sample.measure(frame.timeMs, joints, frame)
     }
 
     /** Все [limbs] есть (свежие или устаревшие). */
@@ -325,7 +354,7 @@ internal class SideSelector(
     }
 
     /** Выбранная сторона, если все [need] на ней есть (свежие или устаревшие); иначе null. */
-    fun choose(t: Long): SideTrack? {
+    fun choose(t: Long, eligible: (SideTrack) -> Boolean = { true }): SideTrack? {
         val cur = active
         if (cur != null) {
             val other = tracks.first { it !== cur }
@@ -335,7 +364,7 @@ internal class SideSelector(
                 activeStaleSince = t
             }
             val staleSince = activeStaleSince
-            val otherOk = other.allFresh(need)
+            val otherOk = other.allFresh(need) && eligible(other)
             val lostLongEnough = staleSince != null && (lostSwitchMs <= 0L || t - staleSince > lostSwitchMs)
             if (lostLongEnough && otherOk) {
                 switchTo(other)
@@ -347,9 +376,21 @@ internal class SideSelector(
             }
         }
         if (active == null) {
-            tracks.filter { it.allFresh(need) }.maxByOrNull { it.score(need) }?.let { switchTo(it) }
+            tracks.filter { it.allFresh(need) && eligible(it) }.maxByOrNull { it.score(need) }?.let { switchTo(it) }
         }
         return active?.takeIf { it.available(need) }
+    }
+
+    /** Только для новых профилей: перед началом предпочесть видимую сторону с допустимой позой.
+     * Например, задняя стопа болгарского приседа может быть увереннее передней.
+     */
+    fun choosePositioned(t: Long, accepts: (Sample) -> Boolean): SideTrack? {
+        val current = choose(t) { it.cur?.let(accepts) == true }
+        if (current?.cur?.let(accepts) == true) return current
+        val valid = tracks.filter { it.allFresh(need) && it.cur?.let(accepts) == true }.maxByOrNull { it.score(need) }
+        if (valid != null) switchTo(valid)
+        // Без допустимой стороны всё равно возвращаем видимую для конкретной подсказки позы.
+        return valid ?: current ?: tracks.filter { it.available(need) }.maxByOrNull { it.score(need) }
     }
 
     /** Сторона, где видно больше всего нужных суставов (для подсказки «Не вижу …»). */

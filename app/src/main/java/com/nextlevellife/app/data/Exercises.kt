@@ -93,6 +93,53 @@ object Exercises {
         gym = GymSpec(Equipment.BARBELL, LoadMode.BARBELL_TOTAL, stepUpG = 2_500),
     )
 
+    val barbellFrontSquat = Exercise("bb_front_squat", "Фронтальный присед", 45, 2.0, counterId = "squats",
+        gym = GymSpec(Equipment.BARBELL, LoadMode.BARBELL_TOTAL, 5_000))
+    val barbellRomanianDeadlift = Exercise("bb_romanian_deadlift", "Румынская тяга", 35, 2.5,
+        gym = GymSpec(Equipment.BARBELL, LoadMode.BARBELL_TOTAL, 5_000))
+    val barbellBenchPress = Exercise("bb_bench_press", "Жим штанги лёжа", 30, 2.0,
+        gym = GymSpec(Equipment.BARBELL, LoadMode.BARBELL_TOTAL, 2_500))
+    val barbellInclinePress = Exercise("bb_incline_press", "Жим штанги на наклонной", 30, 2.0,
+        gym = GymSpec(Equipment.BARBELL, LoadMode.BARBELL_TOTAL, 2_500))
+
+    val dumbbellBenchPress = Exercise("db_bench_press", "Жим гантелей лёжа", 30, 2.0,
+        gym = GymSpec(Equipment.DUMBBELL, LoadMode.DUMBBELL_EACH, 1_000))
+    val dumbbellInclinePress = Exercise("db_incline_press", "Жим гантелей на наклонной", 30, 2.0,
+        gym = GymSpec(Equipment.DUMBBELL, LoadMode.DUMBBELL_EACH, 1_000))
+    val dumbbellSeatedPress = Exercise("db_seated_press", "Жим гантелей сидя", 30, 2.0,
+        gym = GymSpec(Equipment.DUMBBELL, LoadMode.DUMBBELL_EACH, 1_000))
+    // Одна рабочая рука за подход; обе ноги на полу, опорная рука на скамье.
+    val dumbbellRow = Exercise("db_row", "Тяга гантели одной рукой", 25, 2.0, counterId = "row",
+        gym = GymSpec(Equipment.DUMBBELL, LoadMode.DUMBBELL_EACH, 1_000))
+    val dumbbellCurl = Exercise("db_curl", "Подъём гантели на бицепс", 15, 2.0, counterId = "curl",
+        gym = GymSpec(Equipment.DUMBBELL, LoadMode.DUMBBELL_EACH, 500))
+    val dumbbellLateralRaise = Exercise("db_lateral_raise", "Разведения гантелей в стороны", 10, 2.0,
+        gym = GymSpec(Equipment.DUMBBELL, LoadMode.DUMBBELL_EACH, 500))
+    val dumbbellLunge = Exercise("db_lunge", "Выпады с гантелями", 30, 2.5,
+        gym = GymSpec(Equipment.DUMBBELL, LoadMode.DUMBBELL_EACH, 1_000))
+    val dumbbellBulgarianSplitSquat = Exercise("db_bulgarian_split_squat", "Болгарский сплит-присед", 35, 2.5,
+        gym = GymSpec(Equipment.DUMBBELL, LoadMode.DUMBBELL_EACH, 1_000))
+    val dumbbellGobletSquat = Exercise("db_goblet_squat", "Гоблет-присед с гантелью", 40, 2.0, counterId = "goblet_squat",
+        gym = GymSpec(Equipment.DUMBBELL, LoadMode.DUMBBELL_EACH, 1_000))
+
+    val machineLatPulldown = Exercise("machine_lat_pulldown", "Тяга верхнего блока", 25, 2.0,
+        gym = GymSpec(Equipment.MACHINE, LoadMode.STACK, 2_500))
+    val machineSeatedRow = Exercise("machine_seated_row", "Тяга горизонтального блока", 25, 2.0,
+        gym = GymSpec(Equipment.MACHINE, LoadMode.STACK, 2_500))
+    val machineChestPress = Exercise("machine_chest_press", "Жим от груди в тренажёре", 25, 2.0,
+        gym = GymSpec(Equipment.MACHINE, LoadMode.STACK, 2_500))
+    val machineLegExtension = Exercise("machine_leg_extension", "Разгибание ног", 15, 2.0,
+        gym = GymSpec(Equipment.MACHINE, LoadMode.STACK, 2_500))
+    val machineLegCurl = Exercise("machine_leg_curl", "Сгибание ног сидя", 15, 2.0,
+        gym = GymSpec(Equipment.MACHINE, LoadMode.STACK, 2_500))
+    val machineLyingLegCurl = Exercise("machine_lying_leg_curl", "Сгибание ног лёжа", 15, 2.0,
+        gym = GymSpec(Equipment.MACHINE, LoadMode.STACK, 2_500))
+    val assistedPullup = Exercise("assisted_pullup", "Подтягивания в гравитроне", 35, 2.5, counterId = "pullups",
+        gym = GymSpec(Equipment.ASSISTED, LoadMode.COUNTERWEIGHT, 2_500))
+    // Здесь заявляется дополнительный вес диска/гантели у груди, а не масса тела.
+    val hyperextension = Exercise("hyperextension", "Гиперэкстензия", 20, 2.5,
+        gym = GymSpec(Equipment.MACHINE, LoadMode.EXTERNAL_ADDED, 2_500))
+
     val bodyweight = listOf(pushups, squats, abs, pullups, plank)
     val kettlebell = listOf(thruster, swing, sumoPull, row, deadlift, gobletSquat, press, reverseLunge, curl, gluteBridge)
 
@@ -100,7 +147,14 @@ object Exercises {
     val all = bodyweight + kettlebell
 
     /** Зал — отдельно от домашних: в свои программы и комплексы не входит. */
-    val gym = listOf(barbellSquat, barbellDeadlift, barbellPress, barbellRow)
+    val gym = listOf(
+        barbellSquat, barbellFrontSquat, barbellDeadlift, barbellRomanianDeadlift,
+        barbellBenchPress, barbellInclinePress, barbellPress, barbellRow,
+        dumbbellBenchPress, dumbbellInclinePress, dumbbellSeatedPress, dumbbellRow, dumbbellCurl,
+        dumbbellLateralRaise, dumbbellLunge, dumbbellBulgarianSplitSquat, dumbbellGobletSquat,
+        machineLatPulldown, machineSeatedRow, machineChestPress, machineLegExtension,
+        machineLegCurl, machineLyingLegCurl, assistedPullup, hyperextension,
+    )
 
     /** Все упражнения приложения: домашние и зал. */
     val catalog = all + gym

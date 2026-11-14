@@ -19,11 +19,11 @@ class GuideIntegrityTest {
 
     @Test
     fun everyExerciseHasGuide() {
-        for (ex in Exercises.all) assertNotNull(ex.id, Guides.of(ex.id))
+        for (ex in Exercises.catalog) assertNotNull(ex.id, Guides.of(ex.id))
         assertNull(Guides.of("нет такого"))
         assertEquals("id гидов не повторяются", all.size, all.map { it.exerciseId }.toSet().size)
         // Встроенные наборы не перекрывают друг друга одинаковыми id (иначе один гид молча заменит другой).
-        val builtIn = listOf(BodyweightGuides, KettlebellGuides, RoutineGuides).flatMap { p -> p.guides.map { it.exerciseId } }
+        val builtIn = listOf(BodyweightGuides, KettlebellGuides, RoutineGuides, GymGuides).flatMap { p -> p.guides.map { it.exerciseId } }
         assertEquals("повторы id: ${builtIn.groupBy { it }.filter { it.value.size > 1 }.keys}", builtIn.size, builtIn.toSet().size)
     }
 

@@ -13,7 +13,7 @@ import kotlin.math.ceil
 
 /** Run with :app:testDebugUnitTest --tests "com.nextlevellife.app.guide.*". */
 class GuideFrameExportTest {
-    private val guides = listOf(BodyweightGuides, KettlebellGuides, RoutineGuides).flatMap { it.guides }
+    private val guides = listOf(BodyweightGuides, KettlebellGuides, RoutineGuides, GymGuides).flatMap { it.guides }
 
     /** All keyframes first, then intermediate times; sort them into playback order. */
     private fun sampleTimes(guide: ExerciseGuide): List<Long> {
@@ -82,5 +82,39 @@ class GuideFrameExportTest {
         assertTrue(ImageIO.write(sheet, "png", File(output, "contact_sheet.png")))
         File(output, "frames.tsv").writeText(manifest.toString(), Charsets.UTF_8)
         assertTrue("пустой лист кадров", File(output, "contact_sheet.png").length() > 10_000)
+    }
+
+    @Test
+    fun exportReadableGymStripsAndSheets() {
+        val output = System.getProperty("guide.frames.dir")?.let(::File)
+            ?: File(if (File("app").isDirectory) "app/build/guide-frames" else "build/guide-frames")
+        assertTrue(output.isDirectory || output.mkdirs())
+        val tile = 240
+        val rowHeight = tile + 34
+        for ((pageIndex, page) in GymGuides.guides.chunked(5).withIndex()) {
+            val sheet = BufferedImage(tile * 6, rowHeight * page.size, BufferedImage.TYPE_INT_RGB)
+            val canvas = sheet.createGraphics()
+            try {
+                canvas.color = GuideAwtRenderer.background
+                canvas.fillRect(0, 0, sheet.width, sheet.height)
+                page.forEachIndexed { row, guide ->
+                    val strip = BufferedImage(tile * 6, rowHeight, BufferedImage.TYPE_INT_RGB)
+                    val graphics = strip.createGraphics()
+                    try {
+                        graphics.color = GuideAwtRenderer.background
+                        graphics.fillRect(0, 0, strip.width, strip.height)
+                        graphics.font = Font(Font.SANS_SERIF, Font.BOLD, 18)
+                        graphics.color = Color.WHITE
+                        graphics.drawString(guide.exerciseId, 12, 23)
+                        sampleTimes(guide).forEachIndexed { col, ms ->
+                            graphics.drawImage(GuideAwtRenderer.render(guide, GuideMath.poseAt(guide, ms), tile), col * tile, 34, null)
+                        }
+                    } finally { graphics.dispose() }
+                    assertTrue(ImageIO.write(strip, "png", File(output, "${guide.exerciseId}_strip.png")))
+                    canvas.drawImage(strip, 0, row * rowHeight, null)
+                }
+            } finally { canvas.dispose() }
+            assertTrue(ImageIO.write(sheet, "png", File(output, "gym_contact_sheet_${pageIndex + 1}.png")))
+        }
     }
 }

@@ -32,7 +32,7 @@ interface GuidePack {
  */
 object Guides {
     /** Встроенные наборы. Новый набор — новый файл и одна строка здесь. */
-    private val packs: List<GuidePack> = listOf(BodyweightGuides, KettlebellGuides, RoutineGuides)
+    private val packs: List<GuidePack> = listOf(BodyweightGuides, KettlebellGuides, RoutineGuides, GymGuides)
 
     private val registered = LinkedHashMap<String, ExerciseGuide>()
 

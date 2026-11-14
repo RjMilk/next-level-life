@@ -74,7 +74,7 @@ class GuideMathTest {
     @Test
     fun everyGuideKeepsSegmentLengthsThroughoutEveryTransition() {
         val failures = mutableListOf<String>()
-        val guides = listOf(BodyweightGuides, KettlebellGuides, RoutineGuides).flatMap { it.guides }
+        val guides = listOf(BodyweightGuides, KettlebellGuides, RoutineGuides, GymGuides).flatMap { it.guides }
         for (g in guides) for (i in g.frames.indices) {
             val a = g.frames[i].pose
             val b = g.frames[(i + 1) % g.frames.size].pose
@@ -119,7 +119,7 @@ class GuideMathTest {
     fun allGuideTransitionsAreContinuousAtBothKeyframesAndKeepReachableContacts() {
         val contacts = listOf(GuideJoint.R_ANKLE, GuideJoint.L_ANKLE, GuideJoint.R_WRIST, GuideJoint.L_WRIST)
         val failures = mutableListOf<String>()
-        for (g in listOf(BodyweightGuides, KettlebellGuides, RoutineGuides).flatMap { it.guides }) {
+        for (g in listOf(BodyweightGuides, KettlebellGuides, RoutineGuides, GymGuides).flatMap { it.guides }) {
             for (i in g.frames.indices) {
                 val a = g.frames[i].pose
                 val b = g.frames[(i + 1) % g.frames.size].pose
