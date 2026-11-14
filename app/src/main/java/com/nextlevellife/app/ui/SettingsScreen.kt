@@ -520,15 +520,36 @@ private fun StepsSection(version: Int) {
             SettingsText(ActivityMath.sourcesLine(d?.sources.orEmpty()))
             SettingsText(ActivityMath.updatedLine(sync.lastSyncMs, System.currentTimeMillis(), ZoneId.systemDefault()))
             sync.error?.let { SettingsText(it, color = Bad) }
+            // В паре Health Connect читает только телефон-источник; здесь «Обновить» забирает его шаги обменом.
+            val readsHere = remember(version) {
+                runCatching { com.nextlevellife.app.data.SharedSettings.isActivitySource() }.getOrDefault(true)
+            }
+            if (!readsHere) {
+                SettingsText(
+                    "Шаги и бег сейчас читает второй телефон, сюда они приходят при обмене. " +
+                        "Если часы подключены к этому телефону — выбери его источником выше",
+                )
+            }
             Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
                 OutlinedButton(
-                    onClick = { ActivitySync.request(appContext, force = true) },
+                    onClick = {
+                        if (readsHere) ActivitySync.request(appContext, force = true)
+                        else SyncEngine.requestSync("шаги", force = true)
+                    },
                     enabled = !sync.running,
                     shape = ButtonShape,
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 48.dp),
-                ) { Text(if (sync.running) "Обновляю…" else "Обновить") }
+                ) {
+                    Text(
+                        when {
+                            sync.running -> "Обновляю…"
+                            readsHere -> "Обновить"
+                            else -> "Получить шаги со второго телефона"
+                        },
+                    )
+                }
                 if (sync.running) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 4.dp))
             }
         }
