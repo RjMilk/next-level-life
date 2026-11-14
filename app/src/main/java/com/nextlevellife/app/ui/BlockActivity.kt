@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.dp
 import com.nextlevellife.app.block.BlockReason
 import com.nextlevellife.app.block.BlockRules
 import com.nextlevellife.app.data.Exercises
+import com.nextlevellife.app.data.Ledger
+import com.nextlevellife.app.sync.SyncEngine
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TrustedClock
@@ -47,9 +49,22 @@ import java.time.ZoneId
 class BlockActivity : ComponentActivity() {
 
     /** Что показывает экран: приложение, причина и тексты с числами на момент блокировки. */
-    private data class BlockScreen(val label: String, val reason: BlockReason, val title: String, val message: String)
+    private data class BlockScreen(
+        val label: String, val reason: BlockReason, val title: String, val message: String,
+        /** «На втором телефоне есть ещё N мин — включи его экран рядом»; null — нет пары или ресурса. */
+        val peerHint: String? = null,
+    )
 
     private var screen by mutableStateOf(BlockScreen("", BlockReason.BALANCE, "", ""))
+
+    /** Минуты (BALANCE) или доля лимита (LIMIT) второго телефона по копии; ночью и без пары — 0. */
+    private fun peerResourceMs(reason: BlockReason, day: Long): Long = runCatching {
+        when (reason) {
+            BlockReason.BALANCE -> if (Ledger.peerId() != null) Ledger.peerBalanceMs() else 0L
+            BlockReason.LIMIT -> Ledger.peerShareLeftMs(day) ?: 0L
+            BlockReason.NIGHT -> 0L
+        }
+    }.getOrDefault(0L)
 
     /** Причина, приложение и числа берутся из Intent и текущих данных. */
     private fun bind(intent: Intent) {
@@ -80,7 +95,10 @@ class BlockActivity : ComponentActivity() {
                 pushupsRewardMs = Exercises.rewardMs(Exercises.pushups, 10, Weights.DEFAULT),
                 resumeClock = resumeClock,
             ),
+            peerHint = SettingsMath.peerResourceLine(peerResourceMs(reason, time.day)),
         )
+        // У второго телефона есть ресурс: пробуем обмен сразу — он отдаст минуты или долю тратящему.
+        if (screen.peerHint != null) SyncEngine.requestSync("экран блокировки", force = true)
     }
 
     // Activity singleInstance: повторная блокировка приходит сюда, а не в onCreate — обновить экран.
@@ -105,7 +123,7 @@ class BlockActivity : ComponentActivity() {
         bind(intent)
 
         setContent {
-            val (label, reason, title, message) = screen
+            val (label, reason, title, message, peerHint) = screen
             // При лимите и ночью заработанные минуты всё равно не откроют приложение: главное — уйти на рабочий стол.
             val homeFirst = reason != BlockReason.BALANCE
             NextLevelTheme {
@@ -151,6 +169,15 @@ class BlockActivity : ComponentActivity() {
                                 textAlign = TextAlign.Center,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            if (peerHint != null) {
+                                Spacer(Modifier.height(12.dp))
+                                Text(
+                                    peerHint,
+                                    style = MaterialTheme.typography.bodyLarge.merge(Tabular),
+                                    textAlign = TextAlign.Center,
+                                    color = Accent,
+                                )
+                            }
                             Spacer(Modifier.height(32.dp))
                             val primaryText = if (homeFirst) HOME_BUTTON else EARN_BUTTON
                             val secondaryText = if (homeFirst) EARN_BUTTON else HOME_BUTTON

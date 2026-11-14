@@ -128,6 +128,8 @@ object Store {
             .putInt(KEY_STREAK, next)
             .apply()
         notifyChanged()
+        // Запись уже в базе (вызывается после commit): второй телефон, если он рядом, получит подход сразу.
+        com.nextlevellife.app.sync.SyncEngine.requestSync("подход")
     }
 
     /**

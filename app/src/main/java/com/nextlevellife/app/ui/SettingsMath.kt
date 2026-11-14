@@ -59,6 +59,30 @@ internal object SettingsMath {
         return "${ProgressMath.dateLabel(day, today)}, ${ProgressMath.clock(timeMs, zone)}"
     }
 
+    /** Минуты со знаком для кошельков (кошелёк бывает отрицательным после долга): «−3», «12». */
+    private fun signedMinutes(ms: Long): String = if (ms < 0) "−${wholeMinutes(-ms)}" else "${wholeMinutes(ms)}"
+
+    /** «На этом телефоне 25 мин · на втором 10 мин» — под общим балансом связанного телефона. */
+    fun walletsLine(myMs: Long, peerMs: Long): String =
+        "На этом телефоне ${signedMinutes(myMs)} мин · на втором ${signedMinutes(peerMs)} мин"
+
+    /** «На втором телефоне есть ещё 25 мин — включи его экран рядом»; меньше минуты — null. */
+    fun peerResourceLine(peerMs: Long): String? {
+        val m = wholeMinutes(peerMs)
+        return if (m <= 0) null else "На втором телефоне есть ещё $m мин — включи его экран рядом"
+    }
+
+    /** Статус пары: «Нет пары», «Связан с Galaxy Z Fold8». */
+    fun pairStatus(peerName: String?): String = if (peerName == null) "Нет пары" else "Связан с $peerName"
+
+    /** «Последний обмен: 12 ноября, 22:40», «Второй телефон не найден», «Обмена ещё не было». */
+    fun lastSyncLine(lastSuccessMs: Long?, notFound: Boolean, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): String = when {
+        notFound && lastSuccessMs != null -> "Второй телефон не найден. Последний обмен: ${dateTime(lastSuccessMs, nowMs, zone)}"
+        notFound -> "Второй телефон не найден"
+        lastSuccessMs != null -> "Последний обмен: ${dateTime(lastSuccessMs, nowMs, zone)}"
+        else -> "Обмена ещё не было"
+    }
+
     /** «Последняя копия: 12 ноября, 22:40» или «Последняя копия: ещё не создавалась». */
     fun lastBackupLine(timeMs: Long?, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): String =
         "Последняя копия: " + (timeMs?.let { dateTime(it, nowMs, zone) } ?: "ещё не создавалась")

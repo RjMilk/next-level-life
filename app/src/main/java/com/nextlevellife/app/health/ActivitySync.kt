@@ -8,6 +8,7 @@ import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.OpKind
 import com.nextlevellife.app.data.Settings
+import com.nextlevellife.app.data.SharedSettings
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TrustedClock
 import kotlinx.coroutines.CancellationException
@@ -93,6 +94,12 @@ object ActivitySync {
         }
         val access = HealthConnect.access(context)
         _state.update { it.copy(access = access) }
+        // Связанный телефон, который не источник активности: шаги и бег читает и оплачивает второй телефон,
+        // а сюда они приходят копией при обмене. Читать Health Connect здесь — двойной счёт.
+        if (!SharedSettings.isActivitySource()) {
+            _state.update { it.copy(error = null) }
+            return
+        }
         if (access.availability != HealthAvailability.CONNECTED) {
             _state.update { it.copy(error = null) }
             return

@@ -508,6 +508,19 @@ object Ledger {
     }
 
     /**
+     * Оставшаяся доля лимита второго телефона в сутки [day] по копии его журнала и переносам; null — пары или лимита нет.
+     * Только для подсказок («на втором телефоне есть ещё…»): блокировка считает свою долю ([shareLeftMs]).
+     */
+    fun peerShareLeftMs(day: Long, limitMin: Int = Settings.dailyLimitMin): Long? {
+        val peer = peerId() ?: return null
+        val (mineIn, mineOut) = limitMoves(day)
+        return SharedWalletMath.shareLeftMs(
+            limitMs = limitMin * 60_000L, me = peer, peer = deviceId(),
+            incomingMs = mineOut, outgoingMs = mineIn, ownSpentMs = peerSpentMs(day),
+        )
+    }
+
+    /**
      * Сколько ещё этот телефон может потратить в сутки [day] по своей доле дневного лимита ([SharedWalletMath.shareLeftMs]);
      * null — лимита нет. Несвязанный телефон — лимит целиком.
      */

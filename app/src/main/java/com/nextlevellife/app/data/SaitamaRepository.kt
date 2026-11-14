@@ -3,6 +3,7 @@ package com.nextlevellife.app.data
 import android.util.Log
 import com.nextlevellife.app.health.ActivitySync
 import com.nextlevellife.app.health.HealthAccess
+import com.nextlevellife.app.health.HealthAvailability
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -74,6 +75,8 @@ object SaitamaRepository {
      * откатила бы внешнюю.
      */
     private fun payDue(time: TimeSnapshot): Long {
+        // В паре бонус начисляет только источник активности: у второго телефона те же дни копией, второй бонус — лишний.
+        if (!SharedSettings.isActivitySource()) return 0L
         val today = time.day
         val since = sinceDay(today, swallowErrors = false)
         val from = maxOf(since, today - Saitama.CHECK_DAYS + 1)
@@ -113,6 +116,9 @@ object SaitamaRepository {
      * известный из [ActivitySync]): от него зависит, подтверждён ли сегодняшний бег.
      */
     fun load(access: HealthAccess? = ActivitySync.state.value.access): SaitamaState {
+        // Не источник активности: бег берётся из копии строк источника, свой доступ к Health Connect не важен.
+        @Suppress("NAME_SHADOWING")
+        val access = if (SharedSettings.isActivitySource()) access else HealthAccess(HealthAvailability.CONNECTED, canReadRuns = true)
         val today = TrustedClock.today()
         val since = sinceDay(today)
         val stripFrom = today - Saitama.CHECK_DAYS + 1

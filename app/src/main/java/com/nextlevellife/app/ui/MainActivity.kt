@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import com.nextlevellife.app.data.Saitama
 import com.nextlevellife.app.data.SaitamaRepository
 import com.nextlevellife.app.data.Store
+import com.nextlevellife.app.sync.SyncEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -161,7 +162,7 @@ class MainActivity : ComponentActivity() {
                                             }
                                         screen == HOME && tab == TAB_SETTINGS ->
                                             tabStates.SaveableStateProvider(TAB_SETTINGS) {
-                                                SettingsScreen(onApps = { screen = APPS })
+                                                SettingsScreen(onApps = { screen = APPS }, onPairing = { screen = PAIRING })
                                             }
                                         screen == HOME -> tabStates.SaveableStateProvider(TAB_TRAINING) {
                                             HomeScreen(
@@ -174,6 +175,8 @@ class MainActivity : ComponentActivity() {
                                             )
                                         }
                                         screen == APPS -> AppsScreen(onBack = goHome)
+                                        // Заглушка: настоящий экран сопряжения подключит режиссёр.
+                                        screen == PAIRING -> PairingPlaceholder(onBack = goHome)
                                         screen.startsWith(STAT_INFO) -> StatInfoScreen(
                                             topic = screen.removePrefix(STAT_INFO),
                                             resumeCount = resumeCount,
@@ -206,6 +209,8 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         resumeCount++
+        // Открыли приложение — второй телефон, возможно, рядом: обмен (без транспорта и пары — ничего).
+        SyncEngine.requestSync("приложение")
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -236,6 +241,8 @@ class MainActivity : ComponentActivity() {
         const val COMPLEX = "complex:"
         const val EXERCISE = "exercise:"
         const val STAT_INFO = "stat:"
+        /** Сопряжение со вторым телефоном (из «Настроек»). */
+        const val PAIRING = "pairing"
 
         /** Экран «Сайтамы»: главная открывает его как комплекс — onComplex("saitama"). */
         const val SAITAMA = COMPLEX + Saitama.ID
@@ -248,6 +255,20 @@ class MainActivity : ComponentActivity() {
 
         /** Health Connect (Android 13 и старше) просит показать, зачем приложению разрешения. */
         const val ACTION_SHOW_RATIONALE = "androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE"
+    }
+}
+
+/** Временный экран вместо сопряжения: его заменит настоящий. */
+@Composable
+private fun PairingPlaceholder(onBack: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text("Экран сопряжения", style = MaterialTheme.typography.headlineMedium)
+        Button(onClick = onBack, shape = ButtonShape) { Text("Назад") }
     }
 }
 

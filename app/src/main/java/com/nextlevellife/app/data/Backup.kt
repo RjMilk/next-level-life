@@ -264,6 +264,15 @@ object Backup {
             Log.e(TAG, "Не удалось прочитать расход текущего журнала: восстановление без переноса расхода", e)
             null
         }
+        // Исходящие переносы на второй телефон: восстановление не должно вернуть отданные минуты.
+        val currentTransfers = try {
+            Ledger.transfersForCarry()
+        } catch (e: Exception) {
+            Log.e(TAG, "Не удалось прочитать переносы текущего журнала", e)
+            emptyList()
+        }
+        // Связь с вторым телефоном — здешняя: копия её не переносит.
+        val localPeer = runCatching { Ledger.peerId() }.getOrNull()
         var carriedMs = 0L
         val oldPrefsJson = Store.exportPrefs()
         val oldPrefs = Store.parsePrefs(oldPrefsJson)
@@ -280,6 +289,9 @@ object Backup {
             staging.delete()
             newDb.inputStream().use { input -> staging.outputStream().use { input.copyTo(it) } }
             SQLiteDatabase.openDatabase(staging.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+                // Старая схема копии догоняет текущую до запросов переноса (они читают новые столбцы).
+                // Авторство старых строк — device_id копии: миграция выполняется до записи здешнего device_id.
+                migrateStaging(db)
                 fun putMeta(key: String, value: String) {
                     db.insertWithOnConflict(
                         "meta", null,
@@ -291,6 +303,14 @@ object Backup {
                     )
                 }
                 if (localDeviceId != null) putMeta(Ledger.KEY_DEVICE_ID, localDeviceId)
+                // Новые поколения журнала и фактов: второй телефон заберёт журнал заново, а потерянные подходы
+                // вернёт по старым поколениям. Курсоры и копия журнала второго телефона — заново.
+                putMeta(Diary.KEY_OPS_EPOCH, UUID.randomUUID().toString())
+                putMeta(Diary.KEY_FACTS_EPOCH, UUID.randomUUID().toString())
+                putMeta(Diary.KEY_FACTS_SEQ, "0")
+                db.delete("sync_cursors", null, null)
+                db.delete("peer_ops", null, null)
+                if (localPeer != null) putMeta(Ledger.KEY_SYNC_PEER, localPeer) else db.delete("meta", "key = ?", arrayOf(Ledger.KEY_SYNC_PEER))
                 val backupMeta = HashMap<String, String>()
                 db.rawQuery("SELECT key, value FROM meta", null).use { c ->
                     while (c.moveToNext()) backupMeta[c.getString(0)] = c.getString(1)
@@ -302,7 +322,7 @@ object Backup {
                 }
                 if (currentSpent != null) {
                     val deviceId = localDeviceId ?: backupMeta[Ledger.KEY_DEVICE_ID] ?: "restore"
-                    carriedMs = Ledger.appendRestoreCarry(db, currentSpent, deviceId, zone, nowMs)
+                    carriedMs = Ledger.appendRestoreCarry(db, currentSpent, deviceId, zone, nowMs, currentTransfers)
                     if (carriedMs > 0) Log.i(TAG, "Перенесён расход после копии: $carriedMs мс")
                 }
             }
@@ -376,6 +396,20 @@ object Backup {
             Ledger.onDatabaseReplaced()
             Store.notifyChanged()
             "Не удалось заменить данные: ${e.message ?: e.javaClass.simpleName}. Текущие данные сохранены."
+        }
+    }
+
+    /** Доводит базу копии [db] до текущей схемы теми же шагами, что и [Diary] (одной транзакцией). */
+    private fun migrateStaging(db: SQLiteDatabase) {
+        val from = db.version
+        if (from >= Diary.SCHEMA_VERSION) return
+        db.beginTransaction()
+        try {
+            for (v in from until Diary.SCHEMA_VERSION) Diary.MIGRATIONS[v].forEach(db::execSQL)
+            db.version = Diary.SCHEMA_VERSION
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
     }
 

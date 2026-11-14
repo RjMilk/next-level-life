@@ -19,6 +19,8 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
 import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Ledger
+import com.nextlevellife.app.data.LedgerMath
+import com.nextlevellife.app.data.SharedWalletMath
 import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TimeSnapshot
@@ -26,6 +28,7 @@ import com.nextlevellife.app.data.TrustedClock
 import com.nextlevellife.app.data.UsageDebt
 import com.nextlevellife.app.sleep.PhoneEventType
 import com.nextlevellife.app.sleep.PhoneEvents
+import com.nextlevellife.app.sync.SyncEngine
 import com.nextlevellife.app.ui.BlockActivity
 import java.util.UUID
 
@@ -96,6 +99,8 @@ class BlockerService : AccessibilityService() {
             when (intent.action) {
                 Intent.ACTION_SCREEN_ON -> {
                     onScreen(true)
+                    // Экран включили — второй телефон, возможно, рядом: обмен (не чаще, чем разрешает SyncEngine).
+                    SyncEngine.requestSync("экран")
                     PhoneEvents.record(PhoneEventType.SCREEN_ON, PhoneEvents.SOURCE_RECEIVER, interactive = true, locked = keyguardLocked())
                 }
                 Intent.ACTION_SCREEN_OFF -> {
@@ -133,6 +138,7 @@ class BlockerService : AccessibilityService() {
                 return
             }
             val decision = decide()
+            maybeSyncWhileSpending(decision)
             if (decision.reason != null) block(pkg, decision.reason, TRIGGER_TICK) else handler.postDelayed(this, TICK_MS)
         }
     }
@@ -155,9 +161,50 @@ class BlockerService : AccessibilityService() {
         }
     }
 
+    /** Для обмена: погасить текущий просмотр и сообщить неоплаченное (главный поток). */
+    private val bridge = object : SpendBridge.Source {
+        override fun settleNow(): Long {
+            settle()
+            return unpaid.sumOf { it.durationMs }
+        }
+
+        override fun spendingNow(): Boolean = spending
+    }
+
+    /** Когда последний раз просили обмен во время расхода (elapsedRealtime). */
+    private var lastSpendSyncAt = 0L
+
+    /**
+     * Пока идёт расход — обмен раз в минуту; сразу, когда свой кошелёк или своя доля лимита почти кончились,
+     * а у второго телефона по копии есть ресурс.
+     */
+    private fun maybeSyncWhileSpending(decision: BlockDecision) {
+        val now = SystemClock.elapsedRealtime()
+        val low = decision.reason != null || decision.availableMs <= LOW_MS
+        if (low && peerHasResources(decision.reason ?: BlockReason.BALANCE)) {
+            SyncEngine.requestSync("ресурс кончается")
+            lastSpendSyncAt = now
+        } else if (now - lastSpendSyncAt >= SPEND_SYNC_MS) {
+            SyncEngine.requestSync("расход")
+            lastSpendSyncAt = now
+        }
+    }
+
+    /** У второго телефона по копии есть минуты (BALANCE) или доля лимита (LIMIT). */
+    private fun peerHasResources(reason: BlockReason): Boolean = try {
+        when (reason) {
+            BlockReason.BALANCE -> Ledger.peerId() != null && Ledger.peerBalanceMs() > 0L
+            BlockReason.LIMIT -> (Ledger.peerShareLeftMs(TrustedClock.today()) ?: 0L) > 0L
+            BlockReason.NIGHT -> false
+        }
+    } catch (e: Exception) {
+        false
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         Store.init(this)
+        SpendBridge.register(bridge)
         refreshIgnored()
         registerTimeReceiver()
         meter.setScreen(interactive() != false)
@@ -254,14 +301,19 @@ class BlockerService : AccessibilityService() {
      * Правила на момент [time] (доверенное время и учётный пояс): ночь, баланс, расход за учётные сутки, настройки.
      */
     private fun decide(time: TimeSnapshot = TrustedClock.snapshot()): BlockDecision {
+        val settings = Settings.blockSettings()
         val spentToday = try {
-            Ledger.spentMs(time.day)
+            // Связанный телефон тратит свою долю общего лимита: правилам показывается «лимит − своя доля».
+            if (Ledger.peerId() == null) Ledger.ownSpentMs(time.day)
+            else SharedWalletMath.effectiveSpentMs(
+                settings.dailyLimitMin * 60_000L, Ledger.shareLeftMs(time.day, settings.dailyLimitMin),
+            )
         } catch (e: Exception) {
             // Безопасная сторона: расход неизвестен — считаем дневной лимит исчерпанным (если он задан).
             Log.e(TAG, "Не удалось прочитать расход за сегодня", e)
             Long.MAX_VALUE
         }
-        return BlockRules.evaluate(time, Store.balanceMs(), spentToday, Settings.blockSettings())
+        return BlockRules.evaluate(time, Store.balanceMs(), spentToday, settings)
     }
 
     private fun startSpending(pkg: String) {
@@ -322,17 +374,22 @@ class BlockerService : AccessibilityService() {
     private fun charge(sid: String, pkg: String, viewed: Long, time: TimeSnapshot): Boolean {
         val debts = unpaid.toList()
         return try {
-            if (debtsInMeta) {
-                Diary.write {
-                    Ledger.spend(sid, pkg, viewed, time, debts)
-                    Diary.metaDelete(KEY_USAGE_DEBTS)
+            // Не хватило баланса — остаток долгов и просмотра не пропадает (раньше весь unpaid очищался), а остаётся
+            // долгом: в meta той же транзакцией (если долги прошлого запуска уже прочитаны) и в памяти.
+            var leftover: List<UsageDebt> = emptyList()
+            Diary.write {
+                val charged = Ledger.spend(sid, pkg, viewed, time, debts)
+                leftover = LedgerMath.leftoverDebts(debts, pkg, sid, time.utcMs, viewed, charged)
+                when {
+                    leftover.isNotEmpty() && debtsLoaded -> Diary.metaPut(KEY_USAGE_DEBTS, UsageDebtCodec.encode(leftover))
+                    leftover.isEmpty() && debtsInMeta -> Diary.metaDelete(KEY_USAGE_DEBTS)
                 }
-            } else {
-                Ledger.spend(sid, pkg, viewed, time, debts)
             }
             unpaid.clear()
-            debtsInMeta = false
-            debtsDirty = false
+            unpaid.addAll(leftover)
+            debtsInMeta = leftover.isNotEmpty() && debtsLoaded
+            debtsDirty = leftover.isNotEmpty() && !debtsLoaded
+            if (leftover.isNotEmpty()) Log.w(TAG, "Баланса не хватило: долг ${leftover.sumOf { it.durationMs }} мс остаётся")
             failedCharges = 0
             true
         } catch (e: Exception) {
@@ -402,6 +459,11 @@ class BlockerService : AccessibilityService() {
 
     private fun block(pkg: String, reason: BlockReason, trigger: String) {
         stopSpending()
+        if (reason != BlockReason.NIGHT) {
+            // Упёрлись в свой кошелёк или долю: ближайшие минуты этот телефон «тратит» — второй отдаст ему ресурс.
+            SpendBridge.markWantsToSpend()
+            if (peerHasResources(reason)) SyncEngine.requestSync("блокировка", force = true)
+        }
         recordBlockEvent(pkg, reason, trigger)
         // Экран блокировки открывается прямо поверх приложения. Нажимать «Домой» нельзя:
         // рабочий стол появляется после него и перекрывает экран блокировки.
@@ -434,6 +496,7 @@ class BlockerService : AccessibilityService() {
         // Долг, который не удалось сохранить сразу, — последняя попытка: иначе он пропадёт с процессом.
         if (debtsDirty) persistDebts()
         stopSpending()
+        SpendBridge.register(null)
         handler.removeCallbacks(observeTick)
         if (timeReceiverRegistered) {
             runCatching { unregisterReceiver(timeReceiver) }
@@ -455,6 +518,10 @@ class BlockerService : AccessibilityService() {
         private const val MAX_FAILED_CHARGES = 2
         /** Финализация ночей и чистка сырых данных — раз в час. */
         private const val MAINTENANCE_MS = 60 * 60_000L
+        /** Обмен со вторым телефоном во время расхода — раз в минуту. */
+        private const val SPEND_SYNC_MS = 60_000L
+        /** Осталось меньше — «ресурс кончается»: обмен сразу, если у второго телефона есть ресурс. */
+        private const val LOW_MS = 60_000L
         /** Ключ meta: неоплаченные просмотры ([UsageDebt]) JSON-массивом ([UsageDebtCodec]). */
         internal const val KEY_USAGE_DEBTS = "usage_debts"
 

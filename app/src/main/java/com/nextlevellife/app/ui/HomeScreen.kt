@@ -116,6 +116,12 @@ fun HomeScreen(
 
     // version участвует в чтении, чтобы экран обновлялся при изменении данных.
     val balance = remember(version) { Store.balanceMs() }
+    // Связанный телефон: кошелёк второго — по копии его журнала (читается в фоне).
+    val peerBalance by produceState<Long?>(null, version, resumeCount) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { if (Ledger.peerId() != null) Ledger.peerBalanceMs() else null }.getOrNull()
+        }
+    }
     val streak = remember(version) { Store.streak() }
     val limitMin = remember(version) { Settings.dailyLimitMin }
     val nightOn = remember(version) { Settings.nightEnabled }
@@ -184,6 +190,7 @@ fun HomeScreen(
     val status: @Composable () -> Unit = {
         BalanceCard(
             balanceMs = balance,
+            peerBalanceMs = peerBalance,
             spentMs = spentToday,
             limitMin = limitMin,
             night = if (nightOn) nightStart to nightEnd else null,
@@ -260,15 +267,30 @@ private fun HomeColumn(modifier: Modifier, scroll: ScrollState, pad: Dp, content
 // ---------- Баланс ----------
 
 @Composable
-private fun BalanceCard(balanceMs: Long, spentMs: Long?, limitMin: Int, night: Pair<Int, Int>?, large: Boolean) {
+private fun BalanceCard(
+    balanceMs: Long,
+    /** Кошелёк второго телефона по копии; null — пары нет. */
+    peerBalanceMs: Long?,
+    /** Расход за сутки (у пары — общий на оба телефона). */
+    spentMs: Long?,
+    limitMin: Int,
+    night: Pair<Int, Int>?,
+    large: Boolean,
+) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
-                "Баланс экранного времени",
+                if (peerBalanceMs != null) "Общий баланс двух телефонов" else "Баланс экранного времени",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            BalanceScore(balanceMs, large)
+            BalanceScore(balanceMs + (peerBalanceMs ?: 0L), large)
+            if (peerBalanceMs != null) {
+                Text(
+                    SettingsMath.walletsLine(balanceMs, peerBalanceMs),
+                    style = MaterialTheme.typography.bodySmall.merge(Tabular),
+                )
+            }
             Text(
                 "Тратится, только пока открыто заблокированное приложение",
                 style = MaterialTheme.typography.bodySmall,

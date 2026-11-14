@@ -60,6 +60,8 @@ import com.nextlevellife.app.data.Diary
 import com.nextlevellife.app.data.Ledger
 import com.nextlevellife.app.data.RestoreResult
 import com.nextlevellife.app.data.Settings
+import com.nextlevellife.app.data.SharedSettings
+import com.nextlevellife.app.sync.SyncEngine
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TrustedClock
 import com.nextlevellife.app.data.TrustedClockMath
@@ -83,7 +85,12 @@ import java.time.ZoneId
  * Каждый раздел — отдельная функция; новый раздел вставляется строкой в список ниже.
  */
 @Composable
-fun SettingsScreen(onApps: () -> Unit, modifier: Modifier = Modifier) {
+fun SettingsScreen(
+    onApps: () -> Unit,
+    modifier: Modifier = Modifier,
+    /** Экран сопряжения со вторым телефоном (QR). */
+    onPairing: () -> Unit = {},
+) {
     val widthClass = currentWidthClass()
     val version by Store.version.collectAsState()
     Column(
@@ -104,6 +111,7 @@ fun SettingsScreen(onApps: () -> Unit, modifier: Modifier = Modifier) {
             NightModeSection(version)
             StepsSection(version)
             BlockingSection(version, onApps)
+            SecondPhoneSection(version, onPairing)
             DataSection(version)
             AboutSection()
             Spacer(Modifier.height(8.dp))
@@ -539,7 +547,90 @@ private fun BlockingSection(version: Int, onApps: () -> Unit) {
     }
 }
 
-// ---------- 5. Данные ----------
+// ---------- 5. Второй телефон ----------
+
+/**
+ * Второй телефон: статус пары, последний обмен, кошельки, «Синхронизировать сейчас», источник активности
+ * и вход на экран сопряжения ([onPairing]).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SecondPhoneSection(version: Int, onPairing: () -> Unit) {
+    val sync by SyncEngine.state.collectAsState()
+    val peer = sync.peer ?: remember(version) { SyncEngine.peer() }
+    val wallets by produceState<Pair<Long, Long>?>(null, version, peer) {
+        value = if (peer == null) null else withContext(Dispatchers.IO) {
+            runCatching { Ledger.balanceMs() to Ledger.peerBalanceMs() }.getOrNull()
+        }
+    }
+    val source by produceState<String?>(null, version, peer) {
+        value = withContext(Dispatchers.IO) { runCatching { SharedSettings.activitySource() }.getOrNull() }
+    }
+    val me = remember { runCatching { Ledger.deviceId() }.getOrNull() }
+    SettingsSection("Второй телефон") {
+        SettingsRow(SettingsMath.pairStatus(peer?.name))
+        if (peer != null) {
+            SettingsText(
+                if (sync.running) "Обмен…" else SettingsMath.lastSyncLine(sync.lastSuccessMs, sync.notFound, System.currentTimeMillis()),
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            wallets?.let { (mine, theirs) -> SettingsText(SettingsMath.walletsLine(mine, theirs)) }
+            sync.error?.let { SettingsText(it, color = Bad) }
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                OutlinedButton(
+                    onClick = { SyncEngine.requestSync("кнопка", force = true) },
+                    enabled = !sync.running,
+                    shape = ButtonShape,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp),
+                ) { Text(if (sync.running) "Синхронизирую…" else "Синхронизировать сейчас") }
+            }
+            if (me != null) {
+                HorizontalDivider(Modifier.padding(top = 4.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                Text(
+                    "Шаги и бег читает",
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp),
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                val choices = listOf(me to "Этот телефон", peer.deviceId to peer.name)
+                SingleChoiceSegmentedButtonRow(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                ) {
+                    choices.forEachIndexed { i, (id, label) ->
+                        SegmentedButton(
+                            selected = source == id,
+                            onClick = {
+                                if (source != id) {
+                                    Settings.setActivitySource(id)
+                                    SyncEngine.requestSync("источник активности", force = true)
+                                }
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(i, choices.size),
+                            colors = SegmentedButtonDefaults.colors(activeContainerColor = Accent, activeContentColor = OnAccent),
+                            icon = {},
+                        ) { Text(label, maxLines = 1) }
+                    }
+                }
+                SettingsText("Он оплачивает шаги и бонус «Сайтамы»; второй телефон получает данные копией")
+            }
+        } else {
+            SettingsText("Баланс и дневной лимит станут общими на два телефона. Обмен — по Wi-Fi, когда телефоны рядом")
+        }
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            val label = if (peer == null) "Связать телефоны" else "Управление связью"
+            if (peer == null) {
+                Button(onClick = onPairing, shape = ButtonShape, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(label) }
+            } else {
+                OutlinedButton(onClick = onPairing, shape = ButtonShape, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(label) }
+            }
+        }
+    }
+}
+
+// ---------- 6. Данные ----------
 
 /** Итог последней операции с копией: текст и ошибка ли это. */
 private data class BackupStatus(val text: String, val isError: Boolean)
@@ -666,7 +757,7 @@ private fun DataSection(version: Int) {
     }
 }
 
-// ---------- 6. О приложении ----------
+// ---------- 7. О приложении ----------
 
 private val LICENSE_FILES = listOf(
     "Inter" to "licenses/OFL-Inter.txt",
