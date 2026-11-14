@@ -76,7 +76,7 @@ object StatsRepository {
     internal const val CACHE_PREFIX = "stats_day:"
 
     /** meta: учётный день, с которого действуют штрафы за простой. */
-    private const val PENALTY_SINCE_KEY = "stats_penalty_since"
+    internal const val PENALTY_SINCE_KEY = "stats_penalty_since"
 
     @Volatile private var last: StatsSummary? = null
 
@@ -108,6 +108,23 @@ object StatsRepository {
             Log.e(TAG, "Не удалось посчитать характеристики", e)
         }
         return last ?: StatsSummary.empty(snap.day, legacy)
+    }
+
+    /**
+     * Замороженные дни [days] пересчитать: в дневник пришли записи второго телефона (поздний импорт). Метка версии
+     * кеша дня переписывается на предыдущую версию правил: день не читается как замороженный и считается заново,
+     * а дисциплина берётся из прежнего кеша ([StatsMath.keepOldDiscipline]) — её исходные события могли быть удалены.
+     */
+    fun invalidateDays(days: Collection<Long>) {
+        if (days.isEmpty()) return
+        Diary.write {
+            for (day in days) {
+                val key = CACHE_PREFIX + day
+                val raw = Diary.metaGet(key) ?: continue
+                val p = StatsMath.decode(day, raw) ?: continue
+                Diary.metaPut(key, StatsMath.encode(p, StatsMath.RULE_VERSION - 1))
+            }
+        }
     }
 
     /**

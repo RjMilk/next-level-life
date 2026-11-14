@@ -47,36 +47,75 @@ object Settings {
     val activityLastSyncMs: Long?
         get() = Store.prefs().getLong(KEY_ACTIVITY_LAST_SYNC, -1L).takeIf { it > 0L }
 
+    // Сеттеры пишут prefs и общую настройку пары (SharedSettings, версия +1); слияние со вторым телефоном
+    // возвращает победителя через applyShared… — читатели не меняются.
+
     fun setDailyLimitMin(minutes: Int) {
         require(minutes in BlockRules.LIMIT_RANGE) { "Дневной лимит вне диапазона ${BlockRules.LIMIT_RANGE}: $minutes" }
-        Store.prefs().edit().putInt(KEY_DAILY_LIMIT, minutes).apply()
-        Store.notifyChanged()
+        applySharedLimit(minutes)
+        SharedSettings.localChange(SharedSettings.DAILY_LIMIT, minutes.toString())
     }
 
     fun setNightEnabled(enabled: Boolean) {
-        Store.prefs().edit().putBoolean(KEY_NIGHT_ENABLED, enabled).apply()
-        Store.notifyChanged()
+        applySharedNight(enabled, nightStartMin, nightEndMin)
+        shareNight()
     }
 
     fun setNightStartMin(minuteOfDay: Int) {
         require(minuteOfDay in BlockRules.MINUTE_RANGE) { "Начало ночи вне суток: $minuteOfDay" }
-        Store.prefs().edit().putInt(KEY_NIGHT_START, minuteOfDay).apply()
-        Store.notifyChanged()
+        applySharedNight(nightEnabled, minuteOfDay, nightEndMin)
+        shareNight()
     }
 
     fun setNightEndMin(minuteOfDay: Int) {
         require(minuteOfDay in BlockRules.MINUTE_RANGE) { "Конец ночи вне суток: $minuteOfDay" }
-        Store.prefs().edit().putInt(KEY_NIGHT_END, minuteOfDay).apply()
-        Store.notifyChanged()
+        applySharedNight(nightEnabled, nightStartMin, minuteOfDay)
+        shareNight()
     }
+
+    private fun shareNight() =
+        SharedSettings.localChange(SharedSettings.NIGHT, SharedSettingsCodec.night(nightEnabled, nightStartMin, nightEndMin))
 
     /**
      * Включение запоминает день [today]: дни раньше него не оплачиваются. Повторное включение
      * уже включённого день не сдвигает; выключение и новое включение — сдвигает.
      */
     fun setStepsRewardEnabled(enabled: Boolean, today: Long = TrustedClock.today()) {
-        val edit = Store.prefs().edit().putBoolean(KEY_STEPS_REWARD, enabled)
-        if (enabled && !stepsRewardEnabled) edit.putLong(KEY_STEPS_SINCE, today)
+        val since = when {
+            !enabled -> null
+            stepsRewardEnabled -> stepsRewardSinceDay
+            else -> today
+        }
+        applySharedSteps(since)
+        SharedSettings.localChange(SharedSettings.STEPS_REWARD, SharedSettingsCodec.steps(since))
+    }
+
+    /** Источник активности пары (device_id): общая настройка, сам телефон её только показывает. */
+    fun setActivitySource(deviceId: String) {
+        SharedSettings.localChange(SharedSettings.ACTIVITY_SOURCE, deviceId)
+        Store.notifyChanged()
+    }
+
+    // ---------- Значения из общих настроек (без новой версии) ----------
+
+    internal fun applySharedLimit(minutes: Int) {
+        Store.prefs().edit().putInt(KEY_DAILY_LIMIT, minutes).apply()
+        Store.notifyChanged()
+    }
+
+    internal fun applySharedNight(enabled: Boolean, startMin: Int, endMin: Int) {
+        Store.prefs().edit()
+            .putBoolean(KEY_NIGHT_ENABLED, enabled)
+            .putInt(KEY_NIGHT_START, startMin)
+            .putInt(KEY_NIGHT_END, endMin)
+            .apply()
+        Store.notifyChanged()
+    }
+
+    /** [sinceDay] = null — оплата шагов выключена. */
+    internal fun applySharedSteps(sinceDay: Long?) {
+        val edit = Store.prefs().edit().putBoolean(KEY_STEPS_REWARD, sinceDay != null)
+        if (sinceDay != null) edit.putLong(KEY_STEPS_SINCE, sinceDay)
         edit.apply()
         Store.notifyChanged()
     }

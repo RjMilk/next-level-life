@@ -130,6 +130,32 @@ object Store {
         notifyChanged()
     }
 
+    /**
+     * Серия по общему дневнику (после обмена со вторым телефоном): дни подряд до последнего тренировочного дня.
+     * Записывается, только если она позже или длиннее хранимой — серия из старой истории (до дневника) не теряется.
+     */
+    @Synchronized
+    internal fun recomputeStreak() {
+        val today = LocalDate.now().toEpochDay()
+        val days = Diary.trainedDays(today - STREAK_LOOKBACK_DAYS, today)
+        val (last, streak) = streakOf(days) ?: return
+        val storedLast = sp.getLong(KEY_LAST_DAY, Long.MIN_VALUE)
+        val storedStreak = sp.getInt(KEY_STREAK, 0)
+        if (last > storedLast || (last == storedLast && streak > storedStreak)) {
+            sp.edit().putLong(KEY_LAST_DAY, last).putInt(KEY_STREAK, streak).apply()
+        }
+    }
+
+    private const val STREAK_LOOKBACK_DAYS = 3_650L
+
+    /** Последний тренировочный день и длина серии подряд до него; null — тренировок нет. */
+    internal fun streakOf(days: Set<Long>): Pair<Long, Int>? {
+        val last = days.maxOrNull() ?: return null
+        var n = 0
+        while ((last - n) in days) n++
+        return last to n
+    }
+
     data class HistoryEntry(val timeMs: Long, val title: String, val xp: Long, val earnedMs: Long)
 
     /** Старая JSON-история (до дневника). Нужна только для переноса в дневник. */
