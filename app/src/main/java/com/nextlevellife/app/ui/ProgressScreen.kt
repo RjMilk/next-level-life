@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import com.nextlevellife.app.data.ActivityRun
 import com.nextlevellife.app.data.ComplexRun
 import com.nextlevellife.app.data.Diary
+import com.nextlevellife.app.data.Nutrition
 import com.nextlevellife.app.data.ExerciseRecord
 import com.nextlevellife.app.data.ExerciseTotal
 import com.nextlevellife.app.data.Exercises
@@ -90,7 +91,7 @@ private data class Overview(
 )
 
 /** День вместе с номером: пока грузится новый, на экране не перепутать даты. */
-private data class DayData(val day: Long, val digest: ProgressMath.DayDigest)
+private data class DayData(val day: Long, val digest: ProgressMath.DayDigest, val nutrition: String? = null)
 
 /**
  * Последние загруженные данные. Вкладка при каждом открытии создаётся заново; с кешем она
@@ -149,7 +150,8 @@ fun ProgressScreen(modifier: Modifier = Modifier, onStatInfo: (String) -> Unit =
             val activity = runCatching { Diary.activityDay(selected) }.getOrNull()
             val activityRuns = runCatching { Diary.activityRunsForDay(selected) }.getOrDefault(emptyList())
             val night = SleepRepository.night(selected)
-            DayData(selected, ProgressMath.digestDay(sets, runs, activity, activityRuns, night))
+            val nutrition = runCatching { Nutrition.dayLine(selected) }.getOrNull()
+            DayData(selected, ProgressMath.digestDay(sets, runs, activity, activityRuns, night), nutrition)
         }.also { ProgressCache.day = it }
     }
     // Характеристики за всю историю и очки по дням; пока считаются, виден прошлый итог.
@@ -523,7 +525,12 @@ private fun DayCard(selected: Long, today: Long, data: DayData?, modifier: Modif
             Text(ProgressMath.dayTitle(selected, today), style = MaterialTheme.typography.titleMedium)
             // Очки характеристик за день — сразу под датой.
             if (points != null && points.day == selected) DayStatsSection(points)
-            val digest = data?.takeIf { it.day == selected }?.digest ?: return@Column
+            val dayData = data?.takeIf { it.day == selected } ?: return@Column
+            val digest = dayData.digest
+            // Питание: «Питание: 3 приёма · окно 08:40 – 20:15 · 11 ч 35 мин» — если приёмы были.
+            dayData.nutrition?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium.merge(Tabular), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             // Ночной перерыв перед этим днём — первым: день начинается с пробуждения.
             val night = digest.night
             if (night != null) NightSection(night)

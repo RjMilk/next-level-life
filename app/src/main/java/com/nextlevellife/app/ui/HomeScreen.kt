@@ -95,6 +95,8 @@ fun HomeScreen(
     onSettings: () -> Unit,
     /** Открыть «Как получить»: [STAT_INFO_LEVEL] или имя характеристики. */
     onStatInfo: (String) -> Unit = {},
+    /** Открыть «Питание». */
+    onNutrition: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val version by Store.version.collectAsState()
@@ -198,6 +200,7 @@ fun HomeScreen(
             large = widthClass == WidthClass.EXPANDED,
         )
         TodayCard(todayDigest, night, health.availability, onProgress, onSettings)
+        NutritionHomeCard(onOpen = onNutrition)
         StatsCard(stats, streak, onStatInfo)
     }
     val earn: @Composable () -> Unit = {

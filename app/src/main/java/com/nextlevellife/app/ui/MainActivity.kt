@@ -180,8 +180,10 @@ class MainActivity : ComponentActivity() {
                                                 onProgress = { tab = TAB_PROGRESS },
                                                 onSettings = { tab = TAB_SETTINGS },
                                                 onStatInfo = { screen = "$STAT_INFO$it" },
+                                                onNutrition = { screen = NUTRITION },
                                             )
                                         }
+                                        screen == NUTRITION -> NutritionScreen(onBack = goHome)
                                         screen == APPS -> AppsScreen(onBack = goHome)
                                         screen == PAIRING -> PairingScreen(onBack = goHome)
                                         screen.startsWith(STAT_INFO) -> StatInfoScreen(
@@ -260,6 +262,7 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val HOME = "home"
         const val APPS = "apps"
+        const val NUTRITION = "nutrition"
         const val COMPLEX = "complex:"
         const val EXERCISE = "exercise:"
         const val STAT_INFO = "stat:"
