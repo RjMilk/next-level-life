@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import com.nextlevellife.app.data.Exercise
+import com.nextlevellife.app.guide.CameraSetup
 import com.nextlevellife.app.pose.BodyLocator
 import com.nextlevellife.app.pose.CameraPermissionGate
 import com.nextlevellife.app.pose.ExerciseConfigs
@@ -579,11 +580,13 @@ internal fun CameraSwitch(onClick: () -> Unit) {
 
 internal fun setupLine(exerciseId: String): String = when (exerciseId) {
     "pushups" -> "Поставь телефон сбоку, в 2 метрах: видно всё тело от головы до стоп"
-    "squats" -> "Встань боком или в пол-оборота, видно всё тело"
+    // Под 45° угол колена в кадре почти не меняется — только боком (см. CameraSetup).
+    "squats" -> CameraSetup.SIDE_SETUP
     "abs" -> "Ляг боком к телефону: видно плечи, таз и колени"
     "pullups" -> "Отодвинь телефон: в кадре турник и всё тело"
-    "thruster", "sumo_pull", "row" -> "Встань в пол-оборота к телефону, видно всё тело"
-    "swings", "deadlift" -> "Встань боком к телефону, видно всё тело"
+    in CameraSetup.FACE -> CameraSetup.FACE_SETUP
+    // Считаются по наклону корпуса — он виден только сбоку.
+    "row", "deadlift" -> CameraSetup.SIDE_SETUP
     // Зал: телефон на стойке или штативе, на уровне пояса.
     "bb_squat", "bb_deadlift", "bb_row" ->
         "Телефон на стойке или штативе на уровне пояса, сбоку, в 2,5–3,5 м: в кадре всё тело и штанга"

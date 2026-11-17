@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import com.nextlevellife.app.data.Cindy
 import com.nextlevellife.app.data.Minotaur
 import com.nextlevellife.app.data.Weights
+import com.nextlevellife.app.guide.CameraSetup
 import com.nextlevellife.app.pose.RepSound
 
 // ---------- Подготовка ----------
@@ -146,7 +147,7 @@ private fun ColumnScope.MinotaurPrep(weight: Int, onWeight: (Int) -> Unit) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     best?.let { Text("Твой рекорд с $weight кг: ${formatDuration(it)}", color = Good) }
-    SetupHint("Поставь телефон в 2 метрах, встань в пол-оборота: видно всё тело от головы до стоп.")
+    SetupHint(CameraSetup.MINOTAUR)
 }
 
 @Composable

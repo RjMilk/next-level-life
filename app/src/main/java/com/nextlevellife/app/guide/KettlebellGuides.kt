@@ -6,7 +6,7 @@ import com.nextlevellife.app.guide.GuideScene.ANKLE_Y
 
 /**
  * Гиды упражнений с гирей. Ракурс и расстояние сверены со счётчиками в pose/Counters.kt
- * и с подсказками на камере (setupLine в CameraRepPanel).
+ * и с подсказками на камере (setupLine в CameraRepPanel); тексты установки камеры — в [CameraSetup].
  */
 object KettlebellGuides : GuidePack {
     private val inHands = Bell(BellGrip.HANDS)
@@ -38,9 +38,9 @@ object KettlebellGuides : GuidePack {
             ),
             props = GuideProps(bell = inHands),
             highlight = setOf(GuideHighlight.LEGS, GuideHighlight.ARMS),
-            distance = "2,5–3 м",
-            angle = "сбоку или в пол-оборота",
-            camera = "Оставь место над головой для вытянутых рук: в кадре всё тело",
+            distance = CameraSetup.FACE_DISTANCE,
+            angle = CameraSetup.FACE_ANGLE,
+            camera = CameraSetup.FACE_CAMERA,
             focus = "Присед, подъём, жим",
             tips = listOf(
                 "Гиря у груди, присядь до бёдер почти параллельно полу",
@@ -67,9 +67,9 @@ object KettlebellGuides : GuidePack {
             ),
             props = GuideProps(bell = Bell(BellGrip.HANDS, BellHang.ALONG_FOREARM)),
             highlight = setOf(GuideHighlight.TORSO),
-            distance = "2,5–3 м",
-            angle = "сбоку",
-            camera = "Встань боком к телефону: в кадре весь замах и руки перед собой",
+            distance = CameraSetup.FACE_DISTANCE,
+            angle = CameraSetup.FACE_ANGLE,
+            camera = CameraSetup.FACE_CAMERA,
             focus = "Движение начинается тазом",
             tips = listOf(
                 "В замахе таз уходит назад, корпус наклоняется, гиря между ног",
@@ -117,9 +117,9 @@ object KettlebellGuides : GuidePack {
             props = GuideProps(bell = inHands),
             highlight = setOf(GuideHighlight.ARMS),
             anchor = GuideJoint.R_ANKLE,
-            distance = "2–3 м",
-            angle = "спереди или в пол-оборота",
-            camera = "В кадре обе руки, таз и стопы",
+            distance = CameraSetup.FACE_DISTANCE,
+            angle = CameraSetup.FACE_ANGLE,
+            camera = CameraSetup.FACE_CAMERA,
             focus = "Локти в стороны и выше кистей",
             tips = listOf(
                 "Широкая стойка, начни с опущенными руками: гиря ниже таза",
@@ -157,7 +157,7 @@ object KettlebellGuides : GuidePack {
             props = GuideProps(bell = Bell(BellGrip.RIGHT_HAND)),
             highlight = setOf(GuideHighlight.WORKING_ARM),
             distance = "2–2,5 м",
-            angle = "сбоку или в пол-оборота",
+            angle = "сбоку",
             camera = "Рабочая рука ближе к камере, видно всё тело",
             focus = "Сохраняй наклон корпуса",
             tips = listOf(
