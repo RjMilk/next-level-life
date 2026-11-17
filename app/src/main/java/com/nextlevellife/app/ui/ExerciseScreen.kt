@@ -51,7 +51,6 @@ import com.nextlevellife.app.guide.GuidePrefs
 import com.nextlevellife.app.guide.Guides
 import com.nextlevellife.app.pose.CountKind
 import com.nextlevellife.app.pose.RepCounters
-import com.nextlevellife.app.pose.rememberRepSound
 import com.nextlevellife.app.stats.StatsText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay

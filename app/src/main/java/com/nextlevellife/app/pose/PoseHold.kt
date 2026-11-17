@@ -780,6 +780,8 @@ class PoseRepCounter internal constructor(
             else -> null
         }
         var hint = ""
+        // Попытка закончилась без счёта (сигнал «не засчитано»); на счёт не влияет.
+        var missed = false
 
         if (postureFail != null) {
             hint = postureFail.hint
@@ -815,6 +817,7 @@ class PoseRepCounter internal constructor(
                     // Вернулся, не дойдя до крайней точки.
                     phase = Phase.START
                     hint = move.amplitudeHint
+                    missed = true
                 }
                 else -> peakSince = null
             }
@@ -825,13 +828,14 @@ class PoseRepCounter internal constructor(
                     lastRepAt = t
                 } else {
                     hint = PoseHints.SLOWER
+                    missed = true
                 }
             }
         }
         // Движение другой стороной: подсказка о стороне важнее подсказки об опорной ноге.
         if (move.sided && observedSide == work.other && phase != Phase.PEAK) hint = move.sideHint(work)
         lastHint = hint
-        return publish(tracking = true, hint = hint)
+        return publish(tracking = true, hint = hint, missed = missed)
     }
 
     private fun toSearch() {
@@ -841,7 +845,7 @@ class PoseRepCounter internal constructor(
         badSince = null
     }
 
-    private fun publish(tracking: Boolean, hint: String): RepState {
+    private fun publish(tracking: Boolean, hint: String, missed: Boolean = false): RepState {
         state = RepState(
             count = count,
             tracking = tracking,
@@ -849,6 +853,7 @@ class PoseRepCounter internal constructor(
             hint = hint,
             depth = if (phase == Phase.PEAK) 1f else 0f,
             atStart = phase == Phase.START,
+            missed = missed,
         )
         return state
     }

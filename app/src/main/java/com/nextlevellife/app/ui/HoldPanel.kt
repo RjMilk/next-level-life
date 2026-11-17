@@ -196,7 +196,8 @@ internal class HoldTracker(val counter: RepCounter, baseMs: Long) {
             HoldMath.SegmentEvent.STOP -> sound.holdStop()
             HoldMath.SegmentEvent.STOP_SHORT -> {
                 sound.holdStop()
-                sound.say(HoldSpeech.SHORT, interrupt = false)
+                // Отрезок короче минимума: «не засчитано» — сигналом, вибрацией и фразой в очередь за «Стоп».
+                sound.miss(HoldSpeech.SHORT)
                 shortAt = t
             }
             null -> Unit

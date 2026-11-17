@@ -202,6 +202,46 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
     private var returnPeak = 0f
     private var moveHint = ""
 
+    // Отметка «не засчитано» ([RepState.missed]) — отдельно от подсказок: подсказка «Выше» бывает и сразу
+    // после засчитанного повтора, пока сглаженная глубина ещё спадает, а сигнал там был бы ложным.
+    /** В фазе возврата половинка уже отмечена: одна отметка на фазу. */
+    private var returnMissed = false
+
+    /** Глубина спадает (после засчитанного повтора или незасчитанной попытки): новой попытки ещё нет. */
+    private var missFalling = true
+    private var missTrough = Float.MAX_VALUE
+    private var missPeak = 0f
+
+    /**
+     * Попытка в фазе «к крайней точке»: начинается подъёмом глубины на [EngineTuning.HINT_TURN_BACK]
+     * от впадины и не засчитана, если откатилась с пика (не ниже [EngineTuning.HINT_MIN_PEAK]) на столько же,
+     * не дойдя до крайней точки. true — на этом кадре попытка не засчитана.
+     */
+    private fun trackFarMiss(depth: Float): Boolean {
+        if (missFalling) {
+            missTrough = min(missTrough, depth)
+            if (depth >= missTrough + EngineTuning.HINT_TURN_BACK) {
+                missFalling = false
+                missPeak = depth
+            }
+            return false
+        }
+        missPeak = max(missPeak, depth)
+        if (missPeak >= EngineTuning.HINT_MIN_PEAK && depth <= missPeak - EngineTuning.HINT_TURN_BACK) {
+            missFalling = true
+            missTrough = depth
+            return true
+        }
+        return false
+    }
+
+    private fun resetMiss() {
+        returnMissed = false
+        missFalling = true
+        missTrough = Float.MAX_VALUE
+        missPeak = 0f
+    }
+
     private fun initialPhase() = if (cfg.rest != null) Phase.NEED_START else Phase.WAIT_FAR
 
     override fun onFrame(frame: PoseFrame): RepState {
@@ -271,6 +311,8 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         farLatch.update(tracks, t)
         finishLatch.update(tracks, t)
         val inRest = samples.all { s -> cfg.restZone.all { it.holds(s[it.feature]) } }
+        // Отметка «не засчитано» для звука ([RepState.missed]); счёт и подсказки она не меняет.
+        var missed = false
 
         when (phase) {
             Phase.NEED_START -> if (restLatch.all(t, Latches.NEVER)) enterPhase(Phase.WAIT_FAR, t)
@@ -296,6 +338,7 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
                         moveHint = cfg.farHint
                     }
                     if (depth <= EngineTuning.HINT_RESET_DEPTH) peakDepth = 0f
+                    missed = trackFarMiss(depth)
                 }
             }
 
@@ -316,13 +359,18 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
                     depth >= troughDepth + EngineTuning.HINT_TURN_BACK
                 ) {
                     moveHint = cfg.finishHint
+                    // Поднялся не до конца и снова пошёл вниз: половинка «не засчитана» — один раз за фазу.
+                    if (!returnMissed) {
+                        returnMissed = true
+                        missed = true
+                    }
                 }
             }
         }
 
         val hint = if (phase == Phase.NEED_START) cfg.startHint else moveHint
         val atStart = inRest && phase != Phase.WAIT_RETURN
-        return emit(tracking = true, inPosition = true, hint = hint, depth = depth, atStart = atStart)
+        return emit(tracking = true, inPosition = true, hint = hint, depth = depth, atStart = atStart, missed = missed)
     }
 
     private fun selectTracks(t: Long): List<SideTrack> {
@@ -357,6 +405,7 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         phaseSince = t
         peakDepth = 0f
         moveHint = ""
+        resetMiss()
         if (p == Phase.WAIT_FAR) {
             lastRestMs = t
             moveStartMs = null
@@ -385,11 +434,19 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         troughDepth = 1f
         returnPeak = 0f
         moveHint = ""
+        resetMiss()
         depthEma = Float.NaN
     }
 
-    private fun emit(tracking: Boolean, inPosition: Boolean, hint: String, depth: Float, atStart: Boolean): RepState {
-        state = RepState(count, tracking, inPosition, hint, depth, atStart)
+    private fun emit(
+        tracking: Boolean,
+        inPosition: Boolean,
+        hint: String,
+        depth: Float,
+        atStart: Boolean,
+        missed: Boolean = false,
+    ): RepState {
+        state = RepState(count, tracking, inPosition, hint, depth, atStart, missed = missed)
         return state
     }
 }

@@ -2,6 +2,7 @@ package com.nextlevellife.app.data
 
 import com.nextlevellife.app.block.BlockRules
 import com.nextlevellife.app.block.BlockSettings
+import com.nextlevellife.app.pose.SoundPrefs
 
 /**
  * Настройки блокировки поверх тех же SharedPreferences, что и [Store] (нужен [Store.init]).
@@ -144,6 +145,32 @@ object Settings {
         nightEndMin = nightEndMin,
     )
 
+    // ---------- Звук на тренировке (только этот телефон, в обмен не идёт; в резервную копию входит) ----------
+
+    /**
+     * Голос, сигналы, вибрация на тренировке. По умолчанию — как до появления настройки: голос и сигналы,
+     * без вибрации. До [Store.init] (не бывает на экранах тренировки) — значения по умолчанию.
+     */
+    fun soundPrefs(): SoundPrefs = runCatching {
+        val p = Store.prefs()
+        SoundPrefs(
+            voice = p.getBoolean(KEY_SOUND_VOICE, true),
+            tones = p.getBoolean(KEY_SOUND_TONES, true),
+            vibration = p.getBoolean(KEY_SOUND_VIBRATION, false),
+        )
+    }.getOrDefault(SoundPrefs())
+
+    fun setSoundVoice(enabled: Boolean) = putSound(KEY_SOUND_VOICE, enabled)
+
+    fun setSoundTones(enabled: Boolean) = putSound(KEY_SOUND_TONES, enabled)
+
+    fun setSoundVibration(enabled: Boolean) = putSound(KEY_SOUND_VIBRATION, enabled)
+
+    private fun putSound(key: String, enabled: Boolean) {
+        Store.prefs().edit().putBoolean(key, enabled).apply()
+        Store.notifyChanged()
+    }
+
     internal const val KEY_DAILY_LIMIT = "settings_daily_limit_min"
     internal const val KEY_NIGHT_ENABLED = "settings_night_enabled"
     internal const val KEY_NIGHT_START = "settings_night_start_min"
@@ -152,4 +179,7 @@ object Settings {
     internal const val KEY_LAST_BACKUP = "settings_last_backup_ms"
     internal const val KEY_STEPS_SINCE = "settings_steps_reward_since_day"
     internal const val KEY_ACTIVITY_LAST_SYNC = "activity_last_sync_ms"
+    internal const val KEY_SOUND_VOICE = "settings_sound_voice"
+    internal const val KEY_SOUND_TONES = "settings_sound_tones"
+    internal const val KEY_SOUND_VIBRATION = "settings_sound_vibration"
 }

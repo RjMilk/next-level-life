@@ -215,6 +215,11 @@ object Store {
         settings.put(Settings.KEY_STEPS_REWARD, Settings.stepsRewardEnabled)
         // День включения оплаты шагов: без него восстановленный переключатель не платит.
         Settings.stepsRewardSinceDay?.let { settings.put(Settings.KEY_STEPS_SINCE, it) }
+        // Звук на тренировке: голос, сигналы, вибрация.
+        val sound = Settings.soundPrefs()
+        settings.put(Settings.KEY_SOUND_VOICE, sound.voice)
+        settings.put(Settings.KEY_SOUND_TONES, sound.tones)
+        settings.put(Settings.KEY_SOUND_VIBRATION, sound.vibration)
         o.put("settings", settings)
         // Свои программы (строка JSON, CustomProgramMath.encode): только этого телефона, в обмен не идут.
         o.put(CustomPrograms.KEY, CustomProgramMath.encode(CustomPrograms.all()))
@@ -257,7 +262,12 @@ object Store {
         } else {
             null
         }
+        // Звук на тренировке: в старых копиях ключей нет — текущие переключатели не трогаются.
+        val sound = listOf(Settings.KEY_SOUND_VOICE, Settings.KEY_SOUND_TONES, Settings.KEY_SOUND_VIBRATION)
+            .filter { s.has(it) }
+            .associateWith { s.getBoolean(it) }
         return PrefsSnapshot { e ->
+            for ((key, on) in sound) e.putBoolean(key, on)
             e.putBoolean(KEY_CONFIGURED, configured)
             e.putStringSet(KEY_BLOCKED, blocked)
             if (streak != null) e.putInt(KEY_STREAK, streak) else e.remove(KEY_STREAK)

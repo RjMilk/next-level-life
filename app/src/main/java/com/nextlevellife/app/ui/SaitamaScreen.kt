@@ -59,7 +59,6 @@ import com.nextlevellife.app.data.SaitamaState
 import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.TrustedClock
 import com.nextlevellife.app.health.ActivitySync
-import com.nextlevellife.app.pose.rememberRepSound
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate

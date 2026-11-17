@@ -114,6 +114,7 @@ fun SettingsScreen(
             ScreenTimeSection(version)
             NightModeSection(version)
             StepsSection(version)
+            TrainingSoundSection(version)
             BlockingSection(version, onApps)
             SecondPhoneSection(version, onPairing)
             DataSection(version)
@@ -568,6 +569,37 @@ private fun StepsSection(version: Int) {
         }
     }
     if (showDiagnostics) HealthDiagnosticsDialog(onDismiss = { showDiagnostics = false })
+}
+
+// ---------- Звук на тренировке ----------
+
+/**
+ * Голос, сигналы и вибрация на тренировке (только этот телефон). Голос выключен — фразы заменяются
+ * сигналами; выключено всё — тишина. Действует сразу, и на уже открытой тренировке.
+ */
+@Composable
+private fun TrainingSoundSection(version: Int) {
+    val sound = remember(version) { Settings.soundPrefs() }
+    SettingsSection("Звук на тренировке") {
+        SettingsSwitchRow("Голос: счёт и подсказки", sound.voice) { Settings.setSoundVoice(it) }
+        SettingsSwitchRow("Сигналы", sound.tones) { Settings.setSoundTones(it) }
+        SettingsSwitchRow("Вибрация", sound.vibration) { Settings.setSoundVibration(it) }
+        SettingsText(
+            when {
+                !sound.voice && !sound.tones && !sound.vibration -> "Всё выключено: тренировка пройдёт молча."
+                !sound.voice && sound.tones ->
+                    "Без голоса: высокий щелчок — засчитано, низкий двойной — не засчитано, средний — подсказка на экране."
+                !sound.voice -> "Без голоса и сигналов: только вибрация."
+                !sound.tones -> "Только голос: число повторений и подсказки, без сигналов."
+                else -> "Сигналы: высокий щелчок — засчитано, низкий двойной — не засчитано, средний — подсказка."
+            },
+        )
+        SettingsText(
+            "Вибрация: один толчок — засчитано, два — не засчитано, длинная — подсказка. " +
+                "Лежащий на полу телефон её может и не передать.",
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+    }
 }
 
 // ---------- 4. Блокировка ----------

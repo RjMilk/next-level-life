@@ -77,7 +77,6 @@ import com.nextlevellife.app.pose.PoseRepCounter
 import com.nextlevellife.app.pose.RepCounter
 import com.nextlevellife.app.pose.RepSound
 import com.nextlevellife.app.pose.RepState
-import com.nextlevellife.app.pose.rememberRepSound
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -287,7 +286,8 @@ internal class RoutineController(private val s: RoutineRunState) {
                 tracking = st.tracking
                 if (!prev.inPosition && st.inPosition) {
                     sound.ready()
-                    sound.say("Держи")
+                    // Без голоса хватает сигнала «готов».
+                    sound.say("Держи", fallback = null)
                 } else if (prev.inPosition && !st.inPosition && !c.info.done) {
                     sound.holdStop()
                 }
@@ -333,8 +333,10 @@ internal class RoutineController(private val s: RoutineRunState) {
                     reps = total
                     haptics.tap()
                     sound.rep(total)
-                } else if (st.hint.isNotEmpty()) {
-                    sound.hint(st.hint)
+                } else {
+                    // Вернулся, не дойдя до крайней точки, или слишком быстро: «не засчитано», подсказка — следом.
+                    if (st.missed) sound.miss()
+                    if (st.hint.isNotEmpty()) sound.hint(st.hint)
                 }
                 live = st.inPosition
                 status = when {

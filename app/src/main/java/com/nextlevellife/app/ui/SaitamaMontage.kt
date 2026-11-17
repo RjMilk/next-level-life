@@ -79,7 +79,8 @@ fun SaitamaMontage(beats: List<MontageBeat>, sound: RepSound, onFinished: () -> 
         for ((i, beat) in beats.withIndex()) {
             index = i
             if (beat.kind == BeatKind.FINAL) sound.finale() else sound.impact()
-            beat.voice?.let { sound.say(it) }
+            // Без голоса фраза ничем не заменяется: у удара уже свой сигнал.
+            beat.voice?.let { sound.say(it, fallback = null) }
             haptics.strong()
             if (beat.kind == BeatKind.FINAL) {
                 launch {

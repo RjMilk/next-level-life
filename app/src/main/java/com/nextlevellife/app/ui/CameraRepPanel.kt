@@ -369,8 +369,10 @@ private fun handleFrame(
                 tracker.announced = n
             } else if (lostLong) {
                 sound.hint(HINT_LOST)
-            } else if (state.hint.isNotEmpty()) {
-                sound.hint(state.hint)
+            } else {
+                // Попытка без счёта («Ниже», «До конца»): сигнал «не засчитано», подсказка голосом — следом.
+                if (state.missed) sound.miss()
+                if (state.hint.isNotEmpty()) sound.hint(state.hint)
             }
         }
     }

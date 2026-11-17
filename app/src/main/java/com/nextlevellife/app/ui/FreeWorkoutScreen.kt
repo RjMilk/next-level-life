@@ -74,7 +74,6 @@ import com.nextlevellife.app.pose.PoseFrame
 import com.nextlevellife.app.pose.PoseLogWriter
 import com.nextlevellife.app.pose.RepSound
 import com.nextlevellife.app.pose.RepState
-import com.nextlevellife.app.pose.rememberRepSound
 import com.nextlevellife.app.stats.StatsText
 import kotlinx.coroutines.delay
 import java.util.UUID
@@ -654,8 +653,10 @@ private fun FreeCameraPanel(
                 if (st.events.isNotEmpty()) currentOnEvents(st.events)
                 // Первое распознанное упражнение — двойной сигнал «готов» (дальше смену слышно по счёту и «готово»).
                 if (before == null && st.current != null) currentSound.ready()
-                if (st.events.none { it is FreeEvent.Reps || it is FreeEvent.Held } && st.tracking && st.hint.isNotEmpty()) {
-                    currentSound.hint(st.hint)
+                if (st.events.none { it is FreeEvent.Reps || it is FreeEvent.Held } && st.tracking) {
+                    // Попытка без счёта («Ниже», «До конца»): «не засчитано», подсказка — следом.
+                    if (st.missed) currentSound.miss()
+                    if (st.hint.isNotEmpty()) currentSound.hint(st.hint)
                 }
                 val open = logOf().open?.takeIf { it.exerciseId == st.current }
                 currentWriter.write(

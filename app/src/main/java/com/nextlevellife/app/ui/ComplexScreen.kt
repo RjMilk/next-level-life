@@ -27,7 +27,6 @@ import com.nextlevellife.app.data.Store
 import com.nextlevellife.app.data.Weights
 import com.nextlevellife.app.data.WorkoutResult
 import com.nextlevellife.app.data.Workouts
-import com.nextlevellife.app.pose.rememberRepSound
 import com.nextlevellife.app.stats.StatsText
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay

@@ -65,7 +65,8 @@ sealed class FreeEvent {
  * в открытом подходе этим классификатором; [pendingHeldMs] — удержание текущего отрезка, ещё не дотянувшее
  * до минимума (у планки 10 с); [tracking] — человек виден хоть одному счётчику; [hint] — подсказка текущего
  * упражнения (или общая, пока ничего не распознано); [depth] — глубина текущего повтора; [holding] — время
- * удержания идёт сейчас; [events] — засчитанное на этом кадре, по порядку.
+ * удержания идёт сейчас; [events] — засчитанное на этом кадре, по порядку; [missed] — на этом кадре попытка
+ * текущего упражнения закончилась без счёта ([RepState.missed]), только для сигнала.
  */
 data class FreeState(
     val current: String? = null,
@@ -78,6 +79,7 @@ data class FreeState(
     val depth: Float = 0f,
     val holding: Boolean = false,
     val events: List<FreeEvent> = emptyList(),
+    val missed: Boolean = false,
 )
 
 /**
@@ -363,6 +365,7 @@ class FreeSessionClassifier(
             depth = if (st != null && st.tracking) st.depth.coerceIn(0f, 1f) else 0f,
             holding = cur != null && cur.hold && cur.state.holding,
             events = events,
+            missed = inPose && st?.missed == true,
         )
     }
 

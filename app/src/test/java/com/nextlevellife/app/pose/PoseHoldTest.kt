@@ -370,9 +370,11 @@ class PoseHoldTest {
     fun slowRepsCount() {
         val c = Clip().hold(ARMS_DOWN, 2_000)
         repeat(3) { c.move(ARMS_DOWN, ARMS_SIDE, 2_500).hold(ARMS_SIDE, 500).move(ARMS_SIDE, ARMS_DOWN, 2_500).hold(ARMS_DOWN, 800) }
-        val s = abduction().feed(c.frames).last()
+        val states = abduction().feed(c.frames)
+        val s = states.last()
         assertEquals(3, s.count)
         assertTrue(s.atStart)
+        assertTrue("ложная отметка «не засчитано»", states.none { it.missed })
     }
 
     @Test
@@ -383,6 +385,8 @@ class PoseHoldTest {
         // 8 циклов за ≈ 12 с: засчитано не больше одного за 5 с.
         assertTrue("${states.last().count}", states.last().count in 1..2)
         assertTrue(states.any { it.hint == PoseHints.SLOWER })
+        // Слишком быстрые повторы — «не засчитано».
+        assertTrue(states.any { it.missed })
     }
 
     @Test
@@ -392,6 +396,8 @@ class PoseHoldTest {
         val states = abduction().feed(c.frames)
         assertEquals(0, states.last().count)
         assertTrue(states.any { it.hint == "Руки в стороны до уровня плеч" })
+        // Каждая неполная попытка — одна отметка «не засчитано» (для сигнала).
+        assertEquals(3, states.count { it.missed })
     }
 
     @Test
