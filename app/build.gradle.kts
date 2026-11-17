@@ -11,8 +11,8 @@ android {
         applicationId = "com.nextlevellife.app"
         minSdk = 29
         targetSdk = 37
-        versionCode = 20
-        versionName = "0.7.9"
+        versionCode = 21
+        versionName = "0.8.0"
 
         // Оба телефона (S25, Z Fold 8) — arm64; остальные архитектуры только раздувают APK на ~75 МБ.
         ndk {
