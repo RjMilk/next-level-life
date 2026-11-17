@@ -177,6 +177,8 @@ fun HomeScreen(
         Text("Next Level Life", style = MaterialTheme.typography.headlineMedium)
     }
     val warnings: @Composable () -> Unit = {
+        // Новая версия на GitHub (проверка при запуске): «Обновить» или «Позже».
+        UpdateBanner()
         if (!serviceOn) {
             WarningCard(
                 title = "Блокировка выключена",

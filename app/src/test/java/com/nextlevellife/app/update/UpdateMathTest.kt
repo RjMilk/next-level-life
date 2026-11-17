@@ -7,6 +7,24 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UpdateMathTest {
+    @Test
+    fun bannerShownForNewVersionUntilHidden() {
+        assertFalse(UpdateMath.showBanner(available = null, hidden = null))
+        assertFalse(UpdateMath.showBanner(available = null, hidden = "0.8.1", inProgress = true))
+        assertTrue(UpdateMath.showBanner(available = "0.8.1", hidden = null))
+        // «Позже» на 0.8.1 скрывает её…
+        assertFalse(UpdateMath.showBanner(available = "0.8.1", hidden = "0.8.1"))
+        // …и более старые, но следующая новая версия снова видна.
+        assertFalse(UpdateMath.showBanner(available = "0.8.0", hidden = "0.8.1"))
+        assertTrue(UpdateMath.showBanner(available = "0.8.2", hidden = "0.8.1"))
+        assertTrue(UpdateMath.showBanner(available = "0.9.0", hidden = "v0.8.1"))
+        // Загрузка или установка уже идёт — плашка с ходом видна, даже если скрывали.
+        assertTrue(UpdateMath.showBanner(available = "0.8.1", hidden = "0.8.1", inProgress = true))
+        // Не разобрать версию — сравнение строк.
+        assertFalse(UpdateMath.showBanner(available = "x", hidden = "x"))
+        assertTrue(UpdateMath.showBanner(available = "y", hidden = "x"))
+    }
+
     private val base = "https://github.com/RjMilk/next-level-life/releases/download"
     private val hex = "a".repeat(64)
 

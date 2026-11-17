@@ -186,6 +186,19 @@ internal object UpdateMath {
     /** Версия релиза новее установленной (не разобрать установленную — считаем, что новее). */
     fun isNewer(remote: AppVersion, installed: AppVersion?): Boolean = installed == null || remote > installed
 
+    /**
+     * Плашка «Доступна версия» на главной: есть найденная версия [available] и она не скрыта «Позже»
+     * ([hidden] — скрытая версия). Скрытие действует до следующей, более новой версии; не разобрать
+     * версии — сравниваются строки. Пока обновление качается или ставится ([inProgress]) — видна всегда.
+     */
+    fun showBanner(available: String?, hidden: String?, inProgress: Boolean = false): Boolean {
+        if (available == null) return false
+        if (inProgress || hidden == null) return true
+        val a = AppVersion.parse(available)
+        val h = AppVersion.parse(hidden)
+        return if (a != null && h != null) a > h else available != hidden
+    }
+
     // ---------- Контрольные суммы ----------
 
     /**

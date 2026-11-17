@@ -50,6 +50,7 @@ object UpdateManager {
     private const val K_LIMITED_UNTIL = "limited_until_ms"
     private const val K_PENDING_CODE = "pending_version_code"
     private const val K_PENDING_NAME = "pending_version_name"
+    private const val K_BANNER_HIDDEN = "banner_hidden_version"
 
     private const val CONNECT_TIMEOUT_MS = 15_000
     private const val READ_TIMEOUT_MS = 30_000
@@ -74,8 +75,18 @@ object UpdateManager {
         val warning: String? = null,
         /** Система ждёт подтверждения установки, а окно открыть не удалось: кнопка «Подтвердить установку». */
         val confirmIntent: Intent? = null,
+        /** Версия, плашку которой на главной скрыли кнопкой «Позже»; null — не скрывали. */
+        val bannerHidden: String? = null,
     ) {
         val busy: Boolean get() = phase == Phase.CHECKING || phase == Phase.DOWNLOADING || phase == Phase.VERIFYING || phase == Phase.INSTALLING
+
+        /** Показывать ли плашку «Доступна версия» на главной ([UpdateMath.showBanner]). */
+        val showBanner: Boolean
+            get() = UpdateMath.showBanner(
+                available = available?.version,
+                hidden = bannerHidden,
+                inProgress = phase == Phase.DOWNLOADING || phase == Phase.VERIFYING || phase == Phase.READY || phase == Phase.INSTALLING,
+            )
     }
 
     /** Найденный релиз: версия, размер, описание (простым текстом, до 10 строк). */
@@ -140,8 +151,16 @@ object UpdateManager {
                 available = candidate?.let(::availableOf),
                 message = message ?: it.message,
                 isError = if (message != null) false else it.isError,
+                bannerHidden = p.getString(K_BANNER_HIDDEN, null),
             )
         }
+    }
+
+    /** «Позже» на плашке главной: скрыть её до следующей новой версии (запоминается найденная версия). */
+    fun hideBanner(context: Context) {
+        val version = _state.value.available?.version ?: return
+        prefs(context).edit().putString(K_BANNER_HIDDEN, version).apply()
+        _state.update { it.copy(bannerHidden = version) }
     }
 
     /** Автопроверка при открытии: не чаще раза в сутки (и не раньше часа после неудачной попытки). */
