@@ -17,7 +17,12 @@ object RepCounters {
      */
     fun forExercise(exerciseId: String): RepCounter? =
         ExerciseConfigs.byId[exerciseId]?.let {
-            if (exerciseId in ExerciseConfigs.eitherArm) EitherArmCounter(it) else PhaseCounter(it)
+            when (exerciseId) {
+                in ExerciseConfigs.eitherArm -> EitherArmCounter(it)
+                // Руки над головой уходят за верхний край кадра — верх повтора не теряется.
+                in ExerciseConfigs.overheadEdge -> OverheadEdgeCounter(PhaseCounter(it))
+                else -> PhaseCounter(it)
+            }
         }
             // Профили зала (жим штанги — одним автоматом на обе руки).
             ?: GymCounters.byId[exerciseId]?.let { PhaseCounter(it) }
@@ -878,6 +883,9 @@ internal object ExerciseConfigs {
 
     /** Упражнения одной рукой: считается любая рука ([EitherArmCounter]). */
     val eitherArm: Set<String> = setOf("press")
+
+    /** Верх повтора — руки над головой, они могут уйти за верхний край кадра ([OverheadEdgeCounter]). */
+    val overheadEdge: Set<String> = setOf("thruster")
 }
 
 /**
