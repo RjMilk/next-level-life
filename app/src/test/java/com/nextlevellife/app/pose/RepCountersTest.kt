@@ -382,6 +382,15 @@ class RepCountersTest {
     }
 
     @Test
+    fun noFarHintAfterCountedRep() = forAll { spec ->
+        // Сразу после засчитанного повтора сглаженная глубина ещё спадает — это не «недотянул», подсказки «Выше/Ниже» нет.
+        val tl = Timeline().hold(spec.rest, 1000).reps(spec.path, 5, spec.segmentMs).hold(spec.rest, 1000)
+        val states = counter(spec.id).feed(tl.frames)
+        val bad = states.withIndex().filter { it.value.hint == spec.farHint }.map { it.index }
+        if (bad.isEmpty()) null else "подсказка «${spec.farHint}» на кадрах ${bad.take(5)}"
+    }
+
+    @Test
     fun deepRepsGiveNoFinishHint() {
         // Глубокое повторение: порог пройден задолго до нижней точки (локоть ~50°, как на записи с телефона).
         // Продолжение вниз после порога — не «недожал», подсказки быть не должно.

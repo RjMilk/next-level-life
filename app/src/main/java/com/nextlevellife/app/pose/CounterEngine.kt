@@ -44,9 +44,6 @@ internal object EngineTuning {
 
     /** …и откатилась назад на столько, так и не дойдя до полной амплитуды. */
     const val HINT_TURN_BACK = 0.2f
-
-    /** Глубина, ниже которой попытка считается законченной (пик для подсказки сбрасывается). */
-    const val HINT_RESET_DEPTH = 0.05f
 }
 
 /** Пороговое условие на один признак: [feature] выше или ниже [threshold]. */
@@ -206,14 +203,13 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
 
     private var depthEma = Float.NaN
     private var depthAt = 0L
-    private var peakDepth = 0f
     private var troughDepth = 1f
     /** Самая глубокая точка текущего повторения после прохождения порога. */
     private var returnPeak = 0f
     private var moveHint = ""
 
-    // Отметка «не засчитано» ([RepState.missed]) — отдельно от подсказок: подсказка «Выше» бывает и сразу
-    // после засчитанного повтора, пока сглаженная глубина ещё спадает, а сигнал там был бы ложным.
+    // Отметка «не засчитано» ([RepState.missed]); подсказка «Ниже/Выше» в фазе к крайней точке ставится по ней же,
+    // поэтому её нет сразу после засчитанного повтора, пока сглаженная глубина ещё спадает.
     /** В фазе возврата половинка уже отмечена: одна отметка на фазу. */
     private var returnMissed = false
 
@@ -342,14 +338,10 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
                     troughDepth = depth
                     returnPeak = depth
                 } else {
-                    peakDepth = max(peakDepth, depth)
-                    if (peakDepth >= EngineTuning.HINT_MIN_PEAK &&
-                        depth <= peakDepth - EngineTuning.HINT_TURN_BACK
-                    ) {
-                        moveHint = cfg.farHint
-                    }
-                    if (depth <= EngineTuning.HINT_RESET_DEPTH) peakDepth = 0f
+                    // «Ниже/Выше» — только за настоящую попытку (подъём глубины от впадины), а не пока
+                    // сглаженная глубина ещё спадает после засчитанного повтора.
                     missed = trackFarMiss(depth)
+                    if (missed) moveHint = cfg.farHint
                 }
             }
 
@@ -414,7 +406,6 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
     private fun enterPhase(p: Phase, t: Long) {
         phase = p
         phaseSince = t
-        peakDepth = 0f
         moveHint = ""
         resetMiss()
         if (p == Phase.WAIT_FAR) {
@@ -441,7 +432,6 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         finishLatch.clear()
         lastRestMs = null
         moveStartMs = null
-        peakDepth = 0f
         troughDepth = 1f
         returnPeak = 0f
         moveHint = ""
