@@ -29,6 +29,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -115,6 +117,22 @@ internal object FreeText {
     /** Заработано за подход: записанное — как начислено, остальное — по обычной цене. */
     fun setEarned(s: FreeSet): Long = if (s.status == FreeSetStatus.RECORDED) s.earnedMs else FreeWorkoutMath.rewardMs(s)
 
+    /**
+     * Список подходов для показа: свежий сверху, строки готовые. Удержание — по целым секундам, поэтому
+     * пока секунда не сменилась, результат равен прежнему и список не перерисовывается.
+     */
+    fun setsView(log: FreeWorkoutLog): FreeSetsView = FreeSetsView(
+        earned = "Заработано: +${formatShort(log.earnedMs)}",
+        rows = log.sets.filter { it.hasWork }.reversed().map { set ->
+            val tail = when (set.status) {
+                FreeSetStatus.OPEN -> " · идёт"
+                FreeSetStatus.FAILED -> " · не записан"
+                else -> ""
+            }
+            FreeSetRow("${set.number}. " + setLine(set, setEarned(set)) + tail, set.status)
+        },
+    )
+
     /** Итог для диалога: заголовок и текст. */
     fun result(log: FreeWorkoutLog, strength: String?): Pair<String, String> {
         val lines = log.sets.filter { it.status == FreeSetStatus.RECORDED && it.hasWork }.map { setLine(it, it.earnedMs) }
@@ -123,6 +141,15 @@ internal object FreeText {
         return "Тренировка записана" to text
     }
 }
+
+/** Строка подхода в списке и его состояние (для цвета). */
+internal data class FreeSetRow(val text: String, val status: FreeSetStatus)
+
+/** Что показывает список подходов: общее заработанное и строки (свежий подход первым). */
+internal data class FreeSetsView(val earned: String, val rows: List<FreeSetRow>)
+
+/** Крупная строка «Сейчас» и распознано ли упражнение. */
+internal data class NowView(val text: String, val active: Boolean)
 
 // ---------------------------------------------------------------------------------------------
 // Состояние экрана
@@ -222,7 +249,8 @@ fun FreeWorkoutScreen(onDone: () -> Unit) {
             delay(500)
         }
     }
-    val elapsedMs = if (s.finished) s.finishedElapsed else (now - s.startedAt).coerceAtLeast(0L)
+    // Читается только в шапке: тик таймера не перекомпонует весь экран.
+    val elapsedMs: () -> Long = { if (s.finished) s.finishedElapsed else (now - s.startedAt).coerceAtLeast(0L) }
 
     /** Записать подход [number] (повтор после сбоя — тем же ключом). */
     fun recordSet(number: Int) {
@@ -321,11 +349,23 @@ fun FreeWorkoutScreen(onDone: () -> Unit) {
     val nowInPanel = tabletop != null || widthClass == WidthClass.EXPANDED
     val active = !s.finished && !s.confirmQuit
 
+    // Показания — производные состояния: журнал и FreeLive меняются хоть на каждом кадре (планка), а читатели
+    // перерисовываются, только когда меняется сама строка (новый повтор, следующая секунда). Читаются они внутри
+    // NowLine и списка, а не здесь: уровень экрана (и превью камеры) от кадров не перекомпонуется.
+    val nowView = remember(s, live) {
+        derivedStateOf {
+            NowView(FreeText.now(live.current, currentReps(s.log, live.current), currentHeld(s.log, live)), live.current != null)
+        }
+    }
+    val setsView = remember(s) { derivedStateOf { FreeText.setsView(s.log) } }
+    val logOf: () -> FreeWorkoutLog = remember(s) { { s.log } }
+
     val camera: @Composable (Modifier) -> Unit = { modifier ->
         FreeCameraPanel(
             classifier = classifier,
             live = live,
-            log = s.log,
+            logOf = logOf,
+            nowView = nowView,
             active = active,
             sound = sound,
             frontCamera = frontCamera,
@@ -335,8 +375,6 @@ fun FreeWorkoutScreen(onDone: () -> Unit) {
             modifier = modifier,
         )
     }
-    val nowText = FreeText.now(live.current, currentReps(s.log, live.current), currentHeld(s.log, live))
-
     val panelWidth = widthClass.workoutPanelWidth
     if (tabletop != null) {
         TabletopSplit(tabletop, widthClass, top = camera) {
@@ -344,10 +382,10 @@ fun FreeWorkoutScreen(onDone: () -> Unit) {
                 info = { mod ->
                     Column(mod.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         FreeHeader(elapsedMs, widthClass)
-                        FreeSetsList(s.log, compact = false)
+                        FreeSetsList(setsView, compact = false)
                     }
                 },
-                score = { mod -> NowLine(nowText, active = live.current != null, onCamera = false, modifier = mod) },
+                score = { mod -> NowLine(nowView, onCamera = false, modifier = mod) },
                 actions = { FinishButton(enabled = !s.finished, onClick = { finish() }) },
             )
         }
@@ -365,7 +403,7 @@ fun FreeWorkoutScreen(onDone: () -> Unit) {
                     .fillMaxWidth()
                     .weight(1f),
             )
-            FreeSetsList(s.log, compact = true)
+            FreeSetsList(setsView, compact = true)
             FinishButton(enabled = !s.finished, onClick = { finish() })
         }
     } else {
@@ -374,8 +412,7 @@ fun FreeWorkoutScreen(onDone: () -> Unit) {
             Spacer(Modifier.height(8.dp))
             if (nowInPanel) {
                 NowLine(
-                    nowText,
-                    active = live.current != null,
+                    nowView,
                     onCamera = false,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -389,7 +426,7 @@ fun FreeWorkoutScreen(onDone: () -> Unit) {
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
             ) {
-                FreeSetsList(s.log, compact = false)
+                FreeSetsList(setsView, compact = false)
             }
             Spacer(Modifier.height(16.dp))
             FinishButton(enabled = !s.finished, onClick = { finish() })
@@ -436,8 +473,9 @@ private fun currentReps(log: FreeWorkoutLog, current: String?): Int =
 private fun currentHeld(log: FreeWorkoutLog, live: FreeLive): Long =
     (log.open?.takeIf { it.exerciseId == live.current }?.heldMs ?: 0L) + live.pendingHeldMs
 
+/** Время тренировки читается здесь (раз в полсекунды), а не на уровне экрана: тикает только шапка. */
 @Composable
-private fun FreeHeader(elapsedMs: Long, widthClass: WidthClass) {
+private fun FreeHeader(elapsedMs: () -> Long, widthClass: WidthClass) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
             FreeText.TITLE,
@@ -451,7 +489,7 @@ private fun FreeHeader(elapsedMs: Long, widthClass: WidthClass) {
             modifier = Modifier.weight(1f),
         )
         ScoreText(
-            formatDuration(elapsedMs),
+            formatDuration(elapsedMs()),
             sizeSp = if (widthClass == WidthClass.EXPANDED) Scoreboard.exerciseTimerSp(widthClass) else 32,
             color = MaterialTheme.colorScheme.onBackground,
         )
@@ -463,29 +501,32 @@ private fun FreeHeader(elapsedMs: Long, widthClass: WidthClass) {
  * подходов (свежий сверху), остальные — числом.
  */
 @Composable
-private fun FreeSetsList(log: FreeWorkoutLog, compact: Boolean) {
+private fun FreeSetsList(view: State<FreeSetsView>, compact: Boolean) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val style = MaterialTheme.typography.titleMedium.merge(Tabular)
-    val sets = log.sets.filter { it.hasWork }.reversed()
-    val shown = if (compact) sets.take(COMPACT_SETS) else sets
+    // Читается здесь, а не выше: новый подход или повтор перерисовывает только список.
+    val v = view.value
+    val shown = if (compact) v.rows.take(COMPACT_SETS) else v.rows
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text("Заработано: +${formatShort(log.earnedMs)}", style = style, color = Accent)
-        if (sets.isEmpty()) {
+        Text(v.earned, style = style, color = Accent)
+        if (v.rows.isEmpty()) {
             Text("Подходов пока нет", style = MaterialTheme.typography.bodyMedium, color = muted)
         }
-        shown.forEach { set ->
-            val failed = set.status == FreeSetStatus.FAILED
+        shown.forEach { row ->
             Text(
-                "${set.number}. " + FreeText.setLine(set, FreeText.setEarned(set)) +
-                    if (set.status == FreeSetStatus.OPEN) " · идёт" else if (failed) " · не записан" else "",
+                row.text,
                 style = MaterialTheme.typography.bodyLarge.merge(Tabular),
-                color = if (failed) Bad else if (set.status == FreeSetStatus.OPEN) MaterialTheme.colorScheme.onBackground else muted,
+                color = when (row.status) {
+                    FreeSetStatus.FAILED -> Bad
+                    FreeSetStatus.OPEN -> MaterialTheme.colorScheme.onBackground
+                    else -> muted
+                },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        if (compact && sets.size > shown.size) {
-            Text("и ещё подходов: ${sets.size - shown.size}", style = MaterialTheme.typography.bodySmall, color = muted)
+        if (compact && v.rows.size > shown.size) {
+            Text("и ещё подходов: ${v.rows.size - shown.size}", style = MaterialTheme.typography.bodySmall, color = muted)
         }
     }
 }
@@ -509,7 +550,9 @@ private fun FinishButton(enabled: Boolean, onClick: () -> Unit) {
  * под отведённую область (до 3 строк), от крупного к мелкому. [onCamera] — поверх превью (белый на затемнении).
  */
 @Composable
-private fun NowLine(text: String, active: Boolean, onCamera: Boolean, modifier: Modifier = Modifier) {
+private fun NowLine(view: State<NowView>, onCamera: Boolean, modifier: Modifier = Modifier) {
+    // Читается здесь: новый повтор перерисовывает только эту строку.
+    val (text, active) = view.value
     val t = MaterialTheme.typography
     val styles = listOf(t.displayMedium, t.displaySmall, t.headlineLarge, t.headlineMedium, t.headlineSmall)
     val measurer = rememberTextMeasurer()
@@ -553,6 +596,22 @@ private fun NowLine(text: String, active: Boolean, onCamera: Boolean, modifier: 
 
 private const val NOW_MAX_LINES = 3
 
+/** Подсказка ракурса поверх камеры — пока упражнение не распознано. */
+@Composable
+private fun SetupLine(view: State<NowView>) {
+    if (view.value.active) return
+    Text(
+        FreeText.SETUP,
+        color = Color.White,
+        style = InstructionStyle,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(CameraScrim, RoundedCornerShape(16.dp))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    )
+}
+
 /**
  * Камера вольной тренировки: превью со скелетом, плашка состояния, крупная строка «Сейчас» ([showNow]) и подсказка
  * ракурса, пока ничего не распознано. Каждый кадр — в классификатор (пока [active]), засчитанное — в [onEvents].
@@ -561,7 +620,8 @@ private const val NOW_MAX_LINES = 3
 private fun FreeCameraPanel(
     classifier: FreeSessionClassifier,
     live: FreeLive,
-    log: FreeWorkoutLog,
+    logOf: () -> FreeWorkoutLog,
+    nowView: State<NowView>,
     active: Boolean,
     sound: RepSound,
     frontCamera: Boolean,
@@ -579,7 +639,6 @@ private fun FreeCameraPanel(
 
     val currentActive by rememberUpdatedState(active)
     val currentOnEvents by rememberUpdatedState(onEvents)
-    val currentLog by rememberUpdatedState(log)
     val currentWriter by rememberUpdatedState(writer)
     val currentSound by rememberUpdatedState(sound)
 
@@ -598,7 +657,7 @@ private fun FreeCameraPanel(
                 if (st.events.none { it is FreeEvent.Reps || it is FreeEvent.Held } && st.tracking && st.hint.isNotEmpty()) {
                     currentSound.hint(st.hint)
                 }
-                val open = currentLog.open?.takeIf { it.exerciseId == st.current }
+                val open = logOf().open?.takeIf { it.exerciseId == st.current }
                 currentWriter.write(
                     frame,
                     if (st.current != null) "COUNT" else "SEARCH",
@@ -638,8 +697,7 @@ private fun FreeCameraPanel(
                 DiagLine(diag, Modifier.padding(top = 6.dp))
                 if (showNow) {
                     NowLine(
-                        FreeText.now(live.current, currentReps(log, live.current), currentHeld(log, live)),
-                        active = live.current != null,
+                        nowView,
                         onCamera = true,
                         modifier = Modifier
                             .weight(1f)
@@ -649,18 +707,7 @@ private fun FreeCameraPanel(
                 } else {
                     Spacer(Modifier.weight(1f))
                 }
-                if (live.current == null) {
-                    Text(
-                        FreeText.SETUP,
-                        color = Color.White,
-                        style = InstructionStyle,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(CameraScrim, RoundedCornerShape(16.dp))
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                    )
-                }
+                SetupLine(nowView)
             }
         }
     }

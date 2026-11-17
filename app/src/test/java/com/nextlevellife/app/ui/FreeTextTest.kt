@@ -29,6 +29,19 @@ class FreeTextTest {
     }
 
     @Test
+    fun setsViewChangesOnlyWithShownText() {
+        // Планка растёт на каждом кадре, а список меняется раз в секунду: в пределах секунды — тот же вид.
+        val a = FreeWorkoutLog(listOf(set(1, "squats", 10, earned = 400_000L), set(2, "plank", 0, 12_100L, FreeSetStatus.OPEN)))
+        val b = FreeWorkoutLog(listOf(set(1, "squats", 10, earned = 400_000L), set(2, "plank", 0, 12_900L, FreeSetStatus.OPEN)))
+        val c = FreeWorkoutLog(listOf(set(1, "squats", 10, earned = 400_000L), set(2, "plank", 0, 13_000L, FreeSetStatus.OPEN)))
+        assertEquals(FreeText.setsView(a), FreeText.setsView(b))
+        assertTrue(FreeText.setsView(b) != FreeText.setsView(c))
+        val v = FreeText.setsView(c)
+        assertEquals(listOf("2. Планка — 0:13 · +1 мин 5 сек · идёт", "1. Приседания — 10 повт. · +6 мин 40 сек"), v.rows.map { it.text })
+        assertEquals("Заработано: +7 мин 45 сек", v.earned)
+    }
+
+    @Test
     fun resultText() {
         val log = FreeWorkoutLog(
             listOf(set(1, "squats", 10, earned = 400_000L), set(2, "pushups", 5, earned = 150_000L)),
