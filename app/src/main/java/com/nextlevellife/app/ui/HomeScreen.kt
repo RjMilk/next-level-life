@@ -676,6 +676,7 @@ private fun EarnSection(
                 Equipment.BARBELL to "Штанга",
                 Equipment.DUMBBELL to "Гантели",
                 Equipment.MACHINE to "Тренажёры",
+                Equipment.BARS to "Брусья",
             ).forEach { (equipment, title) ->
                 val exercises = Exercises.gym.filter { ex ->
                     val group = when (ex.gym?.equipment) {

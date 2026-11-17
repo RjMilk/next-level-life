@@ -11,11 +11,12 @@ class GymCatalogTest {
         "db_goblet_squat" to 40, "machine_lat_pulldown" to 25, "machine_seated_row" to 25,
         "machine_chest_press" to 25, "machine_leg_extension" to 15, "machine_leg_curl" to 15,
         "machine_lying_leg_curl" to 15, "assisted_pullup" to 35, "hyperextension" to 20,
+        "bars_dip" to 40, "bars_leg_raise" to 25,
     )
 
     @Test fun allRequestedEntriesHaveFixedProjectPricesAndNoClassC() {
-        assertEquals(25, Exercises.gym.size)
-        assertEquals(25, Exercises.gym.map { it.id }.toSet().size)
+        assertEquals(27, Exercises.gym.size)
+        assertEquals(27, Exercises.gym.map { it.id }.toSet().size)
         for ((id, price) in expectedPrices) {
             val ex = Exercises.byId(id)
             assertTrue(id, ex in Exercises.gym && ex !in Exercises.all)
@@ -34,6 +35,7 @@ class GymCatalogTest {
                 id.startsWith("db_") -> Equipment.DUMBBELL to LoadMode.DUMBBELL_EACH
                 id == "assisted_pullup" -> Equipment.ASSISTED to LoadMode.COUNTERWEIGHT
                 id == "hyperextension" -> Equipment.MACHINE to LoadMode.EXTERNAL_ADDED
+                id.startsWith("bars_") -> Equipment.BARS to LoadMode.BELT_ADDED
                 else -> Equipment.MACHINE to LoadMode.STACK
             }
             assertEquals(id, expected.first, spec.equipment)
@@ -45,6 +47,37 @@ class GymCatalogTest {
         assertTrue(GymMath.isValid(Exercises.hyperextension.gym!!.loadMode, 0))
         assertEquals(GymAdvice.Increase(30_000, 27_500), GymMath.advice(Exercises.assistedPullup.gym!!,
             List(3) { GymSet(1L, it.toLong(), 5, 30_000) }))
+    }
+
+    @Test fun barsUseBeltWeightFromZeroAndIncreaseByTwoAndAHalfKilos() {
+        val mode = LoadMode.BELT_ADDED
+        assertEquals(listOf(0, 100_000, 500, 0), listOf(mode.minG, mode.maxG, mode.stepG, mode.defaultG))
+        assertFalse(mode.assists)
+        assertTrue("на поясе" in mode.title)
+        for (ex in listOf(Exercises.barsDip, Exercises.barsLegRaise)) {
+            val spec = ex.gym!!
+            assertEquals(ex.id, Equipment.BARS, spec.equipment)
+            assertEquals(ex.id, LoadMode.BELT_ADDED, spec.loadMode)
+            assertEquals(ex.id, 2_500, spec.stepUpG)
+            assertEquals(ex.id, ex.id, ex.counterId)
+            // Свой вес — по умолчанию 0; три подхода по 5 — совет «+2,5 кг».
+            assertEquals(0, GymMath.defaultLoad(mode, emptyList()))
+            assertEquals(GymAdvice.Increase(0, 2_500), GymMath.advice(spec, List(3) { GymSet(1L, it.toLong(), 5, 0) }))
+            assertEquals(GymAdvice.Increase(10_000, 12_500), GymMath.advice(spec, List(3) { GymSet(1L, it.toLong(), 6, 10_000) }))
+            // У предела совет не растёт.
+            assertEquals(GymAdvice.Keep(100_000), GymMath.advice(spec, List(3) { GymSet(1L, it.toLong(), 5, 100_000) }))
+            // «Лучший» вес — больший.
+            val summary = GymMath.summary(spec, listOf(GymSet(1L, 1L, 5, 5_000), GymSet(2L, 2L, 5, 2_500)))
+            assertEquals(5_000, summary.bestWorkingG)
+            assertEquals(2_500, summary.lastWorkingG)
+            // Обмен: вес в пределах и на шаге способа учёта.
+            for (ok in listOf(null, 0, 500, 2_500, 100_000)) assertTrue("${ex.id} $ok", GymMath.acceptsLoad(ex.id, ok))
+            for (bad in listOf(250, 100_500, 150_000, -500)) assertFalse("${ex.id} $bad", GymMath.acceptsLoad(ex.id, bad))
+        }
+        assertEquals(40, Exercises.barsDip.rewardSecondsPerRep)
+        assertEquals(25, Exercises.barsLegRaise.rewardSecondsPerRep)
+        assertEquals(10 * 40_000L, Exercises.rewardMs(Exercises.barsDip, 10, 32))
+        assertEquals(10 * 25_000L, Exercises.rewardMs(Exercises.barsLegRaise, 10, 0))
     }
 
     @Test fun classAReferencesExistingProfilesWithoutCopies() {

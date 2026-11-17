@@ -140,6 +140,13 @@ object Exercises {
     val hyperextension = Exercise("hyperextension", "Гиперэкстензия", 20, 2.5,
         gym = GymSpec(Equipment.MACHINE, LoadMode.EXTERNAL_ADDED, 2_500))
 
+    // Брусья: свой вес, заявляется только дополнительный вес на поясе (по умолчанию 0). Свои угловые профили
+    // (pose/GymAngularProfiles): камера сбоку, корпус вертикален — не путается с отжиманиями от пола и приседом.
+    val barsDip = Exercise("bars_dip", "Отжимания на брусьях", 40, 1.5,
+        gym = GymSpec(Equipment.BARS, LoadMode.BELT_ADDED, 2_500))
+    val barsLegRaise = Exercise("bars_leg_raise", "Подъём ног в упоре на брусьях", 25, 1.5,
+        gym = GymSpec(Equipment.BARS, LoadMode.BELT_ADDED, 2_500))
+
     val bodyweight = listOf(pushups, squats, abs, pullups, plank)
     val kettlebell = listOf(thruster, swing, sumoPull, row, deadlift, gobletSquat, press, reverseLunge, curl, gluteBridge)
 
@@ -154,6 +161,7 @@ object Exercises {
         dumbbellLateralRaise, dumbbellLunge, dumbbellBulgarianSplitSquat, dumbbellGobletSquat,
         machineLatPulldown, machineSeatedRow, machineChestPress, machineLegExtension,
         machineLegCurl, machineLyingLegCurl, assistedPullup, hyperextension,
+        barsDip, barsLegRaise,
     )
 
     /** Все упражнения приложения: домашние и зал. */

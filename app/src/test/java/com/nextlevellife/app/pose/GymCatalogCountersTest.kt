@@ -147,6 +147,8 @@ class GymCatalogCountersTest(private val id: String) {
             "machine_leg_curl" -> Key(0f, 90f, 95f, 180f, 180f) to Key(0f, 90f, 200f, 180f, 180f)
             "machine_lying_leg_curl" -> Key(270f, 90f, 90f, 180f, 180f) to Key(270f, 90f, -5f, 180f, 180f)
             "hyperextension" -> Key(315f, 135f, 135f, 95f, 80f) to Key(240f, 135f, 135f, 95f, 80f)
+            "bars_dip" -> BARS_DIP_TOP to BARS_DIP_BOTTOM
+            "bars_leg_raise" -> BARS_HANG to BARS_LEGS_UP
             else -> error("Нет синтетической траектории $id")
         }
     }

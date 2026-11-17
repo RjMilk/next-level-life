@@ -25,7 +25,7 @@ class GuideGeometryTest {
 
     @Test
     fun everyKeyAndTransitionProducesFiniteDrawablePaths() {
-        assertEquals("all built-in exercises, LFK and yoga poses must be checked", 66, guides.size)
+        assertEquals("all built-in exercises, LFK and yoga poses must be checked", 68, guides.size)
         for (guide in guides) for ((sample, pose) in samples(guide)) {
             val scene = GuideGeometry.scene(guide, pose)
             val label = "${guide.exerciseId}, $sample"

@@ -14,13 +14,18 @@ internal data class AngularVisibility(
     }
 }
 
-/** Допустимый интервал сигнала для входа в позу и для её удержания во время движения. */
+/**
+ * Допустимый интервал сигнала для входа в позу и для её удержания во время движения.
+ * [optional] — признак проверяется, только если он измерен (например, дальняя лодыжка видна в кадре);
+ * неизмеренный (NaN) позу не нарушает. По умолчанию признак обязателен.
+ */
 internal data class AngularPosition(
     val signal: Feature,
     val enterMin: Float = Float.NEGATIVE_INFINITY,
     val enterMax: Float = Float.POSITIVE_INFINITY,
     val holdMin: Float = enterMin,
     val holdMax: Float = enterMax,
+    val optional: Boolean = false,
 ) {
     init {
         require(!enterMin.isNaN() && !enterMax.isNaN() && enterMin <= enterMax)
@@ -29,6 +34,7 @@ internal data class AngularPosition(
 
     fun accepts(sample: Sample, entering: Boolean): Boolean {
         val value = sample[signal]
+        if (optional && value.isNaN()) return true
         return value.isFinite() && if (entering) value in enterMin..enterMax else value in holdMin..holdMax
     }
 }
@@ -90,7 +96,7 @@ internal data class AngularProfile(
             minRepMs = minCycleMs,
             extremeConfirmMs = extremeConfirmMs,
             sideMode = side,
-            extraRequired = visibility.required + positions.flatMap { it.signal.joints },
+            extraRequired = visibility.required + positions.filterNot { it.optional }.flatMap { it.signal.joints },
             minConfidence = visibility.minConfidence,
             requireFresh = visibility.requireFresh,
             resetOnSideSwitch = true,

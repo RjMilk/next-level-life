@@ -109,8 +109,53 @@ internal object GymAngularProfiles {
         postureHint = "Встань на станок боком, подушка не закрывает таз",
     )
 
+    // Брусья, камера сбоку. Пола камера не видит, поэтому «ноги не на полу» задаётся позой:
+    // корпус почти вертикален, таз разогнут (не сидит и не приседает), кисти у таза, а предплечье
+    // идёт от локтя вниз к жерди (упор, а не сгибание рук стоя).
+    /** Другая лодыжка (если видна) — на той же высоте: обе ноги в воздухе, а не одна на полу. */
+    private val feetTogether = AngularPosition(Feature.REAR_ANKLE_RAISE, -0.5f, 0.5f, -0.6f, 0.6f, optional = true)
+    private val supportHands = listOf(
+        posture(Feature.WRIST_OVER_HIP, -0.5f, 0.7f, -0.6f, 0.8f),
+        posture(Feature.ELBOW_OVER_WRIST, 0.3f, 2f, 0.25f, 2f),
+    )
+
+    /**
+     * Отжимания на брусьях: локоть > 155° → < 95° и плечи опустились к локтям. Колени согнуты, голени
+     * за спиной: таз выше лодыжки не больше 1,25 торса (стоя и с прямыми висящими ногами ≈ 1,75) — так
+     * брусья не путаются со сгибанием рук стоя. Вертикальный корпус отличает их от отжиманий от пола.
+     */
+    val barsDip = profile(
+        "bars_dip", Feature.ELBOW, 155f, 95f,
+        listOf(
+            posture(Feature.TORSO_TILT, 0f, 30f, 0f, 40f),
+            posture(Feature.HIP_FLEXION, 130f, 180f, 120f, 180f),
+            posture(Feature.HIP_OVER_ANKLE, -0.5f, 1.25f, -0.6f, 1.35f),
+            feetTogether,
+        ) + supportHands, 1_500L,
+        startHint = "Выпрями руки в упоре", farHint = "Опустись, плечи к локтям",
+        postureHint = "Упор на брусьях боком, колени согнуты",
+        farChecks = listOf(Feature.SHOULDER_OVER_ELBOW.below(0.3f)),
+    )
+
+    /**
+     * Подъём ног в упоре на брусьях: угол плечо–таз–колено > 160° → < 105° (бёдра до горизонтали).
+     * Руки прямые, корпус у вертикали, ноги почти прямые: так подъём не путается с приседом (там колено
+     * < 110°), а махи ногой стоя отсекает вторая лодыжка, оставшаяся на полу (если она видна).
+     */
+    val barsLegRaise = profile(
+        "bars_leg_raise", Feature.HIP_FLEXION, 160f, 105f,
+        listOf(
+            posture(Feature.TORSO_TILT, 0f, 20f, 0f, 30f),
+            posture(Feature.ELBOW, 150f, 180f, 140f, 180f),
+            posture(Feature.KNEE, 140f, 180f, 125f, 180f),
+            feetTogether,
+        ) + supportHands.take(1), 1_500L,
+        startHint = "Опусти ноги", farHint = "Подними бёдра до горизонтали",
+        postureHint = "Упор на прямых руках боком к телефону",
+    )
+
     val all = listOf(romanianDeadlift, barbellBench, barbellIncline, dumbbellBench, dumbbellIncline,
         seatedPress, lateralRaise, lunge, bulgarianSplitSquat, latPulldown, seatedRow, chestPress,
-        legExtension, seatedLegCurl, lyingLegCurl, hyperextension)
+        legExtension, seatedLegCurl, lyingLegCurl, hyperextension, barsDip, barsLegRaise)
     val byId = all.associateBy { it.id }
 }

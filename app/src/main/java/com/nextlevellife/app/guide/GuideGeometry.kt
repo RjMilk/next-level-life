@@ -147,6 +147,8 @@ object GuideGeometry {
             val weight = Pt(machine.towerX, 0.82f - (knees.y - 0.55f))
             b.capsule(weight - Pt(0.028f, 0f), weight + Pt(0.028f, 0f), 0.04f, 0.04f, GuidePaint.METAL)
         }
+        // Дальняя жердь брусьев и все стойки — за телом; ближняя жердь — поверх тела, под ближней кистью.
+        guide.props.parallelBars?.let { parallelBars(b, it, near = false) }
         if (!side && guide.props.barbell?.grip == BarbellGrip.SHOULDERS) barbell(b, guide.props.barbell, pose, side)
 
         fun limb(a: Pt, end: Pt, ra: Float, rb: Float, far: Boolean, highlight: Boolean) {
@@ -272,6 +274,7 @@ object GuideGeometry {
             torso()
             leg(true, false)
             bell(b, guide, pose)
+            guide.props.parallelBars?.let { parallelBars(b, it, near = true) }
             arm(true, false)
             // The near plate/sleeve faces the camera and occludes the gripping hand.
             guide.props.barbell?.let { barbell(b, it, pose, side = true) }
@@ -288,6 +291,27 @@ object GuideGeometry {
             arm(true, false)
         }
         return b.shapes
+    }
+
+    /**
+     * Брусья сбоку. [near] = false — дальняя жердь (смещена, как дальние конечности, и темнее) и стойки
+     * обеих жердей с опорами на полу; [near] = true — ближняя жердь, на которую ложится ближняя кисть.
+     */
+    private fun parallelBars(b: Builder, bars: ParallelBars, near: Boolean) {
+        val floor = GuideScene.FLOOR - 0.004f
+        val r = 0.0085f
+        if (!near) {
+            val depth = Pt(-0.008f, 0f)
+            for (x in listOf(bars.x0 + 0.03f, bars.x1 - 0.03f)) {
+                b.line(Pt(x, bars.y) + depth, Pt(x, floor) + depth, GuidePaint.CHAIR, 0.011f, 0.6f)
+                b.line(Pt(x, bars.y), Pt(x, floor), GuidePaint.CHAIR, 0.012f)
+                b.line(Pt(x - 0.035f, floor), Pt(x + 0.035f, floor), GuidePaint.CHAIR, 0.012f)
+            }
+            b.capsule(Pt(bars.x0, bars.y) + depth, Pt(bars.x1, bars.y) + depth, r, r, GuidePaint.METAL, 0.5f)
+            return
+        }
+        b.capsule(Pt(bars.x0, bars.y), Pt(bars.x1, bars.y), r, r, GuidePaint.METAL)
+        b.line(Pt(bars.x0 + 0.01f, bars.y - 0.003f), Pt(bars.x1 - 0.01f, bars.y - 0.003f), GuidePaint.DETAIL, 0.002f, 0.4f)
     }
 
     private fun bench(b: Builder, bench: Bench) {

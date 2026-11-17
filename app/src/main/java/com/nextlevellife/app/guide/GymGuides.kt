@@ -313,6 +313,70 @@ object GymGuides : GuidePack {
             mistakes = listOf("Подушка постоянно скрывает таз", "Малый наклон или подъём с прогибом вместо разгибания таза"))
     }
 
+    // Брусья: кисти неподвижны на ближней и дальней жердях (ось жерди чуть ниже запястья), стопы в воздухе.
+    private const val BAR_Y = 0.48f
+    private const val ARM_STRAIGHT = 0.2595f // чуть короче плеча + предплечья: локоть ≈ 173°, «почти прямые»
+    private fun barsProps(x0: Float, x1: Float) = GuideProps(parallelBars = ParallelBars(x0, x1, BAR_Y + 0.012f))
+    private const val BARS_CAMERA_HEIGHT = "1,0–1,3"
+
+    /**
+     * Отжимания на брусьях. Верх — руки почти прямые, плечо над кистью, корпус наклонён на 12°.
+     * Низ — предплечье почти вертикально (локоть чуть позади кисти), плечо на уровне локтя, локоть ≈ 88°,
+     * наклон 22°. Колени согнуты, голени скрещены за спиной.
+     */
+    private val barsDip = run {
+        val wx = 0.52f
+        val hands = Reach(wx, BAR_Y, 270f)
+        fun pose(bottom: Boolean) = side(
+            torso = if (bottom) 22f else 12f, thigh = 172f, shin = 272f, farThigh = 176f, farShin = 262f,
+            pin = if (bottom) Pin(R_SHOULDER, wx + 0.112f, BAR_Y - 0.142f) else Pin(R_SHOULDER, wx, BAR_Y - ARM_STRAIGHT),
+            hands = hands,
+        )
+        ExerciseGuide("bars_dip", GuideView.SIDE, frames(pose(false), pose(true), 1300),
+            props = barsProps(0.2f, 0.84f), highlight = armHighlight, anchor = R_WRIST,
+            distance = "2,5–3,5 м", angle = "сбоку",
+            camera = "Закрепи телефон сбоку на высоте $BARS_CAMERA_HEIGHT м, на уровне груди: в кадре брусья и всё тело, " +
+                "ближние плечо, локоть и кисть не закрыты стойкой",
+            focus = "Локти назад, плечи опускаются до уровня локтей",
+            tips = listOf(
+                "Встань в упор на прямых руках: плечи опущены от ушей, корпус почти вертикален",
+                "Согни колени и скрести голени за спиной — так камера видит, что стопы не на полу",
+                "Опускайся, отводя локти назад, пока плечо не дойдёт до уровня локтя, затем выжмись до прямых рук",
+                "Двигайся ровно, без раскачки и рывков ногами",
+            ),
+            mistakes = listOf(
+                "Неглубоко (плечи выше локтей) или руки не выпрямились наверху",
+                "Прямые ноги внизу, стопы на полу или сильный наклон корпуса",
+            ),
+        )
+    }
+
+    /** Подъём ног в упоре: таз и кисти на месте, корпус у вертикали (отклонение 5° назад наверху), ноги почти прямые. */
+    private val barsLegRaise = run {
+        val wx = 0.40f
+        val hands = Reach(wx, BAR_Y, 270f)
+        fun pose(top: Boolean) = side(
+            torso = if (top) -5f else 0f, thigh = if (top) 85f else 178f, shin = if (top) 88f else 180f,
+            pin = Pin(R_SHOULDER, wx, BAR_Y - ARM_STRAIGHT), hands = hands,
+        )
+        ExerciseGuide("bars_leg_raise", GuideView.SIDE, frames(pose(false), pose(true), 1250),
+            props = barsProps(0.16f, 0.8f), highlight = torsoHighlight, anchor = R_WRIST,
+            distance = "2,5–3,5 м", angle = "сбоку",
+            camera = "Закрепи телефон сбоку на высоте $BARS_CAMERA_HEIGHT м: в кадре брусья и всё тело от кистей до стоп, " +
+                "таз и колени не закрыты стойкой",
+            focus = "Бёдра до горизонтали, корпус без раскачки",
+            tips = listOf(
+                "Упор на прямых руках: плечи опущены, корпус вертикален, ноги свободно висят",
+                "Подними почти прямые ноги, пока бёдра не станут хотя бы параллельны полу",
+                "Опусти ноги до конца под контролем, не раскачивайся и не отклоняйся назад",
+            ),
+            mistakes = listOf(
+                "Бёдра не дошли до горизонтали или ноги не опустились до конца",
+                "Сильно согнутые колени или руки, раскачка корпуса",
+            ),
+        )
+    }
+
     override val guides: List<ExerciseGuide> = listOf(
         squat("bb_squat"), squat("bb_front_squat", frontRack = true), deadlift, romanian,
         benchPress("bb_bench_press", incline = false, dumbbells = false),
@@ -324,5 +388,6 @@ object GymGuides : GuidePack {
         legExercise("machine_leg_extension", curl = false, lying = false),
         legExercise("machine_leg_curl", curl = true, lying = false),
         legExercise("machine_lying_leg_curl", curl = true, lying = true), assisted, hyperextension,
+        barsDip, barsLegRaise,
     )
 }

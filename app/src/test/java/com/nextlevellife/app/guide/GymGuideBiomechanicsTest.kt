@@ -35,7 +35,7 @@ class GymGuideBiomechanicsTest {
         for (g in GymGuides.guides) {
             val p = g.props
             assertTrue(g.exerciseId, p.barbell != null || p.dumbbells != null || p.bench != null ||
-                p.cableMachine != null || p.legMachine != null || p.assistedMachine != null)
+                p.cableMachine != null || p.legMachine != null || p.assistedMachine != null || p.parallelBars != null)
             assertTrue(g.exerciseId, g.camera.contains("высоте"))
         }
     }
@@ -203,6 +203,67 @@ class GymGuideBiomechanicsTest {
         assertTrue(b[HEAD].y < b[R_WRIST].y)
         assertTrue(a[R_KNEE].y > b[R_KNEE].y + 0.15f)
         assertNotNull(guide("assisted_pullup").props.assistedMachine)
+    }
+
+    /** Наклон корпуса (таз → шея) от вертикали, градусы; положительный — вперёд (вправо на виде сбоку). */
+    private fun torsoLean(p: GuidePose) =
+        Math.toDegrees(kotlin.math.atan2((p[NECK].x - p[PELVIS].x).toDouble(), (p[PELVIS].y - p[NECK].y).toDouble())).toFloat()
+
+    /** Кисти лежат на жердях и не скользят, стопы в воздухе — в ключевых кадрах и в переходах каждые 50 мс. */
+    private fun assertSupportOnBars(id: String) {
+        val g = guide(id)
+        val bars = g.props.parallelBars
+        assertNotNull(id, bars)
+        assertEquals(id, R_WRIST, g.anchor)
+        val hand = g.frames[0].pose[R_WRIST]
+        assertEquals("$id: кисть на жерди", bars!!.y, hand.y + 0.012f, 0.001f)
+        assertTrue(id, hand.x in bars.x0 + 0.05f..bars.x1 - 0.05f)
+        for (ms in 0L until GuideMath.cycleMs(g) step 50L) {
+            val p = GuideMath.poseAt(g, ms)
+            assertEquals("$id $ms мс: кисть", hand.x, p[R_WRIST].x, 0.002f)
+            assertEquals("$id $ms мс: кисть", hand.y, p[R_WRIST].y, 0.002f)
+            assertEquals("$id $ms мс: дальняя кисть", hand.y, p[L_WRIST].y, 0.002f)
+            for (ankle in listOf(R_ANKLE, L_ANKLE)) {
+                assertTrue("$id $ms мс: стопа не на полу", p[ankle].y < GuideScene.ANKLE_Y - 0.05f)
+            }
+        }
+    }
+
+    @Test fun barDipsLowerShouldersToElbowsWithElbowsBackAndFeetOffTheFloor() {
+        val a = pose("bars_dip", 0); val b = pose("bars_dip", 1)
+        assertSupportOnBars("bars_dip")
+        assertTrue("почти прямые руки наверху", elbow(a) > 165f)
+        assertTrue("плечо над кистью наверху", abs(a[R_SHOULDER].x - a[R_WRIST].x) < 0.01f)
+        assertTrue("локоть внизу", elbow(b) in 80f..95f)
+        // Плечо опустилось до уровня локтя, но не провалилось ниже него.
+        assertTrue("плечо у локтя", b[R_SHOULDER].y in b[R_ELBOW].y - 0.03f..b[R_ELBOW].y + 0.005f)
+        assertTrue("локти назад", b[R_ELBOW].x < b[R_SHOULDER].x - 0.1f)
+        assertTrue("предплечье почти вертикально", abs(b[R_WRIST].x - b[R_ELBOW].x) < 0.03f)
+        assertTrue("плечи впереди кистей внизу", b[R_SHOULDER].x > b[R_WRIST].x)
+        for (p in listOf(a, b)) {
+            assertTrue("корпус почти вертикален", torsoLean(p) in 5f..30f)
+            assertTrue("колени согнуты", knee(p) in 60f..110f)
+            assertTrue("голени за спиной", p[R_ANKLE].x < p[R_KNEE].x - 0.1f)
+            assertTrue("таз разогнут", hip(p) > 140f)
+        }
+        // Кисти на месте, плечи опускаются.
+        assertTrue(a[R_SHOULDER].y < b[R_SHOULDER].y - 0.08f)
+    }
+
+    @Test fun barLegRaiseLiftsStraightLegsWithoutSwingingTheTrunk() {
+        val a = pose("bars_leg_raise", 0); val b = pose("bars_leg_raise", 1)
+        assertSupportOnBars("bars_leg_raise")
+        assertTrue("ноги висят", hip(a) > 170f)
+        assertTrue("бёдра не ниже горизонтали", hip(b) < 100f)
+        assertTrue("колено не ниже таза наверху", b[R_KNEE].y <= b[R_HIP].y + 0.005f)
+        for (p in listOf(a, b)) {
+            assertTrue("руки прямые", elbow(p) > 165f)
+            assertTrue("ноги почти прямые", knee(p) > 170f)
+            assertTrue("спина у вертикали", abs(torsoLean(p)) <= 6f)
+        }
+        // Без раскачки: таз и плечо почти на месте.
+        assertTrue(hypot(a[PELVIS].x - b[PELVIS].x, a[PELVIS].y - b[PELVIS].y) < 0.02f)
+        assertTrue(hypot(a[R_SHOULDER].x - b[R_SHOULDER].x, a[R_SHOULDER].y - b[R_SHOULDER].y) < 0.001f)
     }
 
     @Test fun hyperextensionRotatesAtHipWithoutOverextendingOrMovingLegs() {

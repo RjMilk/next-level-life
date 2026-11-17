@@ -79,7 +79,15 @@ data class GuideProps(
     val cableMachine: CableMachine? = null,
     val legMachine: LegMachine? = null,
     val assistedMachine: AssistedMachine? = null,
+    val parallelBars: ParallelBars? = null,
 )
+
+/**
+ * Параллельные брусья, вид сбоку: жерди идут вдоль взгляда человека, ближняя — от [x0] до [x1],
+ * её ось на высоте [y] (кисти лежат на ней сверху), стойки — до пола. Дальняя жердь на той же высоте
+ * за телом, темнее. Пол рисуется: брусья стоят на нём, а стопы висят.
+ */
+data class ParallelBars(val x0: Float, val x1: Float, val y: Float)
 
 /** Открытый тренажёр ног: ось рычага у колена и мягкий валик у лодыжки. */
 data class LegMachine(val pivot: Pt, val rollerOffset: Pt = Pt(0f, 0f))
