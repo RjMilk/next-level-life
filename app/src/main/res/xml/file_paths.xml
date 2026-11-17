@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider отдаёт наружу только архивы записей тренировок из cache/exports (PoseLogExport). -->
+<paths>
+    <cache-path
+        name="exports"
+        path="exports/" />
+</paths>

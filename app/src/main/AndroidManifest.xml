@@ -94,5 +94,16 @@
         <receiver
             android:name=".update.UpdateInstallReceiver"
             android:exported="false" />
+        <!-- «Отправить записи тренировок»: архив точек суставов из cache/exports в системное «Поделиться»
+             (временное право чтения только на этот файл). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.exports"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

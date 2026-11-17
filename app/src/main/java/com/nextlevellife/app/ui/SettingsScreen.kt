@@ -118,6 +118,7 @@ fun SettingsScreen(
             BlockingSection(version, onApps)
             SecondPhoneSection(version, onPairing)
             DataSection(version)
+            PoseLogExportSection()
             UpdateSection()
             AboutSection()
             Spacer(Modifier.height(8.dp))
