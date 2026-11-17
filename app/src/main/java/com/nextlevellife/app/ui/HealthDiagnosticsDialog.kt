@@ -231,7 +231,7 @@ internal fun ActivitySourceSelection(version: Int, me: String, peerId: String, p
             Text(label, style = MaterialTheme.typography.bodyLarge)
         }
     }
-    SettingsText("Выбери телефон, на котором стоит приложение часов (например, Garmin Connect)")
+    SettingsText("Выбери телефон, на котором стоит приложение часов (Garmin Connect, Mi Fitness, Zepp, CMF Watch и т.п.)")
     if (choice?.canChange == false) {
         SettingsText("Для смены источника обнови приложение на обоих телефонах и выполни обмен")
     }

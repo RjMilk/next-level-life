@@ -188,9 +188,10 @@ fun HomeScreen(
             }
         }
         if (!batteryOk) {
+            val hint = BatteryHint.forManufacturer(android.os.Build.MANUFACTURER)
             WarningCard(
-                title = "Samsung может усыпить блокировку",
-                text = "Разреши работу без ограничений батареи, иначе служба будет отключаться в фоне.",
+                title = hint.title,
+                text = hint.body,
                 button = "Разрешить",
             ) {
                 context.startActivity(

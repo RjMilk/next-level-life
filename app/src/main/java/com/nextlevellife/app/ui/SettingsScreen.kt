@@ -556,7 +556,7 @@ private fun StepsSection(version: Int) {
             }
         }
         SettingsText(
-            "В Garmin Connect включи передачу данных в Health Connect. Данные появляются после синхронизации часов",
+            "В приложении часов (Garmin Connect, Mi Fitness, Zepp, CMF Watch и т.п.) включи передачу шагов в Health Connect. Данные появляются после синхронизации часов",
             modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
         )
         Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
