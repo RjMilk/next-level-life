@@ -23,18 +23,20 @@ import kotlin.math.roundToLong
  * «Чёрный ящик» подхода: поток суставов и состояние счёта по кадрам, чтобы на компьютере
  * проиграть подход через счётчики с любыми порогами.
  *
- * Формат v3 — текст, разделитель `;`, десятичная точка:
+ * Формат v4 — текст, разделитель `;`, десятичная точка:
  * ```
- * # nll-poselog v3 exercise=squats front=true device=Pixel_7 app=0.1.0 started=2026-11-12T10:15:30+03:00
- * t;w;h;NOSE_x;NOSE_y;NOSE_c;…;RIGHT_ANKLE_c;phase;count;tracking;inPosition;depth;hint;atStart;heldMs
- * 0;480;640;231.4;118.0;0.99;…;SEARCH;0;1;0;0.000;Встань прямо;0;0
+ * # nll-poselog v4 exercise=squats front=true device=Pixel_7 app=0.1.0 started=2026-11-12T10:15:30+03:00
+ * t;w;h;NOSE_x;NOSE_y;NOSE_z;NOSE_c;…;RIGHT_ANKLE_c;phase;count;tracking;inPosition;depth;hint;atStart;heldMs
+ * 0;480;640;231.4;118.0;-512.3;0.99;…;SEARCH;0;1;0;0.000;Встань прямо;0;0
  * # reset
  * …
  * ```
- * `t` — мс от первого кадра; у отсутствующего сустава x, y, c пустые. Состояние — после обработки кадра.
+ * `t` — мс от первого кадра; у отсутствующего сустава x, y, z, c пустые; у сустава без глубины пуст только z.
+ * `z` — глубина ML Kit ([PosePoint.z]). Состояние — после обработки кадра.
  * Строка-комментарий `# reset` — панель вернулась к поиску вне кадра (пауза, снятие паузы).
  * `heldMs` — засчитанное время удержания ([RepState.heldMs]; у счётчиков повторений 0).
- * v2 — то же без столбца `heldMs` (при разборе heldMs = 0); v1 — ещё и без `atStart` (atStart = false).
+ * v3 — то же без столбцов `_z` (при разборе z = NaN); v2 — ещё и без `heldMs` (heldMs = 0);
+ * v1 — ещё и без `atStart` (atStart = false).
  */
 
 /** Состояние панели и счётчика после кадра, как записано на телефоне. */
@@ -52,7 +54,7 @@ data class RecordedState(
 /**
  * Разобранная запись. [frames] и [recorded] одной длины. [resets] — индексы кадров,
  * перед которыми панель сбросилась в поиск по внешней причине (строка `# reset`).
- * [version] — версия формата файла (v1, v2, v3).
+ * [version] — версия формата файла (v1–v4).
  */
 class PoseLogData(
     val exerciseId: String,
@@ -67,12 +69,15 @@ class PoseLogData(
 /** Чистый Kotlin, без Android: строки формата и разбор. */
 object PoseLogFormat {
     const val MAGIC = "nll-poselog"
-    const val VERSION = "v3"
+    const val VERSION = "v4"
     const val RESET_MARK = "# reset"
     private const val SEP = ';'
 
     /** Версии, которые умеет читать [parse]. */
-    val READABLE = setOf("v1", "v2", "v3")
+    val READABLE = setOf("v1", "v2", "v3", "v4")
+
+    /** Версии без столбцов глубины `_z`. */
+    private val NO_DEPTH = setOf("v1", "v2", "v3")
 
     private val STATE_COLUMNS_V1 = listOf("phase", "count", "tracking", "inPosition", "depth", "hint")
     private val STATE_COLUMNS_V2 = STATE_COLUMNS_V1 + "atStart"
@@ -104,12 +109,16 @@ object PoseLogFormat {
         }
     }
 
-    fun columns(): String = columnNames(VERSION).joinToString(SEP.toString())
+    /** Строка названий столбцов версии [version] (по умолчанию текущей; старые — для тестов чтения). */
+    fun columns(version: String = VERSION): String = columnNames(version).joinToString(SEP.toString())
 
     private fun columnNames(version: String): List<String> = buildList {
         add("t"); add("w"); add("h")
+        val depth = version !in NO_DEPTH
         for (j in Joint.entries) {
-            add("${j.name}_x"); add("${j.name}_y"); add("${j.name}_c")
+            add("${j.name}_x"); add("${j.name}_y")
+            if (depth) add("${j.name}_z")
+            add("${j.name}_c")
         }
         addAll(
             when (version) {
@@ -122,15 +131,16 @@ object PoseLogFormat {
 
     /** Строка кадра. [t0] — timeMs первого кадра записи; [phase] — фаза панели (SEARCH/HOLD/COUNT). */
     fun line(frame: PoseFrame, t0: Long, phase: String, state: RepState): String {
-        val sb = StringBuilder(400)
+        val sb = StringBuilder(500)
         sb.append(frame.timeMs - t0).append(SEP).append(frame.width).append(SEP).append(frame.height)
         for (j in Joint.entries) {
             val p = frame.points[j]
             if (p == null || p.x.isNaN() || p.y.isNaN() || p.confidence.isNaN()) {
-                sb.append(SEP).append(SEP).append(SEP)
+                sb.append(SEP).append(SEP).append(SEP).append(SEP)
             } else {
                 sb.append(SEP); fixed(sb, p.x, 1)
                 sb.append(SEP); fixed(sb, p.y, 1)
+                sb.append(SEP); if (p.z.isFinite()) fixed(sb, p.z, 1)
                 sb.append(SEP); fixed(sb, p.confidence, 2)
             }
         }
@@ -146,7 +156,7 @@ object PoseLogFormat {
     }
 
     /**
-     * Разбор записи v1, v2 или v3. Бросает [IllegalArgumentException] с номером строки, если файл не в формате.
+     * Разбор записи v1–v4. Бросает [IllegalArgumentException] с номером строки, если файл не в формате.
      */
     fun parse(lines: Sequence<String>): PoseLogData {
         var version = VERSION
@@ -240,12 +250,15 @@ object PoseLogFormat {
             val xs = cell("${j.name}_x")
             val ys = cell("${j.name}_y")
             val cs = cell("${j.name}_c")
-            if (xs.isEmpty() && ys.isEmpty() && cs.isEmpty()) continue
+            val zName = "${j.name}_z"
+            val zs = if (zName in index) cell(zName) else ""
+            if (xs.isEmpty() && ys.isEmpty() && cs.isEmpty() && zs.isEmpty()) continue
             val x = xs.toFloatOrNull()
             val y = ys.toFloatOrNull()
             val c = cs.toFloatOrNull()
             require(x != null && y != null && c != null) { "${j.name}: «$xs;$ys;$cs» — не число" }
-            points[j] = PosePoint(x, y, c)
+            val z = if (zs.isEmpty()) Float.NaN else zs.toFloatOrNull() ?: throw IllegalArgumentException("$zName=«$zs» — не число")
+            points[j] = PosePoint(x, y, c, z)
         }
         frames += PoseFrame(long("t"), int("w"), int("h"), points)
         recorded += RecordedState(

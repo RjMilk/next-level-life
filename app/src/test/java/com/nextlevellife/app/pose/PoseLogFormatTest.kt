@@ -25,9 +25,9 @@ class PoseLogFormatTest {
 
     @Test
     fun headerAndColumns() {
-        assertTrue(header, header.startsWith("# nll-poselog v3 "))
+        assertTrue(header, header.startsWith("# nll-poselog v4 "))
         val data = PoseLogFormat.parse(sequenceOf(header, PoseLogFormat.columns()))
-        assertEquals("v3", data.version)
+        assertEquals("v4", data.version)
         assertEquals("squats", data.exerciseId)
         assertTrue(data.front)
         assertEquals("Pixel_7_Pro", data.meta["device"])
@@ -35,9 +35,46 @@ class PoseLogFormatTest {
         assertEquals("2026-11-12T10:15:30+03:00", data.meta["started"])
         assertTrue(data.frames.isEmpty())
         val cols = PoseLogFormat.columns().split(';')
-        assertEquals(3 + 13 * 3 + 8, cols.size)
+        assertEquals(3 + 13 * 4 + 8, cols.size)
+        assertEquals(listOf("NOSE_x", "NOSE_y", "NOSE_z", "NOSE_c"), cols.subList(3, 7))
         assertEquals("atStart", cols[cols.size - 2])
         assertEquals("heldMs", cols.last())
+        assertEquals(3 + 13 * 3 + 8, PoseLogFormat.columns("v3").split(';').size)
+    }
+
+    /** Глубина z пишется и читается; сустав без глубины остаётся с z = NaN, x/y/c не теряются. */
+    @Test
+    fun depthRoundTrip() {
+        val points = mapOf(
+            Joint.NOSE to PosePoint(240.04f, 100.0f, 0.95f, -512.34f),
+            Joint.LEFT_WRIST to PosePoint(300f, 500f, 0.8f, 12.06f),
+            Joint.RIGHT_WRIST to PosePoint(200f, 500f, 0.7f),
+        )
+        val data = roundTrip(listOf(PoseFrame(10, 480, 640, points)), listOf("COUNT" to RepState()))
+        val got = data.frames[0].points
+        assertEquals(-512.3f, got.getValue(Joint.NOSE).z, 1e-3f)
+        assertEquals(12.1f, got.getValue(Joint.LEFT_WRIST).z, 1e-3f)
+        assertTrue(got.getValue(Joint.RIGHT_WRIST).z.isNaN())
+        assertEquals(0.7f, got.getValue(Joint.RIGHT_WRIST).confidence, 1e-4f)
+        val line = PoseLogFormat.line(PoseFrame(0, 480, 640, points), 0, "SEARCH", RepState())
+        assertTrue(line, line.startsWith("0;480;640;240.0;100.0;-512.3;0.95;"))
+    }
+
+    /** Записи v3 (без глубины) по-прежнему читаются; z = NaN. */
+    @Test
+    fun readsV3() {
+        val v3Header = "# nll-poselog v3 exercise=squats front=true device=X app=0.7.0 started=2026-11-12T10:15:30+03:00"
+        val nose = "240.0;100.0;0.95"
+        val row = (listOf("0", "480", "640", nose) + List(12) { ";;" } + listOf("COUNT", "4", "1", "1", "0.500", "Ниже", "1", "0"))
+            .joinToString(";")
+        assertEquals(PoseLogFormat.columns("v3").split(';').size, row.split(';').size)
+        val data = PoseLogFormat.parse(sequenceOf(v3Header, PoseLogFormat.columns("v3"), row))
+        assertEquals("v3", data.version)
+        val p = data.frames[0].points.getValue(Joint.NOSE)
+        assertEquals(240f, p.x, 1e-4f)
+        assertEquals(0.95f, p.confidence, 1e-4f)
+        assertTrue(p.z.isNaN())
+        assertEquals(RecordedState("COUNT", 4, true, true, 0.5f, "Ниже", atStart = true, heldMs = 0L), data.recorded[0])
     }
 
     @Test
@@ -97,7 +134,7 @@ class PoseLogFormatTest {
     fun formatIsLocaleIndependent() {
         val frame = PoseFrame(0, 480, 640, mapOf(Joint.NOSE to PosePoint(12.25f, 7.5f, 0.5f)))
         val line = PoseLogFormat.line(frame, 0, "SEARCH", RepState(depth = 0.5f))
-        assertTrue(line, line.startsWith("0;480;640;12.3;7.5;0.50;;;"))
+        assertTrue(line, line.startsWith("0;480;640;12.3;7.5;;0.50;;;;"))
         assertTrue(line, line.endsWith(";SEARCH;0;0;0;0.500;;0;0"))
         val at = PoseLogFormat.line(frame, 0, "HOLD", RepState(tracking = true, hint = "x", atStart = true))
         assertTrue(at, at.endsWith(";HOLD;0;1;0;0.000;x;1;0"))
@@ -109,12 +146,12 @@ class PoseLogFormatTest {
     @Test
     fun readsV1() {
         val v1Header = "# nll-poselog v1 exercise=pushups front=false device=X app=0.1.0 started=2026-11-12T10:15:30+03:00"
-        val v3Columns = PoseLogFormat.columns().split(';')
-        val v1Columns = v3Columns.dropLast(2).joinToString(";")
+        val v1Columns = PoseLogFormat.columns("v1")
+        assertEquals(PoseLogFormat.columns("v3").split(';').dropLast(2).joinToString(";"), v1Columns)
         val nose = "240.0;100.0;0.95"
         val row = (listOf("0", "480", "640", nose) + List(12) { ";;" } + listOf("COUNT", "3", "1", "1", "0.250", "Ниже"))
             .joinToString(";")
-        assertEquals(v3Columns.size - 2, row.split(';').size)
+        assertEquals(v1Columns.split(';').size, row.split(';').size)
         val data = PoseLogFormat.parse(sequenceOf(v1Header, v1Columns, row, row))
         assertEquals("v1", data.version)
         assertEquals("pushups", data.exerciseId)
@@ -128,7 +165,8 @@ class PoseLogFormatTest {
     @Test
     fun readsV2() {
         val v2Header = "# nll-poselog v2 exercise=squats front=true device=X app=0.2.0 started=2026-11-12T10:15:30+03:00"
-        val v2Columns = PoseLogFormat.columns().removeSuffix(";heldMs")
+        val v2Columns = PoseLogFormat.columns("v2")
+        assertEquals(PoseLogFormat.columns("v3").removeSuffix(";heldMs"), v2Columns)
         val nose = "240.0;100.0;0.95"
         val row = (listOf("0", "480", "640", nose) + List(12) { ";;" } + listOf("COUNT", "4", "1", "1", "0.500", "Ниже", "1"))
             .joinToString(";")
@@ -162,12 +200,13 @@ class PoseLogFormatTest {
         assertTrue(fails("# something else", PoseLogFormat.columns()))
         assertTrue(fails("# nll-poselog v9 exercise=squats", PoseLogFormat.columns()))
         assertTrue(fails(header, "t;w;h;phase"))
-        // v3 без столбца heldMs — ошибка; v2 без atStart — тоже.
+        // v4 без столбца heldMs или без глубины — ошибка; v2 без atStart — тоже.
         assertTrue(fails(header, PoseLogFormat.columns().removeSuffix(";heldMs")))
+        assertTrue(fails(header, PoseLogFormat.columns("v3")))
         assertTrue(
             fails(
                 "# nll-poselog v2 exercise=squats",
-                PoseLogFormat.columns().removeSuffix(";heldMs").removeSuffix(";atStart"),
+                PoseLogFormat.columns("v2").removeSuffix(";atStart"),
             ),
         )
         val good = PoseLogFormat.line(PoseFrame(0, 1, 1, emptyMap()), 0, "SEARCH", RepState())

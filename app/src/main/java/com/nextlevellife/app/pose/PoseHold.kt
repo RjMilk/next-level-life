@@ -236,7 +236,7 @@ internal class PoseJoints(private val tauMs: Float = PoseHoldTiming.SMOOTH_TAU_M
                     p
                 } else {
                     val a = 1f - exp(-dt / tauMs)
-                    PosePoint(old.x + (p.x - old.x) * a, old.y + (p.y - old.y) * a, p.confidence)
+                    PosePoint(old.x + (p.x - old.x) * a, old.y + (p.y - old.y) * a, p.confidence, p.z)
                 }
                 freshAt[i] = t
                 freshNow[i] = true

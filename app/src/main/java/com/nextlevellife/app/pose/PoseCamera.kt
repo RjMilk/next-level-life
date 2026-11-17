@@ -440,8 +440,10 @@ private class PoseAnalyzer(
             val landmark = getPoseLandmark(type) ?: continue
             val p = landmark.position
             // Фронтальное превью зеркальное — отражаем x, чтобы точки легли на тело в превью.
+            // Глубина при отражении по x не меняется.
             val x = if (mirror) width - p.x else p.x
-            points[joint] = PosePoint(x, p.y, landmark.inFrameLikelihood)
+            val z = landmark.position3D.z
+            points[joint] = PosePoint(x, p.y, landmark.inFrameLikelihood, if (z.isFinite()) z else Float.NaN)
         }
         return points
     }

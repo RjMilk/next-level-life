@@ -19,8 +19,11 @@ enum class Joint {
  * Точка сустава в пикселях «прямого» кадра — так, как его видит пользователь на экране
  * (поворот учтён, для фронтальной камеры кадр отзеркален). Начало координат слева сверху, y вниз.
  * [confidence] — уверенность 0..1, что сустав действительно в кадре.
+ * [z] — глубина от ML Kit (position3D.z): относительно середины таза, в масштабе, близком к пикселям x;
+ * меньше — ближе к камере. При отражении кадра фронтальной камеры z не меняется. NaN — глубины нет
+ * (старые записи, синтетика). Счётчики глубину пока не используют: она пишется в «чёрный ящик» [PoseLogFormat].
  */
-data class PosePoint(val x: Float, val y: Float, val confidence: Float)
+data class PosePoint(val x: Float, val y: Float, val confidence: Float, val z: Float = Float.NaN)
 
 /** Один кадр. [points] пуст, если человек не найден. [timeMs] — SystemClock.elapsedRealtime(). */
 class PoseFrame(
