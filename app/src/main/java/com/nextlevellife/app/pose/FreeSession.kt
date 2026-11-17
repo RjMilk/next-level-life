@@ -61,7 +61,7 @@ sealed class FreeEvent {
 
 /**
  * Что классификатор знает после кадра.
- * [current] — распознанное упражнение (null — ещё ничего не распознано); [setReps] / [setHeldMs] — засчитанное
+ * [current] — распознанное упражнение (null — ещё ничего не распознано), [inPose] — человек в его позе; [setReps] / [setHeldMs] — засчитанное
  * в открытом подходе этим классификатором; [pendingHeldMs] — удержание текущего отрезка, ещё не дотянувшее
  * до минимума (у планки 10 с); [tracking] — человек виден хоть одному счётчику; [hint] — подсказка текущего
  * упражнения (или общая, пока ничего не распознано); [depth] — глубина текущего повтора; [holding] — время
@@ -69,6 +69,7 @@ sealed class FreeEvent {
  */
 data class FreeState(
     val current: String? = null,
+    val inPose: Boolean = false,
     val setReps: Int = 0,
     val setHeldMs: Long = 0L,
     val pendingHeldMs: Long = 0L,
@@ -341,15 +342,19 @@ class FreeSessionClassifier(
     private fun makeState(events: List<FreeEvent>): FreeState {
         val cur = tracks.firstOrNull { it.cand.id == current }
         val tracking = tracks.any { it.state.tracking }
+        val inPose = cur != null && cur.inPose
         val st = cur?.state
         val hint = when {
-            st != null && (st.tracking || !tracking) -> st.hint
-            // Ничего не распознано: подсказка о кадре от счётчика повторений (у планки она про позу).
+            // Подсказки упражнения («Ниже», «Таз выше») — только пока человек в его позе: вне её он,
+            // может быть, уже переходит к другому упражнению, и «Встань прямо» было бы неверно.
+            inPose -> st?.hint.orEmpty()
+            // Никого не видно: подсказка о кадре от счётчика повторений (у планки она про позу).
             !tracking -> tracks.firstOrNull { !it.hold }?.state?.hint.orEmpty()
             else -> ""
         }
         return FreeState(
             current = current,
+            inPose = inPose,
             setReps = setReps,
             setHeldMs = setHeld,
             pendingHeldMs = if (cur != null && cur.hold) cur.state.pendingMs else 0L,

@@ -184,6 +184,7 @@ class MainActivity : ComponentActivity() {
                                                 onNutrition = { screen = NUTRITION },
                                                 onCards = { screen = CARDS },
                                                 onEditProgram = { screen = EDIT_PROGRAM + (it ?: "") },
+                                                onFreeWorkout = { screen = FREE_WORKOUT },
                                             )
                                         }
                                         screen.startsWith(EDIT_PROGRAM) -> {
@@ -196,6 +197,7 @@ class MainActivity : ComponentActivity() {
                                                 onDeleted = goHome,
                                             )
                                         }
+                                        screen == FREE_WORKOUT -> FreeWorkoutScreen(onDone = goHome)
                                         screen == NUTRITION -> NutritionScreen(onBack = goHome)
                                         screen == CARDS -> CardsScreen(onBack = goHome)
                                         screen == APPS -> AppsScreen(onBack = goHome)
@@ -298,6 +300,9 @@ class MainActivity : ComponentActivity() {
         const val STAT_INFO = "stat:"
         /** Сопряжение со вторым телефоном (из «Настроек»). */
         const val PAIRING = "pairing"
+
+        /** Вольная тренировка: камера сама определяет упражнение. */
+        const val FREE_WORKOUT = "free_workout"
 
         /** Экран «Сайтамы»: главная открывает его как комплекс — onComplex("saitama"). */
         const val SAITAMA = COMPLEX + Saitama.ID

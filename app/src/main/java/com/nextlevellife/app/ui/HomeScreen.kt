@@ -105,6 +105,8 @@ fun HomeScreen(
     onCards: () -> Unit = {},
     /** Редактор своей домашней программы: id или null — новая. */
     onEditProgram: (String?) -> Unit = {},
+    /** Открыть «Вольную тренировку» (камера сама определяет упражнение). */
+    onFreeWorkout: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val version by Store.version.collectAsState()
@@ -224,6 +226,7 @@ fun HomeScreen(
             },
             cards = { CardsHomeCard(onOpen = onCards) },
             onEditProgram = onEditProgram,
+            onFreeWorkout = onFreeWorkout,
         )
     }
 
@@ -597,6 +600,8 @@ private fun EarnSection(
     cards: @Composable () -> Unit = {},
     /** Редактор своей программы (id или null — новая). */
     onEditProgram: (String?) -> Unit = {},
+    /** «Вольная тренировка»: карточка в начале раздела упражнений, перед «Без веса». */
+    onFreeWorkout: () -> Unit = {},
 ) {
     // Свои программы — из настроек; version меняется после сохранения и удаления.
     val customPrograms = remember(version) { CustomPrograms.all() }
@@ -627,6 +632,7 @@ private fun EarnSection(
         ) {
             ProgramCards(custom = customPrograms, onOpen = onComplex, onEdit = onEditProgram)
         }
+        FreeWorkoutHomeCard(onOpen = onFreeWorkout)
         ExpandableCard(
             key = "home_bodyweight",
             title = "Без веса",
