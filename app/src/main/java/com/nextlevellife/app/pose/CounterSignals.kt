@@ -99,6 +99,16 @@ internal enum class Feature(val isAngle: Boolean, vararg limbs: Limb) {
     REAR_ANKLE_RAISE(false, Limb.ANKLE),
     /** Разнос кистей / масштаб торса; отличает разведение от подъёма рук вперёд. */
     WRIST_SPREAD(false, Limb.WRIST),
+
+    /**
+     * Угол в локте, когда кисть поднята до груди: запястье не ниже плеча больше чем на
+     * [CounterThresholds.Swings.WRIST_BELOW_SHOULDER_TOP] торса; ниже — NaN (признак не измерен).
+     * Мах гирей приходит наверх на прямых руках, тяга сумо — с согнутыми локтями; так их видно с любого ракурса.
+     * Рука, направленная в камеру (мах анфас: видимая длина руки меньше
+     * [CounterThresholds.Swings.ARM_FORESHORTENED] от настоящей), считается прямой — 180°:
+     * плоский угол такой короткой руки — шум, а согнутые локти тяги сумо разведены в стороны и видны во всю длину.
+     */
+    ELBOW_RAISED(true, Limb.SHOULDER, Limb.ELBOW, Limb.WRIST),
     ;
 
     val joints: Set<Limb> = limbs.toSet()
@@ -171,7 +181,17 @@ internal enum class Feature(val isAngle: Boolean, vararg limbs: Limb) {
                 v[ELBOW_SHOULDER_DX.ordinal] = Geometry.horizontalGap(e, s, scale)
             }
             if (h != null && s != null && e != null) v[SHOULDER_ANGLE.ordinal] = Geometry.jointAngle(h, s, e)
+            if (s != null && e != null && w != null) v[ELBOW_RAISED.ordinal] = elbowRaised(s, e, w, scale)
             return v
+        }
+
+        /** См. [ELBOW_RAISED]. */
+        private fun elbowRaised(s: PosePoint, e: PosePoint, w: PosePoint, scale: Float): Float {
+            val swing = CounterThresholds.Swings
+            if (!(Geometry.heightAbove(w, s, scale) > -swing.WRIST_BELOW_SHOULDER_TOP)) return Float.NaN
+            val visible = Geometry.dist(s, e) + Geometry.dist(e, w)
+            if (visible < swing.ARM_FORESHORTENED * ARM_TO_TORSO * scale) return 180f
+            return Geometry.jointAngle(s, e, w)
         }
     }
 }

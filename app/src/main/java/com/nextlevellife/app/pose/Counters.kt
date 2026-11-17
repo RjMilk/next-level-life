@@ -174,6 +174,30 @@ internal object CounterThresholds {
 
         /** Для индикатора: торс «совсем прямо». */
         const val TORSO_TILT_UPRIGHT = 10f
+
+        /**
+         * Верх, любой ракурс: локоть почти прямой, пока кисть поднята до груди ([Feature.ELBOW_RAISED]).
+         * Тяга сумо приходит наверх с локтями, согнутыми до 30–90°, — такой цикл махом не засчитывается.
+         */
+        const val ELBOW_STRAIGHT_TOP = 150f
+
+        /**
+         * Рука видна короче этой доли настоящей длины — направлена в камеру (мах анфас наверху),
+         * её плоский угол не мерится, рука считается прямой.
+         */
+        const val ARM_FORESHORTENED = 0.45f
+
+        /**
+         * Низ анфас (наклон корпуса в кадре не виден): плечи опустились — высота плеча над тазом меньше
+         * стольких торса (≈ cos 37°; плечи опускаются при наклоне одинаково с любого ракурса)…
+         */
+        const val SHOULDER_OVER_HIP_BOTTOM = 0.8f
+
+        /** …и кисти ушли ниже таза, к коленям (висящие вдоль тела руки — ≈ −0,15). */
+        const val WRIST_BELOW_HIP_BOTTOM = 0.25f
+
+        /** Для индикатора анфас: плечи над тазом «стоя прямо» (≈ cos 10°). */
+        const val SHOULDER_OVER_HIP_UPRIGHT = 0.985f
     }
 
     object SumoPull {
@@ -639,12 +663,24 @@ internal object ExerciseConfigs {
             enter = { standingEnter(it) },
             hold = { standingHold(it) },
             rest = null,
+            // Сбоку: наклон корпуса виден прямо.
             far = listOf(Feature.TORSO_TILT.above(TORSO_TILT_BOTTOM), Feature.WRIST_OVER_HIP.below(WRIST_OVER_HIP_BOTTOM)),
+            // Анфас: наклон в кадре не виден (угол 4–8° при настоящих 45°), зато опускаются плечи и кисти уходят к коленям.
+            farAlt = listOf(
+                Feature.SHOULDER_OVER_HIP.below(SHOULDER_OVER_HIP_BOTTOM),
+                Feature.WRIST_OVER_HIP.below(-WRIST_BELOW_HIP_BOTTOM),
+            ),
             finish = listOf(
                 Feature.TORSO_TILT.below(TORSO_TILT_TOP),
                 Feature.WRIST_OVER_SHOULDER.above(-WRIST_BELOW_SHOULDER_TOP),
+                Feature.ELBOW_RAISED.above(ELBOW_STRAIGHT_TOP),
             ),
-            depth = { progress(it[Feature.TORSO_TILT], TORSO_TILT_UPRIGHT, TORSO_TILT_BOTTOM) },
+            depth = {
+                maxOf(
+                    progress(it[Feature.TORSO_TILT], TORSO_TILT_UPRIGHT, TORSO_TILT_BOTTOM),
+                    progress(it[Feature.SHOULDER_OVER_HIP], SHOULDER_OVER_HIP_UPRIGHT, SHOULDER_OVER_HIP_BOTTOM),
+                )
+            },
         )
     }
 

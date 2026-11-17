@@ -90,6 +90,8 @@ internal fun Feature.below(threshold: Float) = Cond(this, false, threshold)
  *   зоной покоя тогда считается [finish].
  * @param depth 0..1 — путь от исходной точки к порогу полной амплитуды (для индикатора).
  * @param minRepMs полный цикл (от выхода из зоны покоя до [finish]) короче — шум.
+ * @param farAlt другой набор условий полной амплитуды (например, для другого ракурса камеры):
+ *   нижняя точка достигнута, если подтверждены все [far] ИЛИ все [farAlt]. null — только [far].
  */
 internal class ExerciseConfig(
     val id: String,
@@ -111,9 +113,11 @@ internal class ExerciseConfig(
     val resetOnSideSwitch: Boolean = false,
     val extremeConfirmMs: Long = 0L,
     val preferValidEntrySide: Boolean = false,
+    val farAlt: List<Cond>? = null,
 ) {
     /** Главные суставы: те, что нужны условиям переходов. Без них человека «не видно». */
-    val required: Set<Limb> = (far + finish + rest.orEmpty()).flatMap { it.feature.joints }.toSet() + extraRequired
+    val required: Set<Limb> =
+        (far + finish + rest.orEmpty() + farAlt.orEmpty()).flatMap { it.feature.joints }.toSet() + extraRequired
 
     /** Остальные суставы (поза, масштаб) — используются, если видны. */
     val optional: Set<Limb> = Limb.entries.toSet() - required
@@ -171,7 +175,7 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
     /** Фильтры другой стороны не смешиваем: при смене стороны защёлки и сглаживание начинаются заново. */
     private val sides = SideSelector(cfg.required, minConfidence = cfg.minConfidence) {
         restLatch.clear()
-        farLatch.clear()
+        clearFar()
         finishLatch.clear()
         depthEma = Float.NaN
         if (cfg.resetOnSideSwitch) resetMotion(Latches.NEVER)
@@ -187,6 +191,12 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
 
     private val restLatch = Latches(cfg.restZone, cfg.extremeConfirmMs)
     private val farLatch = Latches(cfg.far, cfg.extremeConfirmMs)
+    private val farAltLatch = cfg.farAlt?.let { Latches(it, cfg.extremeConfirmMs) }
+
+    private fun clearFar() {
+        farLatch.clear()
+        farAltLatch?.clear()
+    }
     private val finishLatch = Latches(cfg.finish, cfg.extremeConfirmMs)
 
     /** Последний кадр в зоне покоя и момент выхода из неё (начало движения). */
@@ -264,7 +274,7 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         if (samples.isEmpty()) {
             if (cfg.extremeConfirmMs > 0L) {
                 restLatch.clear()
-                farLatch.clear()
+                clearFar()
                 finishLatch.clear()
             }
             val closest = sides.closest()
@@ -301,7 +311,7 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         // Старые профили сохраняют прежний допуск POSTURE_GRACE_MS без изменения поведения.
         if (cfg.requireFresh && !samples.all(cfg.hold)) {
             restLatch.clear()
-            farLatch.clear()
+            clearFar()
             finishLatch.clear()
             return emit(tracking = true, inPosition = false, hint = cfg.postureHint, depth = 0f, atStart = false)
         }
@@ -309,6 +319,7 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         val depth = smoothDepth(t, samples.minOf(cfg.depth))
         restLatch.update(tracks, t)
         farLatch.update(tracks, t)
+        farAltLatch?.update(tracks, t)
         finishLatch.update(tracks, t)
         val inRest = samples.all { s -> cfg.restZone.all { it.holds(s[it.feature]) } }
         // Отметка «не засчитано» для звука ([RepState.missed]); счёт и подсказки она не меняет.
@@ -325,7 +336,7 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
                     // Выход из зоны покоя где-то между последним кадром покоя и этим кадром.
                     moveStartMs = lastRestMs?.let { (it + t) / 2 } ?: t
                 }
-                if (farLatch.all(t, phaseSince)) {
+                if (farLatch.all(t, phaseSince) || farAltLatch?.all(t, phaseSince) == true) {
                     cycleStartMs = moveStartMs ?: phaseSince
                     enterPhase(Phase.WAIT_RETURN, t)
                     troughDepth = depth
@@ -426,7 +437,7 @@ internal class PhaseCounter(private val cfg: ExerciseConfig) : RepCounter {
         phaseSince = t
         violationSince = null
         restLatch.clear()
-        farLatch.clear()
+        clearFar()
         finishLatch.clear()
         lastRestMs = null
         moveStartMs = null

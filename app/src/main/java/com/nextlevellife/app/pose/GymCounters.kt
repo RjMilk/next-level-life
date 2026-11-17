@@ -23,6 +23,7 @@ internal object GymCounters {
             hold = base.hold,
             rest = base.rest,
             far = base.far,
+            farAlt = base.farAlt,
             finish = base.finish,
             depth = base.depth,
             minRepMs = base.minRepMs,
