@@ -524,7 +524,6 @@ private fun StepsSection(version: Int) {
             if (d != null && d.rewardedMs > 0) {
                 ActivityMath.rewardLine(d.rewardedMs)?.let { SettingsText("Начислено сегодня: $it", color = Good) }
             }
-            SettingsText(ActivityMath.sourcesLine(d?.sources.orEmpty()))
             SettingsText(ActivityMath.updatedLine(sync.lastSyncMs, System.currentTimeMillis(), ZoneId.systemDefault()))
             sync.error?.let { SettingsText(it, color = Bad) }
             if (readsHere != false) Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
