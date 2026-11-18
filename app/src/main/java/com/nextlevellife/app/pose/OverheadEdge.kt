@@ -104,6 +104,16 @@ internal class OverheadEdgeCounter(private val inner: RepCounter) : RepCounter b
                     (elbow?.let { (it.y - shoulder.y) / torso <= OverheadEdgeTuning.ELBOW_BELOW_SHOULDER_MAX } ?: elbowOut)
                 continue
             }
+            // Кисть видна в кадре (хоть и с низкой уверенностью — закрыта гирей у груди) и не выше плеча на
+            // WRIST_OVER_SHOULDER_MIN торса: руки опустились — уход за край забыт, ничего не достраиваем.
+            // Полосы кадра тут мало: при близком телефоне и гиря у груди бывает в верхней полосе.
+            val weak = usable[side.joint(Limb.WRIST)]
+            if (weak != null && weak.y >= 0f && (shoulder == null || torso <= 0f ||
+                    (shoulder.y - weak.y) / torso < OverheadEdgeTuning.WRIST_OVER_SHOULDER_MIN)
+            ) {
+                arm.wristLeaving = false
+                continue
+            }
             if (!body || shoulder == null || !arm.wristLeaving || !recent(arm.wrist)) continue
 
             // Кисть ушла за верхний край: руки над головой.

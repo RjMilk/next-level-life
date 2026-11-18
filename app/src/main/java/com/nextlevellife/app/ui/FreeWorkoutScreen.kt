@@ -646,7 +646,9 @@ private fun FreeCameraPanel(
     val onFrame: (PoseFrame) -> Unit = remember(classifier) {
         { frame ->
             diag.onFrame(frame)
-            if (currentActive) {
+            // После «Закончить» кадры из очереди камеры ещё приходят, пока экран не перекомпонован
+            // (currentActive меняется только тогда): закончивший классификатор их не берёт.
+            if (currentActive && !classifier.finished) {
                 val before = live.current
                 val st = classifier.onFrame(frame)
                 live.update(st)

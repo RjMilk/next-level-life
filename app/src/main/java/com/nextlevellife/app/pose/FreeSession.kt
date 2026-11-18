@@ -102,13 +102,19 @@ data class FreeResume(val exerciseId: String, val lastCreditMs: Long)
  *   счётчик посреди своего движения), повтор ждёт не дольше [FreeTuning.CONFLICT_MS].
  * - Текущее упражнение: до первого засчитанного — готовый кандидат с наивысшим приоритетом (порядок списка).
  *   Когда подход открыт, сменить упражнение может только устойчивая смена позы: другой кандидат готов, а текущее
- *   упражнение вне своей позы не меньше [FreeTuning.SWITCH_OUT_MS], — либо засчитанный повтор (удержание)
- *   другого взведённого кандидата. Одиночные кадры и дрожание упражнение не переключают.
+ *   упражнение вне своей позы не меньше [FreeTuning.SWITCH_OUT_MS], — либо два повтора подряд другого взведённого
+ *   кандидата (без засчитанного текущему между ними; засчитываются оба, подход — с первого), либо засчитанное
+ *   удержание. Одиночный чужой повтор не засчитывается и ни подход, ни цикл текущего счётчика не трогает.
+ *   Пока подхода нет (первый подход, после паузы), первый же повтор сразу открывает подход своего упражнения.
+ *   Одиночные кадры и дрожание упражнение не переключают.
  * - При смене упражнения с открытым подходом подход закрывается, а незавершённые циклы остальных счётчиков
  *   повторений сбрасываются (старые полуциклы не дозасчитываются). Счётчик удержания не сбрасывается:
  *   его время засчитывается только взведённому, а сброс сжёг бы «живой вход».
  * - Подход закрывается при смене упражнения, паузе без засчитанного ≥ [FreeTuning.PAUSE_CLOSE_MS], конце отрезка
- *   удержания (у планки отрезок не длиннее потолка счётчика — 3 минуты) и в [finish].
+ *   удержания (у планки отрезок не длиннее потолка счётчика — 3 минуты) и в [finish]. После [finish] кадры
+ *   не принимаются.
+ * - Подход повторений начинается с начала движения первого повтора (последний кадр в исходной точке перед ним):
+ *   стойка в исходной позе и отдых после закрытия в его время не входят. Удержание — задним числом, на всё время.
  *
  * Чистый Kotlin, кадры — из главного потока (как у [RepCounter]).
  */
@@ -129,6 +135,9 @@ class FreeSessionClassifier(
         var outSince = NEVER
         var wasHolding = false
 
+        /** Последний кадр в исходной точке движения: после него начался текущий повтор (начало подхода). */
+        var lastAtStartMs = NEVER
+
         /**
          * В исходной позе прямо сейчас и уже дольше [FreeTuning.READY_MS] (с допуском на одиночные кадры).
          * Строго дольше: столько же длится допуск счётчика на нарушение позы, и поза, из которой человек
@@ -145,7 +154,14 @@ class FreeSessionClassifier(
         override fun toString() = cand.id
     }
 
-    private class Claim(val track: Track, val n: Int, val atMs: Long)
+    /** Повтор счётчика [track] на кадре [atMs]; [cycleStartMs] — примерно начало его движения. */
+    private class Claim(val track: Track, val n: Int, val atMs: Long, val cycleStartMs: Long)
+
+    /**
+     * Повтор другого упражнения, пока открыт подход текущего: ещё не доказательство смены. Засчитывается
+     * (вместе со следующим), только если следующим засчитанным снова будет повтор того же упражнения.
+     */
+    private class Challenge(val track: Track, val n: Int, val cycleStartMs: Long)
 
     private val tracks: List<Track> = candidates.mapIndexedNotNull { i, c -> counterOf(c.id)?.let { Track(c, it, i) } }
 
@@ -170,13 +186,25 @@ class FreeSessionClassifier(
     private var resolvedAt = NEVER
     private var resolvedTrack: Track? = null
 
+    /** Неподтверждённый повтор другого упражнения при открытом подходе ([Challenge]). */
+    private var challenge: Challenge? = null
+
     var state: FreeState = FreeState(current = current)
+        private set
+
+    /** После [finish] кадры больше не принимаются: запоздавшие кадры камеры не открывают новый подход. */
+    var finished = false
         private set
 
     /** Упражнения, которые классификатор действительно считает (у кандидата есть счётчик). */
     val candidateIds: List<String> get() = tracks.map { it.cand.id }
 
     fun onFrame(frame: PoseFrame): FreeState {
+        if (finished) {
+            // Тренировка закончена: подходы уже записаны, новых не бывает.
+            state = state.copy(events = emptyList(), missed = false)
+            return state
+        }
         val t = frame.timeMs
         val events = ArrayList<FreeEvent>(0)
         val held = ArrayList<Pair<Track, Long>>(0)
@@ -197,8 +225,11 @@ class FreeSessionClassifier(
                 tr.seenCount = st.count
                 if (grown > 0 && tr.armed && !sameRepAsResolved(tr, t)) {
                     if (pending.isEmpty()) pendingSince = t
-                    pending += Claim(tr, grown, t)
+                    val cycleStart = if (tr.lastAtStartMs != NEVER) tr.lastAtStartMs else t
+                    pending += Claim(tr, grown, t, cycleStart)
                 }
+                // После учёта повтора: кадр засчитанного повтора уже бывает «в исходной точке».
+                if (st.tracking && st.atStart) tr.lastAtStartMs = t
             }
         }
 
@@ -210,9 +241,9 @@ class FreeSessionClassifier(
 
         for ((tr, d) in held) {
             if (tr.cand.id != current) {
-                // Удержание взведённой планки — устойчивая поза: другое упражнение кончилось.
-                pending.clear()
-                pendingSince = NEVER
+                // Удержание взведённой планки — устойчивая поза: другое упражнение кончилось. Его отложенный
+                // повтор (ждал спора) — последний повтор старого подхода: засчитывается ему, чужие — нет.
+                creditPendingOfCurrent(t, events)
                 switchTo(tr, t, events, resetOthers = true)
             }
             credit(tr, t, events, reps = 0, heldMs = d)
@@ -232,6 +263,8 @@ class FreeSessionClassifier(
 
     /** «Закончить»: решить отложенный спор и закрыть подход. События — как у [onFrame]. */
     fun finish(timeMs: Long): List<FreeEvent> {
+        if (finished) return emptyList()
+        finished = true
         val events = ArrayList<FreeEvent>()
         if (pending.isNotEmpty()) resolve(timeMs, events)
         if (setOpen) closeSet(FreeCloseReason.FINISH, timeMs, events)
@@ -268,25 +301,71 @@ class FreeSessionClassifier(
     }
 
     /** Повтор другого счётчика рядом с уже решённым спором — тот же физический повтор. */
-    private fun sameRepAsResolved(tr: Track, t: Long): Boolean =
-        resolvedAt != NEVER && resolvedTrack !== tr && t - resolvedAt <= FreeTuning.CONFLICT_MS
+    private fun sameRepAsResolved(tr: Track, t: Long): Boolean {
+        if (resolvedAt == NEVER || resolvedTrack === tr || t - resolvedAt > FreeTuning.CONFLICT_MS) return false
+        // Спор выиграл лишь неподтверждённый повтор другого упражнения: свой повтор текущего (досчитанный чуть
+        // позже) у текущего не отнимается — в споре оно важнее, а тот повтор так и не засчитан.
+        if (tr.cand.id == current && challenge != null && challenge?.track === resolvedTrack) return false
+        return true
+    }
 
     private fun resolve(t: Long, events: MutableList<FreeEvent>) {
         val claimers = pending.map { it.track }.distinct().sortedBy { it.order }
         val win = claimers.first { it.cand === winner(claimers.map { c -> c.cand }, current) }
-        val n = pending.filter { it.track === win }.sumOf { it.n }
+        val mine = pending.filter { it.track === win }
+        val n = mine.sumOf { it.n }
+        val cycleStart = mine.minOf { it.cycleStartMs }
         pending.clear()
         pendingSince = NEVER
         resolvedAt = t
         resolvedTrack = win
-        if (win.cand.id != current) switchTo(win, t, events, resetOthers = true)
-        credit(win, t, events, reps = n, heldMs = 0L)
+        if (win.cand.id == current) {
+            // Повтор текущего: неподтверждённый чужой повтор так и остаётся случайным ([credit] его снимает).
+            credit(win, t, events, reps = n, heldMs = 0L, cycleStartMs = cycleStart)
+            return
+        }
+        val ch = challenge?.takeIf { it.track === win }
+        if (setOpen && ch == null) {
+            // Подход текущего открыт, а это первый повтор другого упражнения: одиночный повтор (соседний счётчик
+            // принял чужое движение) ни подход, ни незавершённый цикл текущего не трогает. Ждём второй подряд.
+            challenge = Challenge(win, n, cycleStart)
+            return
+        }
+        // Смена упражнения: подхода нет (первый подход — сразу) или второй повтор подряд того же упражнения.
+        val prevEnd = lastCreditMs
+        switchTo(win, t, events, resetOthers = true)
+        if (ch == null) {
+            credit(win, t, events, reps = n, heldMs = 0L, cycleStartMs = cycleStart)
+        } else {
+            // Подтверждено: засчитываются оба повтора, подход — с первого из них (но не раньше конца прошлого).
+            boundaryMs = minOf(t, if (prevEnd != NEVER) maxOf(prevEnd, ch.cycleStartMs) else ch.cycleStartMs)
+            credit(win, t, events, reps = ch.n + n, heldMs = 0L, cycleStartMs = ch.cycleStartMs)
+        }
     }
 
-    private fun credit(tr: Track, t: Long, events: MutableList<FreeEvent>, reps: Int, heldMs: Long) {
+    /** Отложенные (ждущие спора) повторы текущего упражнения — в его подход; остальные отложенные снимаются. */
+    private fun creditPendingOfCurrent(t: Long, events: MutableList<FreeEvent>) {
+        val mine = pending.filter { it.track.cand.id == current }
+        pending.clear()
+        pendingSince = NEVER
+        if (mine.isEmpty()) return
+        val tr = mine.first().track
+        resolvedAt = t
+        resolvedTrack = tr
+        credit(tr, t, events, reps = mine.sumOf { it.n }, heldMs = 0L, cycleStartMs = mine.minOf { it.cycleStartMs })
+    }
+
+    /**
+     * Засчитать текущему упражнению [tr]. [cycleStartMs] — начало движения первого повтора (у удержания нет):
+     * подход начинается не раньше него — стойка в исходной позе перед первым повтором и отдых после закрытия
+     * подхода не идут в его время. Засчитанное текущему прерывает «подряд» у чужого повтора ([Challenge]).
+     */
+    private fun credit(tr: Track, t: Long, events: MutableList<FreeEvent>, reps: Int, heldMs: Long, cycleStartMs: Long = NEVER) {
+        challenge = null
         if (!setOpen || setStartMs == NEVER) {
             var start = if (tr.armedAt != NEVER) tr.armedAt else t
             if (boundaryMs != NEVER) start = maxOf(start, boundaryMs)
+            if (cycleStartMs != NEVER) start = maxOf(start, cycleStartMs)
             // Удержание засчитывается задним числом: подход не короче засчитанного времени.
             if (heldMs > 0L) start = minOf(start, t - heldMs)
             setStartMs = minOf(start, t)
@@ -315,12 +394,20 @@ class FreeSessionClassifier(
         }
         val cur = tracks.firstOrNull { it.cand.id == current }
         if (cur == null || (cur.outSince != NEVER && t - cur.outSince >= FreeTuning.SWITCH_OUT_MS)) {
+            val ch = challenge?.takeIf { it.track === best }
+            val prevEnd = lastCreditMs
             switchTo(best, t, events, resetOthers = true)
+            if (ch != null) {
+                // Отложенный повтор этого упражнения подтверждён устойчивой сменой позы — засчитывается.
+                boundaryMs = minOf(t, if (prevEnd != NEVER) maxOf(prevEnd, ch.cycleStartMs) else ch.cycleStartMs)
+                credit(best, t, events, reps = ch.n, heldMs = 0L, cycleStartMs = ch.cycleStartMs)
+            }
         }
     }
 
     private fun switchTo(tr: Track, t: Long, events: MutableList<FreeEvent>, resetOthers: Boolean) {
         if (setOpen) closeSet(FreeCloseReason.CHANGE, t, events)
+        challenge = null
         current = tr.cand.id
         boundaryMs = t
         if (resetOthers) {
@@ -334,6 +421,8 @@ class FreeSessionClassifier(
 
     private fun closeSet(reason: FreeCloseReason, t: Long, events: MutableList<FreeEvent>) {
         events += FreeEvent.Closed(reason, t)
+        // Неподтверждённый чужой повтор живёт только при открытом подходе: дальше он не оплачивается.
+        challenge = null
         setOpen = false
         setReps = 0
         setHeld = 0L

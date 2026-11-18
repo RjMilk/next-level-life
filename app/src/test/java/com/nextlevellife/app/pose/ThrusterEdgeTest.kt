@@ -118,6 +118,26 @@ class ThrusterEdgeTest {
     }
 
     @Test
+    fun weakWristBackAtRackForgetsOverhead() {
+        // Трастер с руками за краем, гиря обратно к груди (кисти закрыты гирей, уверенность низкая, но в кадре),
+        // затем присед без жима: второго повтора нет — кисти не достраиваются над головой.
+        val tl = Timeline().hold(rack, 1000)
+            .move(rack, bottom, 600).move(bottom, rack, 600).move(rack, overhead, 600).hold(overhead, 300)
+            .move(overhead, rack, 600)
+            .move(rack, bottom, 600).move(bottom, rack, 600).hold(rack, 1500)
+        val base = tl.frames.first().timeMs
+        val lowering = base + 1000 + 600 * 3 + 300
+        val frames = crop(tl.frames, top, Out.REMOVED).map { f ->
+            if (f.timeMs < lowering) return@map f
+            val pts = f.points.mapValues { (j, p) ->
+                if (j == Joint.LEFT_WRIST || j == Joint.RIGHT_WRIST) p.copy(confidence = 0.2f) else p
+            }
+            PoseFrame(f.timeMs, f.width, f.height, pts)
+        }
+        assertEquals(1, thruster().feed(frames).last().count)
+    }
+
+    @Test
     fun resetForgetsArmsThatLeft() {
         val c = thruster()
         c.feed(crop(reps(2), top, Out.REMOVED))

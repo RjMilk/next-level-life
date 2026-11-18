@@ -227,4 +227,240 @@ class FreeSessionTest {
         log = restored.applyAll(shifted.flatMap { c2.onFrame(it).events } + c2.finish(shifted.last().timeMs))
         assertEquals(listOf("squats" to 7), log.sets.map { it.exerciseId to it.reps })
     }
+
+    @Test
+    fun repSetStartsAtFirstRepNotAtStartPose() {
+        // Реальный счётчик приседаний: 5 с стоит в исходной позе, потом 5 повторов. Длительность подхода — работа.
+        val sq = squats
+        val tl = Timeline().hold(sq.rest, 5_000)
+        val firstRepAt = tl.nextTimeMs
+        tl.reps(sq.path, 5, sq.segmentMs).hold(sq.rest, 1_000)
+        val set = run(tl.frames).sets.single()
+        assertEquals(5, set.reps)
+        assertTrue("начало ${set.startMs - firstRepAt} мс от первого повтора", set.startMs >= firstRepAt - 100)
+        assertTrue("длительность ${set.durationMs}", set.durationMs <= 5 * 2 * sq.segmentMs + 200)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Сценарии на счётчиках-«куклах»: каждый повтор и каждая поза задаются тестом точно.
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Счётчик-кукла: [startRep] — пошёл повтор (не в исходной точке), [finishRep] — повтор засчитан, если цикл
+     * не сброшен ([reset] посреди повтора его теряет, как у настоящего счётчика). [held] — засчитанное удержание.
+     */
+    private class Puppet(override val kind: CountKind = CountKind.REPS) : RepCounter {
+        var count = 0
+        var held = 0L
+        var atStart = true
+        var inPos = true
+        var resets = 0
+        private var repOpen = false
+        override var state = RepState()
+            private set
+
+        fun startRep() {
+            atStart = false
+            repOpen = true
+        }
+
+        fun finishRep() {
+            if (repOpen) count++
+            repOpen = false
+            atStart = true
+        }
+
+        override fun onFrame(frame: PoseFrame): RepState {
+            state = RepState(
+                count = count, tracking = true, inPosition = inPos, atStart = atStart && inPos,
+                heldMs = held, holding = kind == CountKind.HOLD && inPos,
+            )
+            return state
+        }
+
+        override fun reset() {
+            resets++
+            count = 0
+            repOpen = false
+            state = RepState()
+        }
+    }
+
+    /** Кадры по 33 мс в классификатор; всё засчитанное копится в [events]. */
+    private class Puppets(vararg ids: Pair<String, CountKind>) {
+        val puppets = ids.associate { (id, kind) -> id to Puppet(kind) }
+        val c = FreeSessionClassifier(ids.mapIndexed { i, (id, _) -> FreeCandidate(id, 30 - i) }) { puppets[it] }
+        val events = ArrayList<FreeEvent>()
+        var t = 100_000L
+
+        operator fun get(id: String) = puppets.getValue(id)
+
+        fun tick(ms: Long) {
+            val end = t + ms
+            while (t < end) {
+                events += c.onFrame(PoseFrame(t, 1080, 1920, emptyMap())).events
+                t += 33
+            }
+        }
+
+        /** Полный повтор [id]: [ms] в движении, потом кадры в исходной точке. */
+        fun rep(id: String, ms: Long = 600, after: Long = 400) {
+            get(id).startRep()
+            tick(ms)
+            get(id).finishRep()
+            tick(after)
+        }
+
+        fun log(): FreeWorkoutLog = FreeWorkoutLog().applyAll(events + c.finish(t))
+
+        fun sets(): List<Pair<String, Int>> = log().sets.map { it.exerciseId to it.reps }
+    }
+
+    @Test
+    fun firstSetStartsOnFirstRepOfAnyExercise() {
+        // Ничего ещё не засчитано: первый же повтор другого (не угаданного) упражнения открывает его подход.
+        val p = Puppets("squats" to CountKind.REPS, "b" to CountKind.REPS)
+        p.tick(1_000)
+        assertEquals("squats", p.c.current)
+        p.rep("b")
+        assertEquals("b", p.c.current)
+        assertEquals(1, p.c.state.setReps)
+    }
+
+    @Test
+    fun strayRepMidSquatDoesNotSwitchOrResetSquat() {
+        val p = Puppets("squats" to CountKind.REPS, "b" to CountKind.REPS)
+        p.tick(1_000)
+        p.rep("squats")
+        // Посреди приседа «b» засчитал повтор; присед заканчивается позже окна спора.
+        p["squats"].startRep()
+        p.tick(300)
+        p.rep("b", ms = 100, after = 700)
+        assertEquals("одиночный повтор другого упражнения подход не меняет", "squats", p.c.current)
+        p["squats"].finishRep()
+        p.tick(400)
+        p.rep("squats")
+        assertEquals(0, p["squats"].resets)
+        assertEquals(listOf("squats" to 3), p.sets())
+        assertTrue(p.events.none { it is FreeEvent.Closed })
+    }
+
+    @Test
+    fun strayRepAfterSquatIsDropped() {
+        // Тот же физический повтор «b» засчитал позже окна спора: он не оплачивается и подход не делит.
+        val p = Puppets("squats" to CountKind.REPS, "b" to CountKind.REPS)
+        p.tick(1_000)
+        p.rep("squats")
+        p.rep("squats", after = 0)
+        p.tick(700)
+        p.rep("b", ms = 100)
+        p.rep("squats")
+        assertEquals(listOf("squats" to 3), p.sets())
+        assertTrue(p.events.filterIsInstance<FreeEvent.Reps>().none { it.exerciseId == "b" })
+    }
+
+    @Test
+    fun twoRepsInARowSwitchExerciseAndCountBoth() {
+        val p = Puppets("squats" to CountKind.REPS, "b" to CountKind.REPS)
+        p.tick(1_000)
+        p.rep("squats")
+        p.rep("squats")
+        p.tick(1_000)
+        val bStart = p.t
+        p.rep("b")
+        assertEquals("squats", p.c.current)
+        p.rep("b")
+        assertEquals("b", p.c.current)
+        p.rep("b")
+        val log = p.log()
+        assertEquals(listOf("squats" to 2, "b" to 3), log.sets.map { it.exerciseId to it.reps })
+        // Подход «b» — с его первого повтора, а не с момента подтверждения.
+        val b = log.sets.last()
+        assertTrue("начало ${b.startMs - bStart}", b.startMs in bStart - 50..bStart)
+        val reasons = p.events.filterIsInstance<FreeEvent.Closed>().map { it.reason }
+        assertEquals(listOf(FreeCloseReason.CHANGE), reasons)
+    }
+
+    @Test
+    fun strayRepConfirmedByPoseSwitch() {
+        // Повтор «b», потом присед кончился (вне позы), а «b» устойчиво в исходной позе: смена по позе
+        // подтверждает и отложенный повтор.
+        val p = Puppets("squats" to CountKind.REPS, "b" to CountKind.REPS)
+        p.tick(1_000)
+        p.rep("squats")
+        p.tick(700)
+        p.rep("b")
+        p["squats"].inPos = false
+        p.tick(1_000)
+        assertEquals("b", p.c.current)
+        p.rep("b")
+        assertEquals(listOf("squats" to 1, "b" to 2), p.sets())
+    }
+
+    @Test
+    fun squatRepBetweenStrayRepsKeepsSquats() {
+        // b, присед, b: повторы «b» не подряд — не подтверждение.
+        val p = Puppets("squats" to CountKind.REPS, "b" to CountKind.REPS)
+        p.tick(1_000)
+        p.rep("squats")
+        p.tick(700)
+        p.rep("b")
+        p.rep("squats")
+        p.tick(700)
+        p.rep("b")
+        p.rep("squats")
+        assertEquals(listOf("squats" to 3), p.sets())
+    }
+
+    @Test
+    fun plankCreditKeepsPendingSquatRep() {
+        val p = Puppets("squats" to CountKind.REPS, "b" to CountKind.REPS, "plank" to CountKind.HOLD)
+        p.tick(1_000)
+        p.rep("squats")
+        // «b» посреди движения — повтор приседа ждёт спора; на следующем кадре засчитывается планка.
+        p["b"].startRep()
+        p["squats"].startRep()
+        p.tick(600)
+        p["squats"].finishRep()
+        p.tick(33)
+        p["plank"].held = 10_000
+        p.tick(33)
+        assertEquals("plank", p.c.current)
+        val log = p.log()
+        assertEquals(listOf("squats" to 2, "plank" to 0), log.sets.map { it.exerciseId to it.reps })
+        assertEquals(10_000L, log.sets.last().heldMs)
+    }
+
+    @Test
+    fun noFramesAfterFinish() {
+        val p = Puppets("squats" to CountKind.REPS, "b" to CountKind.REPS)
+        p.tick(1_000)
+        p.rep("squats")
+        val log = p.log()
+        assertEquals(listOf("squats" to 1), log.sets.map { it.exerciseId to it.reps })
+        // Кадры из очереди камеры после «Закончить»: ни нового подхода, ни событий.
+        p.events.clear()
+        p.rep("squats")
+        p.rep("b")
+        assertTrue(p.events.toString(), p.events.isEmpty())
+        assertTrue(p.c.finish(p.t).isEmpty())
+        assertEquals(0, p.c.state.setReps)
+    }
+
+    @Test
+    fun setStartIgnoresRestBeforeFirstRep() {
+        val p = Puppets("squats" to CountKind.REPS, "b" to CountKind.REPS)
+        p.tick(5_000)
+        val first = p.t
+        p.rep("squats")
+        p.rep("squats")
+        // Отдых больше 20 с закрывает подход; следующий подход — тоже с первого повтора.
+        p.tick(25_000)
+        val second = p.t
+        p.rep("squats")
+        val sets = p.log().sets
+        assertEquals(listOf(2, 1), sets.map { it.reps })
+        assertTrue("первый: ${sets[0].startMs - first}", sets[0].startMs in first - 50..first)
+        assertTrue("второй: ${sets[1].startMs - second}", sets[1].startMs in second - 50..second)
+    }
 }
