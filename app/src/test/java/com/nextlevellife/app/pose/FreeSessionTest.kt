@@ -463,4 +463,18 @@ class FreeSessionTest {
         assertTrue("первый: ${sets[0].startMs - first}", sets[0].startMs in first - 50..first)
         assertTrue("второй: ${sets[1].startMs - second}", sets[1].startMs in second - 50..second)
     }
+
+    @Test
+    fun firstRepOfNotGuessedExerciseKeepsItsTime() {
+        // Угадано «squats», а первый повтор — «b»: подход «b» начинается с начала этого повтора, а не в момент смены
+        // (иначе подход из одного повтора длится 0 мс).
+        val p = Puppets("squats" to CountKind.REPS, "b" to CountKind.REPS)
+        p.tick(1_000)
+        assertEquals("squats", p.c.current)
+        val start = p.t
+        p.rep("b")
+        val set = p.log().sets.single()
+        assertEquals("b", set.exerciseId)
+        assertTrue("начало: ${set.startMs - start}", set.startMs in start - 50..start)
+    }
 }

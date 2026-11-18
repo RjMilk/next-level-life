@@ -335,6 +335,9 @@ class FreeSessionClassifier(
         val prevEnd = lastCreditMs
         switchTo(win, t, events, resetOthers = true)
         if (ch == null) {
+            // Первый подход или смена после угаданного упражнения: подход — с начала этого повтора
+            // (иначе граница смены = время повтора, и у подхода из одного повтора длительность 0).
+            boundaryMs = minOf(t, if (prevEnd != NEVER) maxOf(prevEnd, cycleStart) else cycleStart)
             credit(win, t, events, reps = n, heldMs = 0L, cycleStartMs = cycleStart)
         } else {
             // Подтверждено: засчитываются оба повтора, подход — с первого из них (но не раньше конца прошлого).

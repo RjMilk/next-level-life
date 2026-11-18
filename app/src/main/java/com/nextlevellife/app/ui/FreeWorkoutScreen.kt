@@ -36,6 +36,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -75,7 +76,12 @@ import com.nextlevellife.app.pose.PoseLogWriter
 import com.nextlevellife.app.pose.RepSound
 import com.nextlevellife.app.pose.RepState
 import com.nextlevellife.app.stats.StatsText
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 private const val TAG = "FreeWorkout"
@@ -251,20 +257,27 @@ fun FreeWorkoutScreen(onDone: () -> Unit) {
     // Читается только в шапке: тик таймера не перекомпонует весь экран.
     val elapsedMs: () -> Long = { if (s.finished) s.finishedElapsed else (now - s.startedAt).coerceAtLeast(0L) }
 
-    /** Записать подход [number] (повтор после сбоя — тем же ключом). */
-    fun recordSet(number: Int) {
+    // Запись в базу — не в главном потоке: подход закрывается посреди потока кадров камеры. Записи идут по одной
+    // (замок), список «что записать» берётся уже под замком — подход не записывается дважды.
+    val scope = rememberCoroutineScope()
+    val recordLock = remember { Mutex() }
+
+    /** Записать подход [number] (повтор после сбоя — тем же ключом). Вызывается под [recordLock] в главном потоке. */
+    suspend fun recordSet(number: Int) {
         val set = s.log.sets.firstOrNull { it.number == number } ?: return
         val ex = set.exercise ?: return
         val key = FreeWorkoutMath.setSessionId(sessionId, number)
-        val r = try {
-            if (ex.hold) {
-                Workouts.recordHold(ex, set.heldMs, set.durationMs, key)
-            } else {
-                Workouts.recordSets(listOf(SetInput(ex, Weights.DEFAULT, set.reps, set.durationMs)), key)
+        val r = withContext(Dispatchers.IO) {
+            try {
+                if (ex.hold) {
+                    Workouts.recordHold(ex, set.heldMs, set.durationMs, key)
+                } else {
+                    Workouts.recordSets(listOf(SetInput(ex, Weights.DEFAULT, set.reps, set.durationMs)), key)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Не удалось записать подход", e)
+                WorkoutResult(0L, 0L, saved = false)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Не удалось записать подход", e)
-            WorkoutResult(0L, 0L, saved = false)
         }
         s.log = s.log.withResult(number, r.saved, r.earnedMs)
         if (r.saved) {
@@ -274,7 +287,11 @@ fun FreeWorkoutScreen(onDone: () -> Unit) {
     }
 
     fun recordClosed() {
-        s.log.sets.filter { it.status == FreeSetStatus.CLOSED }.forEach { recordSet(it.number) }
+        scope.launch {
+            recordLock.withLock {
+                s.log.sets.filter { it.status == FreeSetStatus.CLOSED }.forEach { recordSet(it.number) }
+            }
+        }
     }
 
     /** Засчитанное камерой: в журнал, голосом, закрытые подходы — сразу в запись. */
@@ -301,7 +318,7 @@ fun FreeWorkoutScreen(onDone: () -> Unit) {
         recordClosed()
     }
 
-    fun recordRun() {
+    suspend fun recordRunLocked() {
         s.log.toRecord.forEach { recordSet(it.number) }
         val failed = s.log.failed
         if (failed > 0) {
@@ -316,6 +333,10 @@ fun FreeWorkoutScreen(onDone: () -> Unit) {
         val (title, text) = FreeText.result(s.log, strength)
         s.resultTitle = title
         s.resultText = text
+    }
+
+    fun recordRun() {
+        scope.launch { recordLock.withLock { recordRunLocked() } }
     }
 
     fun finish() {

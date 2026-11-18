@@ -63,6 +63,7 @@ import com.nextlevellife.app.data.RoutineKind
 import com.nextlevellife.app.data.RoutineMath
 import com.nextlevellife.app.data.RoutineStep
 import com.nextlevellife.app.data.RoutineStepResult
+import com.nextlevellife.app.data.Settings
 import com.nextlevellife.app.data.Routines
 import com.nextlevellife.app.data.WorkoutResult
 import com.nextlevellife.app.data.Workouts
@@ -317,7 +318,8 @@ internal class RoutineController(private val s: RoutineRunState) {
                 if (c.info.done) {
                     s.held[i] = step.targetMs
                     heldMs = step.targetMs
-                    haptics.strong()
+                    // Шаг выполнен камерой: вибрация — только если включена в «Звук на тренировке» (повторы вибрируют через RepSound).
+                    if (Settings.soundPrefs().vibration) haptics.strong()
                     onStepDone()
                 }
             }
@@ -331,7 +333,6 @@ internal class RoutineController(private val s: RoutineRunState) {
                 if (st.count > prev.count) {
                     s.reps[i] = total
                     reps = total
-                    haptics.tap()
                     sound.rep(total)
                 } else {
                     // Вернулся, не дойдя до крайней точки, или слишком быстро: «не засчитано», подсказка — следом.
